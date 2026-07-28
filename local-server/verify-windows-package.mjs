@@ -122,7 +122,7 @@ async function verifyService(packageDirectory, validationDirectory) {
       "Local-only learning UI is missing.",
     );
     for (const evidenceLabel of [
-      "멀티 차트 분석",
+      "랜덤 멀티 차트 분석",
       "선택 원본 패널",
       "정규화 추출 Curve",
       "검출 State",
@@ -311,6 +311,59 @@ async function verifyService(packageDirectory, validationDirectory) {
       "Legacy top-level results do not mirror panel 0.",
     );
 
+    for (const sample of [
+      {
+        fileName: "vnand-random-multichart-mixed-01.png",
+        panelCount: 8,
+      },
+      {
+        fileName: "vnand-random-multichart-mixed-02.png",
+        panelCount: 8,
+      },
+      {
+        fileName: "vnand-random-multichart-lowres-03.png",
+        panelCount: 7,
+      },
+    ]) {
+      const sampleBytes = await readFile(
+        path.join(
+          packageDirectory,
+          "site",
+          "client",
+          "samples",
+          sample.fileName,
+        ),
+      );
+      const response = await fetch(
+        `${baseUrl}/api/v1/similarity-search?topK=1`,
+        {
+          method: "POST",
+          headers: { "content-type": "image/png" },
+          body: sampleBytes,
+        },
+      );
+      assert(
+        response.status === 200,
+        `Packaged random sample search failed: ${sample.fileName}`,
+      );
+      const result = await response.json();
+      assert(
+        result.panelCount === sample.panelCount &&
+          result.panelDetection?.detectedPanelCount ===
+            sample.panelCount &&
+          result.panelDetection?.analyzedPanelCount ===
+            sample.panelCount &&
+          result.panelDetection?.rejectedNonChartCount >= 1 &&
+          result.panelDetection?.truncated === false &&
+          result.panels?.every(
+            (panel) =>
+              panel.results?.length === 1 &&
+              panel.query?.stateCount >= 4,
+          ),
+        `Packaged random sample retained non-chart content: ${sample.fileName}`,
+      );
+    }
+
     const pendingResponse = await fetch(
       `${baseUrl}/api/v1/training-images?id=package-pending`,
       {
@@ -454,6 +507,7 @@ async function main() {
         readme.includes("최대 24개 차트") &&
         readme.includes("12차트 PPT 샘플") &&
         readme.includes("4/8-State 분포") &&
+        readme.includes("랜덤 멀티 차트 분석") &&
         readme.includes("선택 원본 패널") &&
         readme.includes("정규화 추출 Curve"),
       "Offline operation is not documented.",
@@ -488,6 +542,14 @@ async function main() {
           ]) &&
         manifest.bundled?.multiChartSample?.layout?.rows === 3 &&
         manifest.bundled?.multiChartSample?.layout?.columns === 4 &&
+        manifest.bundled?.randomMultiChartSamples?.length === 3 &&
+        manifest.bundled.randomMultiChartSamples.every(
+          (sample) =>
+            sample.panelCount >= 7 &&
+            sample.distractors?.includes("table") &&
+            sample.distractors?.includes("diagram") &&
+            sample.distractors?.includes("photo"),
+        ) &&
         manifest.node?.packagedArchive ===
           "runtime/node-runtime.tar.xz",
       "Package manifest does not declare a fully bundled offline runtime.",

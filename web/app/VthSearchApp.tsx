@@ -151,6 +151,7 @@ type Analysis = {
   panelIndex: number;
   panelCount: number;
   detectedPanelCount: number;
+  rejectedNonChartCount: number;
   panelSelectionTruncated: boolean;
   maxPanelCount: number;
   panelBounds: {
@@ -223,8 +224,23 @@ type PanelInteraction = {
 
 const MAX_FILE_SIZE = 12 * 1024 * 1024;
 const ACCEPTED_TYPES = ["image/png", "image/jpeg", "image/webp"];
-const PPT_MULTICHART_SAMPLE_URL =
-  "/samples/vnand-ppt-12-chart-sample.png";
+const RANDOM_MULTICHART_SAMPLES = [
+  {
+    url: "/samples/vnand-random-multichart-mixed-01.png",
+    fileName: "vnand-random-multichart-mixed-01.png",
+    label: "샘플 1",
+  },
+  {
+    url: "/samples/vnand-random-multichart-mixed-02.png",
+    fileName: "vnand-random-multichart-mixed-02.png",
+    label: "샘플 2",
+  },
+  {
+    url: "/samples/vnand-random-multichart-lowres-03.png",
+    fileName: "vnand-random-multichart-lowres-03.png",
+    label: "저해상도",
+  },
+] as const;
 const CONTRIBUTOR_TOKEN_KEY = "vth-shared-contributor-token";
 const RELEVANCE_CONTRIBUTOR_TOKEN_KEY =
   "vth-shared-relevance-contributor-token";
@@ -327,6 +343,7 @@ async function extractChartProfiles(file: Blob) {
       layout: { rows: number; columns: number };
       fallbackUsed: boolean;
       detectedPanelCount: number;
+      rejectedNonChartCount: number;
       truncated: boolean;
       maxPanels: number;
     };
@@ -506,6 +523,7 @@ async function extractChartProfiles(file: Blob) {
         panelIndex: detectedPanel.index,
         panelCount: detection.panels.length,
         detectedPanelCount: detection.detectedPanelCount,
+        rejectedNonChartCount: detection.rejectedNonChartCount,
         panelSelectionTruncated: detection.truncated,
         maxPanelCount: detection.maxPanels,
         panelBounds: {
@@ -524,6 +542,7 @@ async function extractChartProfiles(file: Blob) {
       layout: detection.layout,
       fallbackUsed: detection.fallbackUsed,
       detectedPanelCount: detection.detectedPanelCount,
+      rejectedNonChartCount: detection.rejectedNonChartCount,
       truncated: detection.truncated,
       maxPanels: detection.maxPanels,
     };
@@ -766,6 +785,7 @@ export function VthSearchApp() {
   const resultsRef = useRef<HTMLElement>(null);
   const annotatorIdRef = useRef("");
   const lastDemoIdRef = useRef("");
+  const lastMultichartSampleUrlRef = useRef("");
   const panelQueriesRef = useRef<PanelQuery[]>([]);
   const panelInteractionsRef = useRef<Map<string, PanelInteraction>>(
     new Map(),
@@ -1083,6 +1103,8 @@ export function VthSearchApp() {
               panelIndex,
               panelCount: documentAnalysis.panels.length,
               detectedPanelCount: documentAnalysis.detectedPanelCount,
+              rejectedNonChartCount:
+                documentAnalysis.rejectedNonChartCount,
               panelSelectionTruncated: documentAnalysis.truncated,
               maxPanelCount: documentAnalysis.maxPanels,
               panelBounds: extracted.panelBounds,
@@ -1497,7 +1519,7 @@ export function VthSearchApp() {
     }
   };
 
-  const runPptMultichartSample = async () => {
+  const runRandomMultichartSample = async () => {
     setError("");
     try {
       if (
@@ -1508,13 +1530,23 @@ export function VthSearchApp() {
         throw new Error("진행 중인 작업이 있습니다.");
       }
       if (!corpus) throw new Error("검색 코퍼스가 준비되지 않았습니다.");
-      const response = await fetch(PPT_MULTICHART_SAMPLE_URL);
+      const alternatives = RANDOM_MULTICHART_SAMPLES.filter(
+        (sample) =>
+          sample.url !== lastMultichartSampleUrlRef.current,
+      );
+      const candidates = alternatives.length
+        ? alternatives
+        : RANDOM_MULTICHART_SAMPLES;
+      const sample =
+        candidates[Math.floor(Math.random() * candidates.length)];
+      lastMultichartSampleUrlRef.current = sample.url;
+      const response = await fetch(sample.url);
       if (!response.ok) {
-        throw new Error("12차트 샘플 이미지를 불러오지 못했습니다.");
+        throw new Error("멀티 차트 샘플 이미지를 불러오지 못했습니다.");
       }
       const blob = await response.blob();
       await analyzeFile(
-        new File([blob], "vnand-ppt-12-chart-sample.png", {
+        new File([blob], sample.fileName, {
           type: "image/png",
         }),
       );
@@ -1522,7 +1554,7 @@ export function VthSearchApp() {
       setError(
         caught instanceof Error
           ? caught.message
-          : "12차트 샘플 이미지를 불러오지 못했습니다.",
+          : "멀티 차트 샘플 이미지를 불러오지 못했습니다.",
       );
     }
   };
@@ -1825,6 +1857,8 @@ export function VthSearchApp() {
                     panelCount: documentAnalysis.panels.length,
                     detectedPanelCount:
                       documentAnalysis.detectedPanelCount,
+                    rejectedNonChartCount:
+                      documentAnalysis.rejectedNonChartCount,
                     panelSelectionTruncated:
                       documentAnalysis.truncated,
                     maxPanelCount: documentAnalysis.maxPanels,
@@ -2250,6 +2284,9 @@ export function VthSearchApp() {
                       {analysis.panelSelectionTruncated
                         ? ` / ${analysis.detectedPanelCount}개 감지`
                         : ""}
+                      {analysis.rejectedNonChartCount
+                        ? ` / 비차트 ${analysis.rejectedNonChartCount}개 제외`
+                        : ""}
                     </span>
                     <div>
                       {panelQueries.map((panelQuery, panelIndex) => (
@@ -2489,26 +2526,33 @@ export function VthSearchApp() {
             <button
               type="button"
               className="secondary-button ppt-sample-button"
-              onClick={() => void runPptMultichartSample()}
+              onClick={() => void runRandomMultichartSample()}
               disabled={
                 isAnalyzing ||
                 isLearning ||
                 isSubmittingFeedback ||
                 !corpus
               }
-              data-testid="ppt-multichart-sample-analyze"
+              data-testid="random-multichart-sample-analyze"
             >
-              멀티 차트 분석
+              랜덤 멀티 차트 분석
             </button>
-            <a
-              className="sample-download-button"
-              href={PPT_MULTICHART_SAMPLE_URL}
-              download="vnand-ppt-12-chart-sample.png"
-              data-testid="ppt-multichart-sample-download"
-              aria-label="V-NAND 12차트 PPT 샘플 PNG 다운로드"
+            <div
+              className="sample-download-group"
+              data-testid="random-multichart-sample-downloads"
+              aria-label="임의 배치 V-NAND 멀티 차트 샘플 다운로드"
             >
-              샘플 PNG ↓
-            </a>
+              {RANDOM_MULTICHART_SAMPLES.map((sample) => (
+                <a
+                  key={sample.url}
+                  className="sample-download-button"
+                  href={sample.url}
+                  download={sample.fileName}
+                >
+                  {sample.label} ↓
+                </a>
+              ))}
+            </div>
             <button
               type="button"
               className="secondary-button"
@@ -2576,8 +2620,12 @@ export function VthSearchApp() {
                 {analysis.panelSelectionTruncated
                   ? `${analysis.detectedPanelCount}개를 감지해 품질 상위 ${analysis.panelCount}개를 분석했습니다.`
                   : analysis.panelCount > 1
-                    ? `${analysis.panelCount}개 차트를 좌표별로 분리했습니다.`
-                  : "형상 분석이 완료되었습니다."}
+                    ? `${analysis.panelCount}개 차트를 좌표별로 분리했습니다.${
+                        analysis.rejectedNonChartCount
+                          ? ` 비차트 후보 ${analysis.rejectedNonChartCount}개는 제외했습니다.`
+                          : ""
+                      }`
+                    : "형상 분석이 완료되었습니다."}
               </h2>
             </div>
             <div className="top-k-control" aria-label="추천 개수">

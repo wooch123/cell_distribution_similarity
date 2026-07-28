@@ -380,6 +380,20 @@ a:focus-visible {
   letter-spacing: 0.03em;
 }
 
+.sample-download-group {
+  display: grid;
+  gap: 4px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-width: 0;
+}
+
+.sample-download-group .sample-download-button {
+  font-size: 8px;
+  line-height: 1.15;
+  min-width: 0;
+  padding-inline: 3px;
+}
+
 .batch-entry-consent {
   align-items: center;
   color: var(--ink-soft);

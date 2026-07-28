@@ -18,7 +18,10 @@
 좌표로 환산해 크롭·검색·학습합니다. 기존 연동을 위해 최상위 `query`와
 `results`는 첫 번째 패널을 그대로 가리킵니다. 한 이미지당 최대 24개를
 분석하며, 초과 시 신뢰도가 높은 24개를 선택하고
-`panelDetection.truncated`로 알립니다.
+`panelDetection.truncated`로 알립니다. 프레임 후보 안에 긴 수평 Curve,
+충분한 y 변화량과 연속 경로가 함께 있는지도 검사해 표, 플로우차트, 사진
+영역은 검색 패널에서 제외하며 제외 수는
+`panelDetection.rejectedNonChartCount`로 반환합니다.
 
 ```bash
 curl -X POST \
@@ -40,18 +43,20 @@ Raw 이미지 외에도 `multipart/form-data`의 `image` 파일과
 서로 떨어진 프레임/L축이 두 개 이상이면 먼저 좌표별 차트로 크롭하고 화면의
 차트 탭에서 각각의 검색 결과를 전환합니다. 학습 시에는 각 크롭을 별도
 후보와 별도 원본 미리보기로 저장합니다.
-일반적인 16:9 PPT 슬라이드에서 3행×4열로 배치된 12개 차트의 검증용
-PNG를 `/samples/vnand-ppt-12-chart-sample.png`로 제공합니다. 입력 영역의
-`멀티 차트 분석`으로 즉시 분리 검색하거나 `샘플 PNG`로 내려받아 외부
-연동을 시험할 수 있습니다. 샘플의 예상 State 배열은
-`4·8·8·8 / 4·8·8·8 / 4·8·8·8`입니다. 바깥 PPT 카드와 실제 차트가
+입력 영역의 `랜덤 멀티 차트 분석`은 매번 서로 다른 임의 배치 샘플을
+선택합니다. 고해상도 2장과 저해상도 1장은 차트 외에 표·플로우차트·사진성
+블록을 함께 포함하며 `샘플 1`, `샘플 2`, `저해상도` 링크로 각각 내려받을
+수 있습니다. 기존 3행×4열 12차트 검증 PNG도
+`/samples/vnand-ppt-12-chart-sample.png`에 유지합니다. 바깥 PPT 카드와 실제 차트가
 겹쳐 보일 때는 내부 플롯의 경계 증거를 우선하고, 위치 검출 후 원본 해상도
 크롭에서 Curve를 다시 분석합니다. 차트 탭에는 `선택 원본 패널`과
 `정규화 추출 Curve`를 나란히 표시하고 검출/관측 State, peak·valley,
 축 방식과 Curve 검증 근거를 함께 제공합니다. 샘플은
-`node scripts/generate-ppt-multichart-sample.mjs`로 동일하게 재생성합니다.
+기존 12차트 샘플은 `node scripts/generate-ppt-multichart-sample.mjs`,
+임의 배치 혼합 샘플은
+`node scripts/generate-random-multichart-samples.mjs`로 재생성합니다.
 같은 샘플과 무작위 배치·저해상도 복원을 포함한 최대 24차트 분리기는
-Windows v1.28.0 완전 독립판에도
+Windows v1.29.0 완전 독립판에도
 함께 포함됩니다.
 추출 결과는 함께 배포된 읽기 전용 코퍼스와 로컬로 비교합니다.
 격자는 실선과 점선의 긴 수평·수직 run을 함께 검출하며, 삭제 후 Curve가

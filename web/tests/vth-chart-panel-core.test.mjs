@@ -19,6 +19,15 @@ const pptSample = decodePng(
     ),
   ),
 );
+const randomSampleManifest = JSON.parse(
+  await readFile(
+    new URL(
+      "../public/samples/random-multichart-samples.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+);
 
 function drawLine(mask, width, x1, y1, x2, y2, thickness = 1) {
   const steps = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1), 1);
@@ -541,6 +550,56 @@ test("RGB entry point suppresses labels and returns the same two panels", () => 
   assert.ok(result.panels.every((panel) => panel.confidence > 0.8));
 });
 
+test("keeps Curve charts while rejecting tables and diagram cards", () => {
+  const width = 900;
+  const height = 560;
+  const mask = new Uint8Array(width * height);
+
+  drawFrame(mask, width, 28, 36, 370, 244);
+  drawCurve(mask, width, 40, 49, 358, 229, 0.4);
+  drawFrame(mask, width, 485, 320, 865, 530);
+  drawCurve(mask, width, 499, 334, 851, 515, 1.2);
+
+  // A table has a credible outer rectangle and long internal lines, but no
+  // horizontally coherent Curve trace.
+  drawFrame(mask, width, 485, 38, 866, 254);
+  for (const x of [580, 675, 770]) {
+    drawLine(mask, width, x, 38, x, 254, 2);
+  }
+  for (const y of [92, 146, 200]) {
+    drawLine(mask, width, 485, y, 866, y, 2);
+  }
+  for (const y of [57, 111, 165, 219]) {
+    for (const x of [501, 596, 691, 786]) {
+      drawLabel(mask, width, x, y, 48);
+    }
+  }
+
+  // A flow/card diagram also presents rectangular boundaries, connector
+  // strokes and labels that must not be treated as distribution charts.
+  drawFrame(mask, width, 34, 326, 184, 438);
+  drawFrame(mask, width, 244, 392, 394, 504);
+  drawLabel(mask, width, 55, 368, 90);
+  drawLabel(mask, width, 265, 434, 90);
+  drawLine(mask, width, 184, 382, 244, 438, 3);
+
+  const result = detectChartPanels(
+    maskToRgb(mask),
+    width,
+    height,
+    3,
+  );
+
+  assert.equal(result.fallbackUsed, false);
+  assert.equal(result.detectedPanelCount, 2);
+  assert.equal(result.panels.length, 2);
+  assert.ok(result.rejectedNonChartCount >= 3);
+  assert.ok(result.panels[0].left <= 28);
+  assert.ok(result.panels[0].right >= 370);
+  assert.ok(result.panels[1].left <= 485);
+  assert.ok(result.panels[1].right >= 865);
+});
+
 test("prefers dark inner plot frames over pale outer PPT chart cards", () => {
   const result = detectChartPanels(
     pptSample.data,
@@ -564,6 +623,35 @@ test("prefers dark inner plot frames over pale outer PPT chart cards", () => {
   );
   assert.ok(result.panels[0].x >= 85 && result.panels[0].x <= 95);
   assert.ok(result.panels[0].y >= 145 && result.panels[0].y <= 155);
+});
+
+test("separates every scattered sample and excludes its non-chart content", async () => {
+  assert.equal(randomSampleManifest.samples.length, 3);
+  for (const sample of randomSampleManifest.samples) {
+    const decoded = decodePng(
+      await readFile(
+        new URL(`../public/samples/${sample.fileName}`, import.meta.url),
+      ),
+    );
+    const result = detectChartPanels(
+      decoded.data,
+      decoded.width,
+      decoded.height,
+      decoded.channels,
+    );
+
+    assert.equal(
+      result.detectedPanelCount,
+      sample.expectedChartCount,
+      `${sample.fileName} should keep only its VTH charts`,
+    );
+    assert.equal(result.panels.length, sample.expectedChartCount);
+    assert.ok(
+      result.rejectedNonChartCount >= 1,
+      `${sample.fileName} should reject table/photo/diagram candidates`,
+    );
+    assert.equal(result.fallbackUsed, false);
+  }
 });
 
 test("keeps one pale plot frame when dark full-span grids form nested cells", () => {

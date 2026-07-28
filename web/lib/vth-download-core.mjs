@@ -1,5 +1,5 @@
 const DEFAULT_MANIFEST_URL =
-  "/downloads/windows-package-v1.28.0.json";
+  "/downloads/windows-package-v1.29.0.json";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);

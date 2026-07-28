@@ -352,7 +352,7 @@
           },
           "panelDetection": {
             "type": "object",
-            "required": ["fallbackUsed", "readingOrder", "detectedPanelCount", "analyzedPanelCount", "maxPanels", "truncated"],
+            "required": ["fallbackUsed", "readingOrder", "detectedPanelCount", "rejectedNonChartCount", "analyzedPanelCount", "maxPanels", "truncated"],
             "properties": {
               "fallbackUsed": {
                 "type": "boolean"
@@ -365,6 +365,11 @@
                 "type": "integer",
                 "minimum": 0,
                 "description": "Number of credible panels detected before applying the analysis limit."
+              },
+              "rejectedNonChartCount": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Number of axis-like candidates excluded because no coherent distribution Curve was present."
               },
               "analyzedPanelCount": {
                 "type": "integer",

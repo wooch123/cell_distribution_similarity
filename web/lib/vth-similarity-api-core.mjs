@@ -766,6 +766,8 @@ export async function searchSimilarityImage({
       readingOrder: "top-to-bottom-left-to-right",
       detectedPanelCount:
         detected.detectedPanelCount ?? detected.panels.length,
+      rejectedNonChartCount:
+        detected.rejectedNonChartCount ?? 0,
       analyzedPanelCount: panelResults.length,
       maxPanels:
         detected.maxPanels ?? MAXIMUM_CHART_PANELS,

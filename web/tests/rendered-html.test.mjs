@@ -65,8 +65,22 @@ test("server-renders the VTH similarity product", async () => {
   assert.doesNotMatch(html, /RECOMMENDATIONS/);
   assert.doesNotMatch(html, /IMAGE PROCESSING/);
   assert.match(html, /랜덤 데모 그래프/);
-  assert.match(html, /멀티 차트 분석/);
-  assert.match(html, /샘플 PNG/);
+  assert.match(html, /랜덤 멀티 차트 분석/);
+  assert.match(html, /샘플 1/);
+  assert.match(html, /샘플 2/);
+  assert.match(html, /저해상도/);
+  assert.match(
+    html,
+    /vnand-random-multichart-mixed-01\.png/,
+  );
+  assert.match(
+    html,
+    /vnand-random-multichart-mixed-02\.png/,
+  );
+  assert.match(
+    html,
+    /vnand-random-multichart-lowres-03\.png/,
+  );
   assert.match(html, /검색 API 문서/);
   assert.match(html, /완전 독립판 다운로드/);
   assert.match(html, /ENGINE V3\.2/);
@@ -118,7 +132,7 @@ test("ships the verified Windows standalone package as a web download", async ()
   const [metadataText, checksumText] = await Promise.all([
     readFile(
       new URL(
-        "../public/downloads/windows-package-v1.28.0.json",
+        "../public/downloads/windows-package-v1.29.0.json",
         import.meta.url,
       ),
       "utf8",
@@ -147,7 +161,7 @@ test("ships the verified Windows standalone package as a web download", async ()
 
   assert.deepEqual(deployedParts, sourceParts);
   assert.equal(metadata.schemaVersion, 1);
-  assert.equal(metadata.version, "1.28.0");
+  assert.equal(metadata.version, "1.29.0");
   assert.equal(metadata.fileName, "vth-similarity-windows-x64.zip");
   assert.equal(metadata.delivery, "browser-assembled");
   assert.equal(metadata.bytes, zip.length);
@@ -181,7 +195,7 @@ test("ships the verified Windows standalone package as a web download", async ()
     onProgress: (event) => progress.push(event),
   });
   const downloaded = Buffer.from(await assembled.blob.arrayBuffer());
-  assert.equal(assembled.fileName, "vth-similarity-windows-x64-v1.28.0.zip");
+  assert.equal(assembled.fileName, "vth-similarity-windows-x64-v1.29.0.zip");
   assert.equal(assembled.manifest.sha256, digest);
   assert.equal(downloaded.length, zip.length);
   assert.equal(
@@ -321,6 +335,39 @@ test("ships a complete browser search corpus and no starter preview", async () =
   assert.equal(pptSample.readUInt32BE(16), 1600);
   assert.equal(pptSample.readUInt32BE(20), 900);
   assert.ok(pptSample.length > 50_000);
+  const randomSampleManifest = JSON.parse(
+    await readFile(
+      new URL(
+        "../public/samples/random-multichart-samples.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(randomSampleManifest.samples.length, 3);
+  await Promise.all(
+    randomSampleManifest.samples.map(async (sample) => {
+      const [source, deployed] = await Promise.all([
+        readFile(
+          new URL(
+            `../public/samples/${sample.fileName}`,
+            import.meta.url,
+          ),
+        ),
+        readFile(
+          new URL(
+            `../dist/client/samples/${sample.fileName}`,
+            import.meta.url,
+          ),
+        ),
+      ]);
+      assert.deepEqual(deployed, source);
+      assert.deepEqual(
+        [...source.subarray(0, 8)],
+        [137, 80, 78, 71, 13, 10, 26, 10],
+      );
+    }),
+  );
 });
 
 test("shares standardized candidates and anonymous relevance labels centrally", async () => {
@@ -449,10 +496,19 @@ test("shares standardized candidates and anonymous relevance labels centrally", 
   assert.match(source, /blobToDataUrl/);
   assert.match(source, /chooseRandomDemoCandidate/);
   assert.match(source, /lastDemoIdRef/);
-  assert.match(source, /runPptMultichartSample/);
-  assert.match(source, /data-testid="ppt-multichart-sample-analyze"/);
-  assert.match(source, /data-testid="ppt-multichart-sample-download"/);
-  assert.match(source, /vnand-ppt-12-chart-sample\.png/);
+  assert.match(source, /runRandomMultichartSample/);
+  assert.match(source, /lastMultichartSampleUrlRef/);
+  assert.match(
+    source,
+    /data-testid="random-multichart-sample-analyze"/,
+  );
+  assert.match(
+    source,
+    /data-testid="random-multichart-sample-downloads"/,
+  );
+  assert.match(source, /vnand-random-multichart-mixed-01\.png/);
+  assert.match(source, /vnand-random-multichart-mixed-02\.png/);
+  assert.match(source, /vnand-random-multichart-lowres-03\.png/);
   assert.doesNotMatch(source, /standardizedImageDataUrl/);
   assert.match(source, /\/api\/v1\/shared-training-samples/);
   assert.match(source, /SHARED_TRAINING_CONSENT_VERSION/);

@@ -359,7 +359,10 @@ export async function createVthServer(options = {}) {
             multiChart: {
               supported: true,
               ranking: "per-panel",
+              placement: "arbitrary-non-overlapping",
               readingOrder: "top-to-bottom-left-to-right",
+              lowResolutionRecovery: true,
+              nonChartRejection: true,
               maxPanels: MAXIMUM_CHART_PANELS,
               overflowPolicy: "highest-confidence-then-reading-order",
             },

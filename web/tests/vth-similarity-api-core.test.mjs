@@ -19,6 +19,12 @@ const pptSample = await readFile(
     import.meta.url,
   ),
 );
+const mixedRandomSample = await readFile(
+  new URL(
+    "../public/samples/vnand-random-multichart-mixed-01.png",
+    import.meta.url,
+  ),
+);
 const corpus = JSON.parse(
   await readFile(
     new URL("../public/corpus-index.json", import.meta.url),
@@ -272,7 +278,8 @@ test("searches the public corpus and returns ordered absolute-URL results", asyn
   assert.equal(response.query.stateCount, 8);
   assert.equal(response.panelCount, 1);
   assert.deepEqual(response.panelLayout, { rows: 1, columns: 1 });
-  assert.equal(response.panelDetection.detectedPanelCount, 1);
+  assert.equal(response.panelDetection.detectedPanelCount, 0);
+  assert.ok(response.panelDetection.rejectedNonChartCount >= 1);
   assert.equal(response.panelDetection.analyzedPanelCount, 1);
   assert.equal(response.panelDetection.maxPanels, 24);
   assert.equal(response.panelDetection.truncated, false);
@@ -321,6 +328,7 @@ test("separates a multi-chart image and ranks every chart independently", async 
   assert.equal(response.panelCount, 2);
   assert.deepEqual(response.panelLayout, { rows: 1, columns: 2 });
   assert.equal(response.panelDetection.detectedPanelCount, 2);
+  assert.equal(response.panelDetection.rejectedNonChartCount, 0);
   assert.equal(response.panelDetection.analyzedPanelCount, 2);
   assert.equal(response.panelDetection.maxPanels, 24);
   assert.equal(response.panelDetection.truncated, false);
@@ -361,6 +369,7 @@ test("upscales and separates low-resolution charts at scattered coordinates", as
 
   assert.equal(response.panelCount, 6);
   assert.equal(response.panelDetection.detectedPanelCount, 6);
+  assert.equal(response.panelDetection.rejectedNonChartCount, 0);
   assert.equal(response.panelDetection.truncated, false);
   assert.ok(response.panelLayout.rows >= 2);
   assert.ok(
@@ -376,6 +385,29 @@ test("upscales and separates low-resolution charts at scattered coordinates", as
   );
 });
 
+test("API excludes table, diagram, and photo content from a mixed slide", async () => {
+  const response = await searchSimilarityImage({
+    bytes: mixedRandomSample,
+    mimeType: "image/png",
+    topK: 1,
+    corpus,
+    origin: "https://dove9999.com",
+  });
+
+  assert.equal(response.panelCount, 8);
+  assert.equal(response.panelDetection.detectedPanelCount, 8);
+  assert.equal(response.panelDetection.analyzedPanelCount, 8);
+  assert.ok(response.panelDetection.rejectedNonChartCount >= 1);
+  assert.equal(response.panelDetection.truncated, false);
+  assert.ok(
+    response.panels.every(
+      (panel) =>
+        panel.query.stateCount >= 4 &&
+        panel.results.length === 1,
+    ),
+  );
+});
+
 test("returns independent rankings for twelve charts on one PPT slide", async () => {
   const response = await searchSimilarityImage({
     bytes: twelvePanelPng(),
@@ -388,6 +420,7 @@ test("returns independent rankings for twelve charts on one PPT slide", async ()
   assert.equal(response.panelCount, 12);
   assert.deepEqual(response.panelLayout, { rows: 3, columns: 4 });
   assert.equal(response.panelDetection.detectedPanelCount, 12);
+  assert.equal(response.panelDetection.rejectedNonChartCount, 0);
   assert.equal(response.panelDetection.analyzedPanelCount, 12);
   assert.equal(response.panelDetection.maxPanels, 24);
   assert.equal(response.panelDetection.truncated, false);

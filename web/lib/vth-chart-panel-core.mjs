@@ -655,6 +655,178 @@ function candidateEdgeEvidence(candidate, mask, width, height) {
   return supports.reduce((sum, value) => sum + value, 0) / supports.length;
 }
 
+export function measureChartCurveEvidence(
+  candidate,
+  mask,
+  width,
+) {
+  if (!mask) {
+    return {
+      valid: true,
+      score: 0.5,
+      horizontalCoverage: 0,
+      continuousCoverage: 0,
+      verticalVariation: 0,
+    };
+  }
+  const candidateWidth = candidate.right - candidate.left + 1;
+  const candidateHeight = candidate.bottom - candidate.top + 1;
+  const insetX = Math.max(3, Math.round(candidateWidth * 0.045));
+  const insetY = Math.max(3, Math.round(candidateHeight * 0.055));
+  const left = candidate.left + insetX;
+  const right = candidate.right - insetX;
+  const top = candidate.top + insetY;
+  const bottom = candidate.bottom - insetY;
+  const interiorWidth = right - left + 1;
+  const interiorHeight = bottom - top + 1;
+  if (interiorWidth < 12 || interiorHeight < 10) {
+    return {
+      valid: false,
+      score: 0,
+      horizontalCoverage: 0,
+      continuousCoverage: 0,
+      verticalVariation: 0,
+    };
+  }
+
+  const rowCounts = new Uint32Array(interiorHeight);
+  const columnCounts = new Uint32Array(interiorWidth);
+  for (let y = top; y <= bottom; y += 1) {
+    for (let x = left; x <= right; x += 1) {
+      if (!mask[y * width + x]) continue;
+      rowCounts[y - top] += 1;
+      columnCounts[x - left] += 1;
+    }
+  }
+  const ignoredRows = new Uint8Array(interiorHeight);
+  const ignoredColumns = new Uint8Array(interiorWidth);
+  for (let row = 0; row < interiorHeight; row += 1) {
+    if (rowCounts[row] / interiorWidth >= 0.34) {
+      ignoredRows[row] = 1;
+    }
+  }
+  for (let column = 0; column < interiorWidth; column += 1) {
+    if (columnCounts[column] / interiorHeight >= 0.48) {
+      ignoredColumns[column] = 1;
+    }
+  }
+
+  const columnPixels = Array.from(
+    { length: interiorWidth },
+    () => [],
+  );
+  let residualPixels = 0;
+  for (let x = left; x <= right; x += 1) {
+    const localX = x - left;
+    if (ignoredColumns[localX]) continue;
+    for (let y = top; y <= bottom; y += 1) {
+      const localY = y - top;
+      if (
+        ignoredRows[localY] ||
+        !mask[y * width + x]
+      ) {
+        continue;
+      }
+      columnPixels[localX].push(localY);
+      residualPixels += 1;
+    }
+  }
+
+  const activeColumns = columnPixels.reduce(
+    (count, values) => count + (values.length ? 1 : 0),
+    0,
+  );
+  const horizontalCoverage =
+    activeColumns / Math.max(1, interiorWidth);
+  const meanPixelsPerActiveColumn =
+    residualPixels / Math.max(1, activeColumns);
+  const maximumGap = Math.max(
+    2,
+    Math.round(interiorWidth * 0.018),
+  );
+  const maximumStep = Math.max(
+    4,
+    Math.round(interiorHeight * 0.095),
+  );
+  let previousY = null;
+  let gap = 0;
+  let currentPath = [];
+  let longestPath = [];
+  for (const values of columnPixels) {
+    if (!values.length) {
+      gap += 1;
+      if (gap > maximumGap) {
+        previousY = null;
+        currentPath = [];
+      }
+      continue;
+    }
+    const median = values[Math.floor(values.length / 2)];
+    const selectedY =
+      previousY === null
+        ? median
+        : values.reduce(
+            (best, value) =>
+              Math.abs(value - previousY) <
+              Math.abs(best - previousY)
+                ? value
+                : best,
+            values[0],
+          );
+    if (
+      previousY !== null &&
+      Math.abs(selectedY - previousY) >
+        maximumStep * Math.max(1, gap + 1)
+    ) {
+      currentPath = [];
+    }
+    currentPath.push(selectedY);
+    if (currentPath.length > longestPath.length) {
+      longestPath = [...currentPath];
+    }
+    previousY = selectedY;
+    gap = 0;
+  }
+
+  const continuousCoverage =
+    longestPath.length / Math.max(1, interiorWidth);
+  const verticalVariation = longestPath.length
+    ? (Math.max(...longestPath) - Math.min(...longestPath)) /
+      interiorHeight
+    : 0;
+  const residualDensity =
+    residualPixels /
+    Math.max(1, interiorWidth * interiorHeight);
+  const thinEnough =
+    meanPixelsPerActiveColumn <=
+      Math.max(9, interiorHeight * 0.2) &&
+    residualDensity <= 0.24;
+  const coherentTrace =
+    continuousCoverage >= 0.2 ||
+    (horizontalCoverage >= 0.58 &&
+      verticalVariation >= 0.2);
+  const valid =
+    horizontalCoverage >= 0.42 &&
+    coherentTrace &&
+    verticalVariation >= 0.045 &&
+    thinEnough;
+  const score = clamp(
+    horizontalCoverage * 0.34 +
+      continuousCoverage * 0.38 +
+      Math.min(1, verticalVariation * 3.2) * 0.2 +
+      (thinEnough ? 0.08 : 0),
+    0,
+    1,
+  );
+  return {
+    valid,
+    score,
+    horizontalCoverage,
+    continuousCoverage,
+    verticalVariation,
+  };
+}
+
 function looksLikePlotFrameInsideCard(outer, inner) {
   if (
     outer.axisMode !== "rectangle" ||
@@ -961,6 +1133,7 @@ function selectHighestQualityPanels(candidates, width, height) {
  *   minimumPanelHeightRatio?: number;
  *   fallbackToWholeImage?: boolean;
  *   edgeEvidenceMask?: Uint8Array;
+ *   curveEvidenceMask?: Uint8Array;
  *   recoverLowResolution?: boolean;
  *   maximumLineGap?: number;
  * }} [options]
@@ -1052,22 +1225,50 @@ export function detectChartPanelsFromMask(
     minimumWidth,
     minimumHeight,
   );
-  const candidates = removeDuplicateAndGridCandidates(
+  const geometricCandidates = removeDuplicateAndGridCandidates(
     [...rectangleCandidates, ...lAxisCandidates],
     edgeEvidenceMask,
     width,
     height,
-  ).filter(
+  );
+  const curveEvidenceMask =
+    options.curveEvidenceMask ??
+    edgeEvidenceMask ??
+    workingMask;
+  const measuredCandidates = geometricCandidates.map((candidate) => {
+    const curveEvidence = measureChartCurveEvidence(
+      candidate,
+      curveEvidenceMask,
+      width,
+    );
+    return {
+      ...candidate,
+      confidence: clamp(
+        candidate.confidence * 0.82 +
+          curveEvidence.score * 0.18,
+        0,
+        0.99,
+      ),
+      curveEvidence,
+    };
+  });
+  const rejectedNonChartCount = measuredCandidates.reduce(
+    (count, candidate) =>
+      count + (candidate.curveEvidence.valid ? 0 : 1),
+    0,
+  );
+  const candidates = measuredCandidates.filter(
     (candidate) =>
+      candidate.curveEvidence.valid &&
       area(candidate) >=
-      width *
-        height *
-        (candidate.axisMode === "l-axis"
-          ? Math.max(
-              minimumAreaRatio,
-              MINIMUM_OPEN_AXIS_PANEL_AREA_RATIO,
-            )
-          : minimumAreaRatio),
+        width *
+          height *
+          (candidate.axisMode === "l-axis"
+            ? Math.max(
+                minimumAreaRatio,
+                MINIMUM_OPEN_AXIS_PANEL_AREA_RATIO,
+              )
+            : minimumAreaRatio),
   );
 
   if (!candidates.length && options.fallbackToWholeImage !== false) {
@@ -1092,6 +1293,7 @@ export function detectChartPanelsFromMask(
       layout: { rows: 1, columns: 1 },
       fallbackUsed: true,
       detectedPanelCount: 0,
+      rejectedNonChartCount,
       truncated: false,
       maxPanels: MAXIMUM_CHART_PANELS,
       lowResolutionRecovery: {
@@ -1111,6 +1313,7 @@ export function detectChartPanelsFromMask(
     ...ordered,
     fallbackUsed: false,
     detectedPanelCount: candidates.length,
+    rejectedNonChartCount,
     truncated: candidates.length > selected.length,
     maxPanels: MAXIMUM_CHART_PANELS,
     lowResolutionRecovery: {
@@ -1147,6 +1350,7 @@ export function detectChartPanelsFromMask(
  *   layout: {rows: number; columns: number};
  *   fallbackUsed: boolean;
  *   detectedPanelCount: number;
+ *   rejectedNonChartCount: number;
  *   truncated: boolean;
  *   maxPanels: number;
  * }}
@@ -1170,7 +1374,11 @@ export function detectChartPanels(
   if (![3, 4].includes(inferredChannels)) {
     throw new Error("패널 검출에는 RGB 또는 RGBA 픽셀이 필요합니다.");
   }
-  const { broadMask, salientMask } = buildForegroundMasks(
+  const {
+    broadMask,
+    salientMask,
+    curveSalientMask,
+  } = buildForegroundMasks(
     rgb,
     width,
     height,
@@ -1181,6 +1389,7 @@ export function detectChartPanels(
   );
   return detectChartPanelsFromMask(broadMask, width, height, {
     edgeEvidenceMask: salientMask,
+    curveEvidenceMask: curveSalientMask,
     maximumLineGap: options.maximumLineGap,
   });
 }

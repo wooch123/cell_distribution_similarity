@@ -128,6 +128,18 @@ test("serves the web app and persists ready and pending training images", async 
     ).then((response) => response.json());
     assert.equal(similarityCapability.multiChart.supported, true);
     assert.equal(similarityCapability.multiChart.ranking, "per-panel");
+    assert.equal(
+      similarityCapability.multiChart.placement,
+      "arbitrary-non-overlapping",
+    );
+    assert.equal(
+      similarityCapability.multiChart.lowResolutionRecovery,
+      true,
+    );
+    assert.equal(
+      similarityCapability.multiChart.nonChartRejection,
+      true,
+    );
     assert.equal(similarityCapability.multiChart.maxPanels, 24);
     assert.equal(
       similarityCapability.multiChart.overflowPolicy,
@@ -157,7 +169,8 @@ test("serves the web app and persists ready and pending training images", async 
     assert.equal(similarity.privacy.inputStored, false);
     assert.equal(similarity.privacy.inputUsedForTraining, false);
     assert.equal(similarity.query.stateCount, 8);
-    assert.equal(similarity.panelDetection.detectedPanelCount, 1);
+    assert.equal(similarity.panelDetection.detectedPanelCount, 0);
+    assert.ok(similarity.panelDetection.rejectedNonChartCount >= 1);
     assert.equal(similarity.panelDetection.analyzedPanelCount, 1);
     assert.equal(similarity.panelDetection.maxPanels, 24);
     assert.equal(similarity.panelDetection.truncated, false);

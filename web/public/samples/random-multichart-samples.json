@@ -1,0 +1,40 @@
+{
+  "samples": [
+    {
+      "fileName": "vnand-random-multichart-mixed-01.png",
+      "width": 1600,
+      "height": 900,
+      "expectedChartCount": 8,
+      "distractors": [
+        "table",
+        "diagram",
+        "photo"
+      ],
+      "bytes": 56268
+    },
+    {
+      "fileName": "vnand-random-multichart-mixed-02.png",
+      "width": 1440,
+      "height": 810,
+      "expectedChartCount": 8,
+      "distractors": [
+        "table",
+        "diagram",
+        "photo"
+      ],
+      "bytes": 50446
+    },
+    {
+      "fileName": "vnand-random-multichart-lowres-03.png",
+      "width": 640,
+      "height": 360,
+      "expectedChartCount": 7,
+      "distractors": [
+        "table",
+        "diagram",
+        "photo"
+      ],
+      "bytes": 14833
+    }
+  ]
+}
