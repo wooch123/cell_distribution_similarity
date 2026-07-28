@@ -44,6 +44,11 @@ type SharedCandidateRow = {
   status: string;
 };
 
+type SharedCandidateStorageRow = {
+  image_key: string;
+  source_image_key: string | null;
+};
+
 async function getBindings() {
   const { env } = await import("cloudflare:workers");
   const bindings = env as typeof env & {
@@ -244,6 +249,11 @@ export async function createSharedTrainingCandidate(
       deduplicated: true,
     };
   }
+  if (existing?.status.startsWith("resetting-")) {
+    throw new Error(
+      "공용 학습 저장소를 초기화하는 중입니다. 잠시 후 다시 시도해 주세요.",
+    );
+  }
 
   const [globalCount, dailyCount] = await db.batch([
     db
@@ -415,4 +425,53 @@ export async function deleteSharedTrainingCandidate(
       : Promise.resolve(),
   ]);
   return true;
+}
+
+export async function resetSharedTrainingCandidates() {
+  const { db, images } = await getBindings();
+  const resetStatus = `resetting-${crypto.randomUUID()}`;
+  const marked = await db
+    .prepare(
+      `UPDATE shared_training_samples
+          SET status = ?, updated_at = CURRENT_TIMESTAMP`,
+    )
+    .bind(resetStatus)
+    .run();
+  if (!marked.success) {
+    throw new Error("공용 학습 데이터 초기화를 시작하지 못했습니다.");
+  }
+
+  const result = await db
+    .prepare(
+      `SELECT image_key, source_image_key
+         FROM shared_training_samples
+        WHERE status = ?`,
+    )
+    .bind(resetStatus)
+    .all<SharedCandidateStorageRow>();
+  const rows = result.results ?? [];
+  const standardizedKeys = rows.map((row) => row.image_key);
+  const sourceKeys = rows.flatMap((row) =>
+    row.source_image_key ? [row.source_image_key] : [],
+  );
+  const objectKeys = Array.from(
+    new Set([...standardizedKeys, ...sourceKeys]),
+  );
+  for (let offset = 0; offset < objectKeys.length; offset += 1_000) {
+    await images.delete(objectKeys.slice(offset, offset + 1_000));
+  }
+
+  const deleted = await db
+    .prepare("DELETE FROM shared_training_samples WHERE status = ?")
+    .bind(resetStatus)
+    .run();
+  if (!deleted.success) {
+    throw new Error("공용 학습 후보 메타데이터를 삭제하지 못했습니다.");
+  }
+  return {
+    candidateRowsDeleted: rows.length,
+    standardizedImagesDeleted: standardizedKeys.length,
+    sourceImagesDeleted: sourceKeys.length,
+    imageObjectsDeleted: objectKeys.length,
+  };
 }
