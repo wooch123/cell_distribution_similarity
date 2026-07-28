@@ -7,6 +7,12 @@ const DEFAULT_MINIMUM_PANEL_AREA_RATIO = 0.008;
 const DEFAULT_MINIMUM_PANEL_WIDTH_RATIO = 0.065;
 const DEFAULT_MINIMUM_PANEL_HEIGHT_RATIO = 0.07;
 const MINIMUM_OPEN_AXIS_PANEL_AREA_RATIO = 0.018;
+const COMPACT_MINIMUM_PANEL_AREA_RATIO = 0.0015;
+const COMPACT_MINIMUM_PANEL_WIDTH_RATIO = 0.025;
+const COMPACT_MINIMUM_PANEL_HEIGHT_RATIO = 0.03;
+const COMPACT_MINIMUM_OPEN_AXIS_PANEL_AREA_RATIO = 0.003;
+const MAXIMUM_COMPOSITE_CONTAINER_CHECKS = 24;
+const MAXIMUM_COMPOSITE_CHILDREN = 20;
 export const MAXIMUM_CHART_PANELS = 24;
 
 function clamp(value, minimum, maximum) {
@@ -379,18 +385,40 @@ function detectRectangleCandidates(
       const top = topLine.coordinate;
       const bottom = bottomLine.coordinate;
       if (bottom - top + 1 < minimumHeight) continue;
+      const sharedLeft = Math.max(
+        topLine.start,
+        bottomLine.start,
+      );
+      const sharedRight = Math.min(
+        topLine.end,
+        bottomLine.end,
+      );
+      if (sharedRight - sharedLeft + 1 < minimumWidth) {
+        continue;
+      }
+      const spanningVerticalLines = verticalLines.filter(
+        (line) =>
+          line.coordinate >= sharedLeft - tolerance &&
+          line.coordinate <= sharedRight + tolerance &&
+          lineFitsInterval(
+            line,
+            top,
+            bottom,
+            tolerance,
+          ),
+      );
       for (
         let leftIndex = 0;
-        leftIndex < verticalLines.length - 1;
+        leftIndex < spanningVerticalLines.length - 1;
         leftIndex += 1
       ) {
-        const leftLine = verticalLines[leftIndex];
+        const leftLine = spanningVerticalLines[leftIndex];
         for (
           let rightIndex = leftIndex + 1;
-          rightIndex < verticalLines.length;
+          rightIndex < spanningVerticalLines.length;
           rightIndex += 1
         ) {
-          const rightLine = verticalLines[rightIndex];
+          const rightLine = spanningVerticalLines[rightIndex];
           const left = leftLine.coordinate;
           const right = rightLine.coordinate;
           if (right - left + 1 < minimumWidth) continue;
@@ -402,6 +430,22 @@ function detectRectangleCandidates(
           ) {
             continue;
           }
+          const endpointAlignedEdgeCount = [
+            Math.abs(topLine.start - left) <= tolerance &&
+              Math.abs(topLine.end - right) <= tolerance,
+            Math.abs(bottomLine.start - left) <= tolerance &&
+              Math.abs(bottomLine.end - right) <= tolerance,
+            Math.abs(leftLine.start - top) <= tolerance &&
+              Math.abs(leftLine.end - bottom) <= tolerance,
+            Math.abs(rightLine.start - top) <= tolerance &&
+              Math.abs(rightLine.end - bottom) <= tolerance,
+          ].filter(Boolean).length;
+          // Full-span table/grid lines satisfy lineFitsInterval for every cell
+          // combination. A genuine frame, however, has at least three strokes
+          // terminating near its corners. Rejecting candidates whose boundary
+          // lines merely pass through them avoids materializing O(r²c²)
+          // sub-rectangles while retaining broken/anti-aliased plot frames.
+          if (endpointAlignedEdgeCount < 3) continue;
 
           const supports = [
             edgeSupport(
@@ -794,6 +838,122 @@ export function measureChartCurveEvidence(
     ? (Math.max(...longestPath) - Math.min(...longestPath)) /
       interiorHeight
     : 0;
+  const endpointWindow = Math.max(
+    2,
+    Math.round(longestPath.length * 0.14),
+  );
+  const average = (values) =>
+    values.reduce((sum, value) => sum + value, 0) /
+    Math.max(1, values.length);
+  const peakY = longestPath.length
+    ? Math.min(...longestPath)
+    : 0;
+  const peakIndex = longestPath.indexOf(peakY);
+  const peakPosition =
+    longestPath.length > 1
+      ? peakIndex / (longestPath.length - 1)
+      : 0.5;
+  const leftEndpointY = average(
+    longestPath.slice(0, endpointWindow),
+  );
+  const rightEndpointY = average(
+    longestPath.slice(-endpointWindow),
+  );
+  const peakProminence =
+    longestPath.length >= 5
+      ? Math.min(
+          leftEndpointY - peakY,
+          rightEndpointY - peakY,
+        ) / interiorHeight
+      : 0;
+  const traceSlopes = longestPath
+    .slice(1)
+    .map((value, index) => value - longestPath[index]);
+  const directionTolerance = Math.max(
+    0.5,
+    interiorHeight * 0.004,
+  );
+  let directionMatches = 0;
+  for (let index = 0; index < traceSlopes.length; index += 1) {
+    const slope = traceSlopes[index];
+    const beforePeak = index < peakIndex;
+    if (
+      (beforePeak && slope <= directionTolerance) ||
+      (!beforePeak && slope >= -directionTolerance)
+    ) {
+      directionMatches += 1;
+    }
+  }
+  const singlePeakMonotonicity =
+    directionMatches / Math.max(1, traceSlopes.length);
+  const traceVariation = traceSlopes.reduce(
+    (sum, slope) => sum + Math.abs(slope),
+    0,
+  );
+  const expectedSinglePeakVariation = Math.max(
+    0,
+    leftEndpointY - peakY,
+  ) + Math.max(0, rightEndpointY - peakY);
+  const traceSmoothness = clamp(
+    expectedSinglePeakVariation /
+      Math.max(1, traceVariation),
+    0,
+    1,
+  );
+  const nearApexFraction = 0.05;
+  const leftArmSpan = peakIndex;
+  const rightArmSpan =
+    longestPath.length - peakIndex - 1;
+  const normalizedNearApexRise = (
+    sampleY,
+    endpointY,
+  ) =>
+    (sampleY - peakY) /
+    Math.max(1, endpointY - peakY);
+  const nearApexRises = [];
+  if (leftArmSpan >= 3) {
+    const sampleIndex = Math.max(
+      0,
+      peakIndex -
+        Math.max(
+          2,
+          Math.round(leftArmSpan * nearApexFraction),
+        ),
+    );
+    nearApexRises.push(
+      normalizedNearApexRise(
+        longestPath[sampleIndex],
+        leftEndpointY,
+      ),
+    );
+  }
+  if (rightArmSpan >= 3) {
+    const sampleIndex = Math.min(
+      longestPath.length - 1,
+      peakIndex +
+        Math.max(
+          2,
+          Math.round(rightArmSpan * nearApexFraction),
+        ),
+    );
+    nearApexRises.push(
+      normalizedNearApexRise(
+        longestPath[sampleIndex],
+        rightEndpointY,
+      ),
+    );
+  }
+  const nearApexRiseRatio = average(nearApexRises);
+  // A rounded density maximum stays materially flatter than a straight-sided
+  // chevron over the first part of each arm. Normalize by endpoint height so
+  // the score remains comparable across chart sizes and log-scale ranges.
+  const roundedApexScore = clamp(
+    1 -
+      nearApexRiseRatio /
+        nearApexFraction,
+    0,
+    1,
+  );
   const residualDensity =
     residualPixels /
     Math.max(1, interiorWidth * interiorHeight);
@@ -805,16 +965,44 @@ export function measureChartCurveEvidence(
     continuousCoverage >= 0.2 ||
     (horizontalCoverage >= 0.58 &&
       verticalVariation >= 0.2);
-  const valid =
+  const baseSinglePeakShape =
+    horizontalCoverage >= 0.2 &&
+    continuousCoverage >= 0.18 &&
+    verticalVariation >= 0.12 &&
+    peakPosition >= 0.12 &&
+    peakPosition <= 0.88 &&
+    peakProminence >= 0.075 &&
+    thinEnough;
+  const smoothSinglePeakShape =
+    baseSinglePeakShape &&
+    singlePeakMonotonicity >= 0.82 &&
+    traceSmoothness >= 0.92 &&
+    roundedApexScore >= 0.1;
+  // A single-state plot can occupy only the middle of a wide axis. Requiring
+  // the same full-width coverage as a multi-State chain drops these otherwise
+  // valid charts, especially on PPT slides. Keep a localized trace only when
+  // it has a clear rounded apex, stable falling tails on both sides and little
+  // excess vertical motion. Sharp chevrons/checkmarks can have the same span
+  // and prominence but do not flatten around their apex.
+  const localizedSinglePeak = smoothSinglePeakShape;
+  const sharpSinglePeakArtifact =
+    baseSinglePeakShape &&
+    singlePeakMonotonicity >= 0.9 &&
+    traceSmoothness >= 0.75 &&
+    !smoothSinglePeakShape;
+  const fullWidthTrace =
     horizontalCoverage >= 0.42 &&
     coherentTrace &&
     verticalVariation >= 0.045 &&
-    thinEnough;
+    thinEnough &&
+    !sharpSinglePeakArtifact;
+  const valid = fullWidthTrace || localizedSinglePeak;
   const score = clamp(
     horizontalCoverage * 0.34 +
       continuousCoverage * 0.38 +
       Math.min(1, verticalVariation * 3.2) * 0.2 +
-      (thinEnough ? 0.08 : 0),
+      (thinEnough ? 0.08 : 0) +
+      (localizedSinglePeak ? 0.1 : 0),
     0,
     1,
   );
@@ -824,6 +1012,11 @@ export function measureChartCurveEvidence(
     horizontalCoverage,
     continuousCoverage,
     verticalVariation,
+    localizedSinglePeak,
+    peakProminence,
+    singlePeakMonotonicity,
+    traceSmoothness,
+    roundedApexScore,
   };
 }
 
@@ -857,21 +1050,300 @@ function looksLikePlotFrameInsideCard(outer, inner) {
   );
 }
 
-function removeDuplicateAndGridCandidates(
-  candidates,
-  edgeEvidenceMask,
+function clearSeparationGutter(
+  first,
+  second,
+  mask,
   width,
   height,
 ) {
-  const withEdgeEvidence = candidates.map((candidate) => ({
-    ...candidate,
-    edgeEvidence: candidateEdgeEvidence(
-      candidate,
-      edgeEvidenceMask,
+  const minimumGutter = Math.max(
+    4,
+    Math.round(Math.min(width, height) * 0.004),
+  );
+  const measureRegion = (left, top, right, bottom) => {
+    if (right < left || bottom < top) return 1;
+    const regionWidth = right - left + 1;
+    const regionHeight = bottom - top + 1;
+    const step = Math.max(
+      1,
+      Math.ceil(
+        Math.sqrt(
+          (regionWidth * regionHeight) / 4_000,
+        ),
+      ),
+    );
+    let active = 0;
+    let pixels = 0;
+    for (let y = top; y <= bottom; y += step) {
+      for (let x = left; x <= right; x += step) {
+        active += mask[y * width + x] ? 1 : 0;
+        pixels += 1;
+      }
+    }
+    return active / Math.max(1, pixels);
+  };
+  const verticalOverlap = overlapLength(
+    first.top,
+    first.bottom,
+    second.top,
+    second.bottom,
+  );
+  const horizontalOverlap = overlapLength(
+    first.left,
+    first.right,
+    second.left,
+    second.right,
+  );
+  if (
+    first.right + minimumGutter < second.left &&
+    verticalOverlap >=
+      Math.min(
+        first.bottom - first.top + 1,
+        second.bottom - second.top + 1,
+      ) *
+        0.35
+  ) {
+    return (
+      measureRegion(
+        first.right + 1,
+        Math.max(first.top, second.top),
+        second.left - 1,
+        Math.min(first.bottom, second.bottom),
+      ) <= 0.025
+    );
+  }
+  if (
+    second.right + minimumGutter < first.left &&
+    verticalOverlap >=
+      Math.min(
+        first.bottom - first.top + 1,
+        second.bottom - second.top + 1,
+      ) *
+        0.35
+  ) {
+    return clearSeparationGutter(
+      second,
+      first,
+      mask,
       width,
       height,
-    ),
-  }));
+    );
+  }
+  if (
+    first.bottom + minimumGutter < second.top &&
+    horizontalOverlap >=
+      Math.min(
+        first.right - first.left + 1,
+        second.right - second.left + 1,
+      ) *
+        0.35
+  ) {
+    return (
+      measureRegion(
+        Math.max(first.left, second.left),
+        first.bottom + 1,
+        Math.min(first.right, second.right),
+        second.top - 1,
+      ) <= 0.025
+    );
+  }
+  if (
+    second.bottom + minimumGutter < first.top &&
+    horizontalOverlap >=
+      Math.min(
+        first.right - first.left + 1,
+        second.right - second.left + 1,
+      ) *
+        0.35
+  ) {
+    return clearSeparationGutter(
+      second,
+      first,
+      mask,
+      width,
+      height,
+    );
+  }
+  return false;
+}
+
+function removeCompositeContainers(
+  candidates,
+  curveEvidenceMask,
+  width,
+  height,
+  compactMinimumAreaRatio,
+) {
+  if (!curveEvidenceMask || candidates.length < 3) {
+    return candidates;
+  }
+  const compositeContainers = new Set();
+  // A dense table can generate tens of thousands of valid geometric
+  // sub-rectangles. Scanning that entire set once for every possible outer
+  // rectangle is quadratic and can stall both the browser and API worker.
+  // Composite chart cards are necessarily among the largest strict frames, so
+  // sort once and bound only the set of possible containers. Every selected
+  // container can still inspect the complete candidate set for its children.
+  const candidatesByArea = [...candidates].sort(
+    (left, right) => area(right) - area(left),
+  );
+  const possibleContainers = candidatesByArea
+    .filter(
+      (candidate) =>
+        candidate.detectionScale === "strict" &&
+        area(candidate) >= width * height * 0.035,
+    )
+    .slice(0, MAXIMUM_COMPOSITE_CONTAINER_CHECKS);
+  const isStrongIndependentChild = (candidate, evidence) => {
+    const minimumAreaRatio =
+      candidate.axisMode === "l-axis"
+        ? Math.max(
+            compactMinimumAreaRatio,
+            COMPACT_MINIMUM_OPEN_AXIS_PANEL_AREA_RATIO,
+          )
+        : compactMinimumAreaRatio;
+    return (
+      evidence.valid &&
+      candidate.edgeEvidence >= 0.68 &&
+      area(candidate) >= width * height * minimumAreaRatio &&
+      (!evidence.localizedSinglePeak ||
+        (evidence.singlePeakMonotonicity >= 0.82 &&
+          evidence.traceSmoothness >= 0.92 &&
+          evidence.roundedApexScore >= 0.1))
+    );
+  };
+  for (const outer of possibleContainers) {
+    const outerArea = area(outer);
+    const inset = Math.max(
+      4,
+      Math.round(
+        Math.min(
+          outer.right - outer.left + 1,
+          outer.bottom - outer.top + 1,
+        ) * 0.012,
+      ),
+    );
+    const children = [];
+    for (const inner of candidatesByArea) {
+      if (children.length >= MAXIMUM_COMPOSITE_CHILDREN) {
+        break;
+      }
+      if (
+        inner === outer ||
+        !contains(outer, inner, 1) ||
+        inner.left - outer.left < inset ||
+        inner.top - outer.top < inset ||
+        outer.right - inner.right < inset ||
+        outer.bottom - inner.bottom < inset
+      ) {
+        continue;
+      }
+      const areaRatio = area(inner) / Math.max(1, outerArea);
+      if (areaRatio >= 0.025 && areaRatio <= 0.72) {
+        children.push(inner);
+      }
+    }
+    for (
+      let firstIndex = 0;
+      firstIndex < children.length - 1;
+      firstIndex += 1
+    ) {
+      const first = children[firstIndex];
+      for (
+        let secondIndex = firstIndex + 1;
+        secondIndex < children.length;
+        secondIndex += 1
+      ) {
+        const second = children[secondIndex];
+        if (
+          intersectionArea(first, second) > 0 ||
+          !clearSeparationGutter(
+            first,
+            second,
+            curveEvidenceMask,
+            width,
+            height,
+          )
+        ) {
+          continue;
+        }
+        const firstEvidence =
+          first.curveEvidence ??
+          measureChartCurveEvidence(
+            first,
+            curveEvidenceMask,
+            width,
+        );
+        first.curveEvidence = firstEvidence;
+        if (!isStrongIndependentChild(first, firstEvidence)) {
+          continue;
+        }
+        const secondEvidence =
+          second.curveEvidence ??
+          measureChartCurveEvidence(
+            second,
+            curveEvidenceMask,
+            width,
+          );
+        second.curveEvidence = secondEvidence;
+        if (
+          isStrongIndependentChild(second, secondEvidence) &&
+          (area(first) + area(second)) / outerArea >= 0.12
+        ) {
+          compositeContainers.add(outer);
+          break;
+        }
+      }
+      if (compositeContainers.has(outer)) break;
+    }
+  }
+  return candidates.filter(
+    (candidate) => !compositeContainers.has(candidate),
+  );
+}
+
+function removeDuplicateAndGridCandidates(
+  candidates,
+  edgeEvidenceMask,
+  curveEvidenceMask,
+  width,
+  height,
+  compactMinimumAreaRatio,
+) {
+  const uniqueCandidates = new Map();
+  for (const candidate of candidates) {
+    const key = [
+      candidate.axisMode,
+      candidate.left,
+      candidate.top,
+      candidate.right,
+      candidate.bottom,
+    ].join(":");
+    const existing = uniqueCandidates.get(key);
+    if (
+      !existing ||
+      (candidate.detectionScale === "strict" &&
+        existing.detectionScale !== "strict")
+    ) {
+      uniqueCandidates.set(key, candidate);
+    }
+  }
+  const withEdgeEvidence = removeCompositeContainers(
+    [...uniqueCandidates.values()].map((candidate) => ({
+      ...candidate,
+      edgeEvidence: candidateEdgeEvidence(
+        candidate,
+        edgeEvidenceMask,
+        width,
+        height,
+      ),
+    })),
+    curveEvidenceMask,
+    width,
+    height,
+    compactMinimumAreaRatio,
+  );
   const rectangles = withEdgeEvidence.filter(
     (candidate) => candidate.axisMode === "rectangle",
   );
@@ -885,6 +1357,8 @@ function removeDuplicateAndGridCandidates(
   );
   const ranked = [...withoutRectangleDerivedLAxes].sort(
     (left, right) =>
+      (right.detectionScale === "strict") -
+        (left.detectionScale === "strict") ||
       area(right) - area(left) ||
       (right.axisMode === "rectangle") -
         (left.axisMode === "rectangle") ||
@@ -1117,6 +1591,53 @@ function selectHighestQualityPanels(candidates, width, height) {
     .slice(0, MAXIMUM_CHART_PANELS);
 }
 
+function detectGeometricCandidatesAtScale(
+  mask,
+  width,
+  height,
+  minimumWidth,
+  minimumHeight,
+  detectionScale,
+) {
+  const horizontalLines = extractLineBands(
+    mask,
+    width,
+    height,
+    "horizontal",
+    minimumWidth,
+  );
+  const verticalLines = extractLineBands(
+    mask,
+    width,
+    height,
+    "vertical",
+    minimumHeight,
+  );
+  return [
+    ...detectRectangleCandidates(
+      mask,
+      width,
+      height,
+      horizontalLines,
+      verticalLines,
+      minimumWidth,
+      minimumHeight,
+    ),
+    ...detectLAxisCandidates(
+      mask,
+      width,
+      height,
+      horizontalLines,
+      verticalLines,
+      minimumWidth,
+      minimumHeight,
+    ),
+  ].map((candidate) => ({
+    ...candidate,
+    detectionScale,
+  }));
+}
+
 /**
  * Detect independent chart panels from a precomputed foreground mask.
  *
@@ -1131,6 +1652,9 @@ function selectHighestQualityPanels(candidates, width, height) {
  *   minimumPanelAreaRatio?: number;
  *   minimumPanelWidthRatio?: number;
  *   minimumPanelHeightRatio?: number;
+ *   compactMinimumPanelAreaRatio?: number;
+ *   compactMinimumPanelWidthRatio?: number;
+ *   compactMinimumPanelHeightRatio?: number;
  *   fallbackToWholeImage?: boolean;
  *   edgeEvidenceMask?: Uint8Array;
  *   curveEvidenceMask?: Uint8Array;
@@ -1156,20 +1680,46 @@ export function detectChartPanelsFromMask(
   const minimumAreaRatio =
     options.minimumPanelAreaRatio ??
     DEFAULT_MINIMUM_PANEL_AREA_RATIO;
+  const minimumWidthRatio =
+    options.minimumPanelWidthRatio ??
+    DEFAULT_MINIMUM_PANEL_WIDTH_RATIO;
+  const minimumHeightRatio =
+    options.minimumPanelHeightRatio ??
+    DEFAULT_MINIMUM_PANEL_HEIGHT_RATIO;
   const minimumWidth = Math.max(
     20,
-    Math.round(
-      width *
-        (options.minimumPanelWidthRatio ??
-          DEFAULT_MINIMUM_PANEL_WIDTH_RATIO),
-    ),
+    Math.round(width * minimumWidthRatio),
   );
   const minimumHeight = Math.max(
     16,
+    Math.round(height * minimumHeightRatio),
+  );
+  const compactMinimumAreaRatio =
+    options.compactMinimumPanelAreaRatio ??
+    Math.min(
+      minimumAreaRatio,
+      COMPACT_MINIMUM_PANEL_AREA_RATIO,
+    );
+  const compactMinimumWidth = Math.max(
+    16,
+    Math.round(
+      width *
+        (options.compactMinimumPanelWidthRatio ??
+          Math.min(
+            minimumWidthRatio,
+            COMPACT_MINIMUM_PANEL_WIDTH_RATIO,
+          )),
+    ),
+  );
+  const compactMinimumHeight = Math.max(
+    12,
     Math.round(
       height *
-        (options.minimumPanelHeightRatio ??
-          DEFAULT_MINIMUM_PANEL_HEIGHT_RATIO),
+        (options.compactMinimumPanelHeightRatio ??
+          Math.min(
+            minimumHeightRatio,
+            COMPACT_MINIMUM_PANEL_HEIGHT_RATIO,
+          )),
     ),
   );
   const recovered =
@@ -1193,54 +1743,46 @@ export function detectChartPanelsFromMask(
         },
       ).mask
     : undefined;
-  const horizontalLines = extractLineBands(
+  const strictCandidates = detectGeometricCandidatesAtScale(
     workingMask,
     width,
     height,
-    "horizontal",
-    minimumWidth,
-  );
-  const verticalLines = extractLineBands(
-    workingMask,
-    width,
-    height,
-    "vertical",
-    minimumHeight,
-  );
-  const rectangleCandidates = detectRectangleCandidates(
-    workingMask,
-    width,
-    height,
-    horizontalLines,
-    verticalLines,
     minimumWidth,
     minimumHeight,
+    "strict",
   );
-  const lAxisCandidates = detectLAxisCandidates(
-    workingMask,
-    width,
-    height,
-    horizontalLines,
-    verticalLines,
-    minimumWidth,
-    minimumHeight,
-  );
-  const geometricCandidates = removeDuplicateAndGridCandidates(
-    [...rectangleCandidates, ...lAxisCandidates],
-    edgeEvidenceMask,
-    width,
-    height,
-  );
+  const compactCandidates =
+    compactMinimumWidth < minimumWidth ||
+    compactMinimumHeight < minimumHeight
+      ? detectGeometricCandidatesAtScale(
+          workingMask,
+          width,
+          height,
+          compactMinimumWidth,
+          compactMinimumHeight,
+          "compact",
+        )
+      : [];
   const curveEvidenceMask =
     options.curveEvidenceMask ??
     edgeEvidenceMask ??
     workingMask;
+  const geometricCandidates = removeDuplicateAndGridCandidates(
+    [...strictCandidates, ...compactCandidates],
+    edgeEvidenceMask ?? workingMask,
+    curveEvidenceMask,
+    width,
+    height,
+    compactMinimumAreaRatio,
+  );
   const measuredCandidates = geometricCandidates.map((candidate) => {
-    const curveEvidence = measureChartCurveEvidence(
-      candidate,
-      curveEvidenceMask,
-      width,
-    );
+    const curveEvidence =
+      candidate.curveEvidence ??
+      measureChartCurveEvidence(
+        candidate,
+        curveEvidenceMask,
+        width,
+      );
     return {
       ...candidate,
       confidence: clamp(
@@ -1258,17 +1800,38 @@ export function detectChartPanelsFromMask(
     0,
   );
   const candidates = measuredCandidates.filter(
-    (candidate) =>
-      candidate.curveEvidence.valid &&
-      area(candidate) >=
-        width *
-          height *
-          (candidate.axisMode === "l-axis"
-            ? Math.max(
-                minimumAreaRatio,
-                MINIMUM_OPEN_AXIS_PANEL_AREA_RATIO,
-              )
-            : minimumAreaRatio),
+    (candidate) => {
+      const candidateAreaRatio =
+        area(candidate) / Math.max(1, width * height);
+      const strictMinimumCandidateAreaRatio =
+        candidate.axisMode === "l-axis"
+          ? Math.max(
+              minimumAreaRatio,
+              MINIMUM_OPEN_AXIS_PANEL_AREA_RATIO,
+            )
+          : minimumAreaRatio;
+      const compact =
+        candidate.detectionScale === "compact" ||
+        candidateAreaRatio <
+          strictMinimumCandidateAreaRatio;
+      const areaRatio = compact
+        ? compactMinimumAreaRatio
+        : minimumAreaRatio;
+      const minimumCandidateAreaRatio =
+        candidate.axisMode === "l-axis"
+          ? Math.max(
+              areaRatio,
+              compact
+                ? COMPACT_MINIMUM_OPEN_AXIS_PANEL_AREA_RATIO
+                : MINIMUM_OPEN_AXIS_PANEL_AREA_RATIO,
+            )
+          : areaRatio;
+      return (
+        candidate.curveEvidence.valid &&
+        area(candidate) >=
+          width * height * minimumCandidateAreaRatio
+      );
+    },
   );
 
   if (!candidates.length && options.fallbackToWholeImage !== false) {

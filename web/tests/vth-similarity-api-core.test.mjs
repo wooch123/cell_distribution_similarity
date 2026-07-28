@@ -25,6 +25,12 @@ const mixedRandomSample = await readFile(
     import.meta.url,
   ),
 );
+const variableSizeRandomSample = await readFile(
+  new URL(
+    "../public/samples/vnand-random-multichart-mixed-02.png",
+    import.meta.url,
+  ),
+);
 const corpus = JSON.parse(
   await readFile(
     new URL("../public/corpus-index.json", import.meta.url),
@@ -405,6 +411,44 @@ test("API excludes table, diagram, and photo content from a mixed slide", async 
         panel.query.stateCount >= 4 &&
         panel.results.length === 1,
     ),
+  );
+});
+
+test("API separates all variable-size charts including a compact single peak", async () => {
+  const response = await searchSimilarityImage({
+    bytes: variableSizeRandomSample,
+    mimeType: "image/png",
+    topK: 1,
+    corpus,
+    origin: "https://dove9999.com",
+  });
+
+  assert.equal(response.panelCount, 8);
+  assert.equal(response.panelDetection.detectedPanelCount, 8);
+  assert.equal(response.panelDetection.analyzedPanelCount, 8);
+  assert.equal(response.panels.length, 8);
+  assert.ok(response.panelDetection.rejectedNonChartCount >= 1);
+  assert.equal(response.panelDetection.truncated, false);
+  assert.ok(
+    response.panels.every((panel) => panel.results.length === 1),
+  );
+
+  const panelAreas = response.panels.map(
+    (panel) =>
+      panel.bounds.processed.width *
+      panel.bounds.processed.height,
+  );
+  assert.ok(
+    Math.max(...panelAreas) / Math.min(...panelAreas) >= 6,
+    "the public sample must exercise substantially different chart sizes",
+  );
+  assert.ok(
+    response.panels.some(
+      (panel) =>
+        panel.bounds.processed.width <= 150 &&
+        panel.bounds.processed.height <= 100,
+    ),
+    "the compact single-peak chart must survive panel separation",
   );
 });
 

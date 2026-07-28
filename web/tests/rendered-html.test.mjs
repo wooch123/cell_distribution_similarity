@@ -67,7 +67,7 @@ test("server-renders the VTH similarity product", async () => {
   assert.match(html, /랜덤 데모 그래프/);
   assert.match(html, /랜덤 멀티 차트 분석/);
   assert.match(html, /샘플 1/);
-  assert.match(html, /샘플 2/);
+  assert.match(html, /가변 크기/);
   assert.match(html, /저해상도/);
   assert.match(
     html,
@@ -132,7 +132,7 @@ test("ships the verified Windows standalone package as a web download", async ()
   const [metadataText, checksumText] = await Promise.all([
     readFile(
       new URL(
-        "../public/downloads/windows-package-v1.29.0.json",
+        "../public/downloads/windows-package-v1.30.0.json",
         import.meta.url,
       ),
       "utf8",
@@ -161,7 +161,7 @@ test("ships the verified Windows standalone package as a web download", async ()
 
   assert.deepEqual(deployedParts, sourceParts);
   assert.equal(metadata.schemaVersion, 1);
-  assert.equal(metadata.version, "1.29.0");
+  assert.equal(metadata.version, "1.30.0");
   assert.equal(metadata.fileName, "vth-similarity-windows-x64.zip");
   assert.equal(metadata.delivery, "browser-assembled");
   assert.equal(metadata.bytes, zip.length);
@@ -195,7 +195,7 @@ test("ships the verified Windows standalone package as a web download", async ()
     onProgress: (event) => progress.push(event),
   });
   const downloaded = Buffer.from(await assembled.blob.arrayBuffer());
-  assert.equal(assembled.fileName, "vth-similarity-windows-x64-v1.29.0.zip");
+  assert.equal(assembled.fileName, "vth-similarity-windows-x64-v1.30.0.zip");
   assert.equal(assembled.manifest.sha256, digest);
   assert.equal(downloaded.length, zip.length);
   assert.equal(

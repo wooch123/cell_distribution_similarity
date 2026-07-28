@@ -233,7 +233,7 @@ const RANDOM_MULTICHART_SAMPLES = [
   {
     url: "/samples/vnand-random-multichart-mixed-02.png",
     fileName: "vnand-random-multichart-mixed-02.png",
-    label: "샘플 2",
+    label: "가변 크기",
   },
   {
     url: "/samples/vnand-random-multichart-lowres-03.png",

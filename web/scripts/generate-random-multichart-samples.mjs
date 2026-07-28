@@ -50,18 +50,22 @@ const SAMPLE_DEFINITIONS = [
     height: 810,
     background: COLORS.paperBlue,
     charts: [
-      [42, 68, 352, 240],
-      [456, 30, 812, 218],
-      [1010, 84, 1390, 263],
-      [178, 314, 540, 515],
-      [650, 290, 990, 488],
-      [1065, 378, 1400, 566],
-      [40, 600, 380, 780],
-      [520, 580, 920, 790],
+      [34, 66, 500, 310],
+      {
+        bounds: [570, 40, 715, 138],
+        peakCenters: [0.5],
+        peakWidth: 0.115,
+      },
+      [990, 70, 1390, 282],
+      [52, 386, 292, 522],
+      [390, 330, 890, 570],
+      [1035, 370, 1380, 552],
+      [42, 640, 300, 786],
+      [520, 618, 910, 790],
     ],
-    table: [1012, 620, 1392, 790],
-    diagram: [18, 314, 148, 510],
-    photo: [848, 22, 974, 185],
+    table: [1005, 620, 1392, 790],
+    diagram: [325, 630, 475, 790],
+    photo: [770, 45, 930, 205],
   },
   {
     fileName: "vnand-random-multichart-lowres-03.png",
@@ -225,20 +229,34 @@ function createCanvas(definition) {
     }
   };
 
-  const densityAt = (progress, chartIndex) => {
-    const stateCount = chartIndex % 3 === 0 ? 4 : 8;
+  const densityAt = (progress, chartIndex, chartDefinition) => {
+    const explicitPeakCenters = Array.isArray(
+      chartDefinition?.peakCenters,
+    )
+      ? chartDefinition.peakCenters
+      : null;
+    const stateCount =
+      explicitPeakCenters?.length ??
+      (chartIndex % 3 === 0 ? 4 : 8);
     const left = 0.065;
     const right = 0.935;
-    const spacing = (right - left) / (stateCount - 1);
+    const spacing =
+      stateCount > 1 ? (right - left) / (stateCount - 1) : 0;
     let density = 0;
     for (let state = 0; state < stateCount; state += 1) {
       const center =
-        left +
-        state * spacing +
-        Math.sin((chartIndex + 2) * (state + 1)) * spacing * 0.018;
+        explicitPeakCenters?.[state] ??
+        (left +
+          state * spacing +
+          Math.sin((chartIndex + 2) * (state + 1)) *
+            spacing *
+            0.018);
+      const defaultPeakWidth =
+        stateCount === 1
+          ? 0.115
+          : spacing * (stateCount === 4 ? 0.105 : 0.16);
       const asymmetricWidth =
-        spacing *
-        (stateCount === 4 ? 0.105 : 0.16) *
+        (chartDefinition?.peakWidth ?? defaultPeakWidth) *
         (progress < center ? 0.88 : 1.12);
       const z = (progress - center) / asymmetricWidth;
       density +=
@@ -248,7 +266,10 @@ function createCanvas(definition) {
     return Math.max(1e-6, Math.min(1, density));
   };
 
-  const drawChart = (bounds, chartIndex) => {
+  const drawChart = (chartDefinition, chartIndex) => {
+    const bounds = Array.isArray(chartDefinition)
+      ? chartDefinition
+      : chartDefinition.bounds;
     const [left, top, right, bottom] = bounds;
     const width = right - left;
     const height = bottom - top;
@@ -301,7 +322,9 @@ function createCanvas(definition) {
       COLORS.gold,
       COLORS.blue,
     ];
-    const stateCount = chartIndex % 3 === 0 ? 4 : 8;
+    const stateCount =
+      chartDefinition?.peakCenters?.length ??
+      (chartIndex % 3 === 0 ? 4 : 8);
     let previous = null;
     for (
       let localX = Math.max(2, scale);
@@ -309,7 +332,11 @@ function createCanvas(definition) {
       localX += 1
     ) {
       const progress = localX / plotWidth;
-      const density = densityAt(progress, chartIndex);
+      const density = densityAt(
+        progress,
+        chartIndex,
+        chartDefinition,
+      );
       const logDensity = Math.max(-6, Math.log10(density));
       const y =
         plotTop + ((0 - logDensity) / 6) * plotHeight;
@@ -478,6 +505,13 @@ for (const definition of SAMPLE_DEFINITIONS) {
     width: definition.width,
     height: definition.height,
     expectedChartCount: definition.charts.length,
+    singlePeakChartIndexes: definition.charts.flatMap(
+      (chart, index) =>
+        !Array.isArray(chart) &&
+        chart.peakCenters?.length === 1
+          ? [index]
+          : [],
+    ),
     distractors: ["table", "diagram", "photo"],
     bytes: encoded.length,
   });
