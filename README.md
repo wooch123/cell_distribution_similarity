@@ -50,7 +50,7 @@ descriptor, 파일명·메타데이터를 제거하고 JPEG로 다시 만든 원
 
 ## Windows 무설치 서비스와 학습 API
 
-`artifacts/windows/vth-similarity-windows-x64-v1.26.0.zip`은 공식
+`artifacts/windows/vth-similarity-windows-x64-v1.27.0.zip`은 공식
 Windows x64 Node 런타임, 웹 빌드, 로컬 학습 API를 함께 담습니다. 다른
 Windows PC에서 압축을 푼 뒤 `start.bat`을 실행하면 설치 없이
 `http://127.0.0.1:4173`에서 동작합니다. 코퍼스, 모델, 웹 화면, 런타임이

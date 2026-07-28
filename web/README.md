@@ -47,7 +47,7 @@ PNG를 `/samples/vnand-ppt-12-chart-sample.png`로 제공합니다. 입력 영�
 `정규화 추출 Curve`를 나란히 표시하고 검출/관측 State, peak·valley,
 축 방식과 Curve 검증 근거를 함께 제공합니다. 샘플은
 `node scripts/generate-ppt-multichart-sample.mjs`로 동일하게 재생성합니다.
-같은 샘플과 최대 24차트 분리기는 Windows v1.26.0 완전 독립판에도
+같은 샘플과 최대 24차트 분리기는 Windows v1.27.0 완전 독립판에도
 함께 포함됩니다.
 추출 결과는 함께 배포된 읽기 전용 코퍼스와 로컬로 비교합니다.
 격자는 실선과 점선의 긴 수평·수직 run을 함께 검출하며, 삭제 후 Curve가

@@ -77,11 +77,48 @@ test("server-renders the VTH similarity product", async () => {
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
 });
 
+test("stacks the source panel above a wide, shallow normalized Curve", async () => {
+  const styles = await readFile(
+    new URL("../app/globals.css", import.meta.url),
+    "utf8",
+  );
+  const basePreview = styles.match(
+    /\.analysis-preview\s*\{([\s\S]*?)\}/,
+  )?.[1];
+
+  assert.ok(basePreview, "analysis preview styles are missing");
+  assert.match(basePreview, /grid-template-columns:\s*1fr/);
+  assert.match(
+    basePreview,
+    /grid-template-rows:\s*minmax\(0,\s*1fr\)\s+auto/,
+  );
+  assert.match(
+    styles,
+    /\.workspace\.has-analysis \.analysis-preview\s*\{[\s\S]*?grid-template-columns:\s*1fr;[\s\S]*?grid-template-rows:\s*minmax\(0,\s*1fr\)\s+auto/,
+  );
+  assert.match(
+    styles,
+    /\.normalized-curve-view\s*\{[\s\S]*?grid-template-rows:\s*auto\s+clamp\(64px,\s*8vw,\s*100px\)\s+auto/,
+  );
+  assert.match(
+    styles,
+    /\.profile-canvas\s*\{[\s\S]*?max-height:\s*100px/,
+  );
+  assert.match(
+    styles,
+    /@media \(max-width: 760px\)[\s\S]*?\.analysis-preview\s*\{[\s\S]*?grid-template-rows:\s*minmax\(0,\s*1\.08fr\)\s+minmax\(0,\s*0\.92fr\)/,
+  );
+  assert.match(
+    styles,
+    /@media \(max-width: 760px\)[\s\S]*?\.normalized-curve-view\s*\{[\s\S]*?grid-template-columns:\s*minmax\(92px,\s*0\.65fr\)\s+minmax\(0,\s*1\.35fr\)/,
+  );
+});
+
 test("ships the verified Windows standalone package as a web download", async () => {
   const [metadataText, checksumText] = await Promise.all([
     readFile(
       new URL(
-        "../public/downloads/windows-package-v1.26.0.json",
+        "../public/downloads/windows-package-v1.27.0.json",
         import.meta.url,
       ),
       "utf8",
@@ -110,7 +147,7 @@ test("ships the verified Windows standalone package as a web download", async ()
 
   assert.deepEqual(deployedParts, sourceParts);
   assert.equal(metadata.schemaVersion, 1);
-  assert.equal(metadata.version, "1.26.0");
+  assert.equal(metadata.version, "1.27.0");
   assert.equal(metadata.fileName, "vth-similarity-windows-x64.zip");
   assert.equal(metadata.delivery, "browser-assembled");
   assert.equal(metadata.bytes, zip.length);
@@ -144,7 +181,7 @@ test("ships the verified Windows standalone package as a web download", async ()
     onProgress: (event) => progress.push(event),
   });
   const downloaded = Buffer.from(await assembled.blob.arrayBuffer());
-  assert.equal(assembled.fileName, "vth-similarity-windows-x64-v1.26.0.zip");
+  assert.equal(assembled.fileName, "vth-similarity-windows-x64-v1.27.0.zip");
   assert.equal(assembled.manifest.sha256, digest);
   assert.equal(downloaded.length, zip.length);
   assert.equal(

@@ -1,60 +1,60 @@
 {
   "schemaVersion": 1,
   "name": "유사 산포 검색 Windows x64 단독 실행판",
-  "version": "1.26.0",
+  "version": "1.27.0",
   "fileName": "vth-similarity-windows-x64.zip",
   "delivery": "browser-assembled",
-  "bytes": 29455543,
-  "sha256": "9728b8bec7b48710c198b4f43a2eb10357e219996be3fdd39d05370a738231a7",
-  "generatedAt": "2026-07-28T11:56:40.655Z",
+  "bytes": 29455562,
+  "sha256": "b3734d38a0b45afbba63aee4565a8b2941dc3e1596fe08bddec8dcf2e50502f7",
+  "generatedAt": "2026-07-28T12:17:53.171Z",
   "parts": [
     {
       "index": 0,
-      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.26.0.zip.part-000",
+      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.27.0.zip.part-000",
       "bytes": 4194304,
-      "sha256": "8538d13a30a78ce12ddfbf8e3cdb563be5af2b8402b072cd75379500d19a82ea"
+      "sha256": "a4e9fb2b7ba41232497fac9bc51b7f0e6f7f348b38cdd54a86213b9d8d6793eb"
     },
     {
       "index": 1,
-      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.26.0.zip.part-001",
+      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.27.0.zip.part-001",
       "bytes": 4194304,
-      "sha256": "7884c45d0fc5137d4bdc95331a385b1c4b018c3d643d459179861d356fd11641"
+      "sha256": "0a7f0bf6a4d8b03be140c2676e18b024ebff6777bdc70ca4c55fc9325fd3206b"
     },
     {
       "index": 2,
-      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.26.0.zip.part-002",
+      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.27.0.zip.part-002",
       "bytes": 4194304,
-      "sha256": "94e073c213d97b997c579708242d4b074f5726966855c928d2e2178ea04c2688"
+      "sha256": "e21e43e47201fa375340fd85b76fef8982e9aacebe59a7fe2f36a76c8a5c8f08"
     },
     {
       "index": 3,
-      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.26.0.zip.part-003",
+      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.27.0.zip.part-003",
       "bytes": 4194304,
-      "sha256": "4077b652b4fea929626e52ad17fde067e6551cddfeebe301c9e08735f66d06ad"
+      "sha256": "caf73a6addaa00e45b91a391a163f20fcdb66de782d5170158592d8cc89c0896"
     },
     {
       "index": 4,
-      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.26.0.zip.part-004",
+      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.27.0.zip.part-004",
       "bytes": 4194304,
-      "sha256": "6b41bc8a6af7373bbd90f456d1e2ace8f6e294a6f02d49a02e70b7de17f31e0b"
+      "sha256": "85e8c0faf0c612e4d65294282aa744b70aef43b5d26ab856599aa7e9dfab9e28"
     },
     {
       "index": 5,
-      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.26.0.zip.part-005",
+      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.27.0.zip.part-005",
       "bytes": 4194304,
-      "sha256": "b0d77522e9743b41f951bd34169c203e2c27f609565db67f886b78b86ed4705f"
+      "sha256": "41916846ca12b6e0b8a4247b8bbae8f961f70196f840a5a194a5ea6a143f4d85"
     },
     {
       "index": 6,
-      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.26.0.zip.part-006",
+      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.27.0.zip.part-006",
       "bytes": 4194304,
-      "sha256": "690c471838882dbcd30e4518abfba08386694c3453c9406ec883c27df8e26528"
+      "sha256": "81d42e3f2192e58d967e17eecaafaa535ff43f590eb0935798c3fc3737f81bad"
     },
     {
       "index": 7,
-      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.26.0.zip.part-007",
-      "bytes": 95415,
-      "sha256": "30375c32d875d3ce6f4a03f5d8df3779038a698a244ba86e2316753da4a3b696"
+      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.27.0.zip.part-007",
+      "bytes": 95434,
+      "sha256": "f21ffac8fd5f0bc9e6684e8c8b80514d58f3069cd622b2a4efc4a13d96e882f4"
     }
   ]
 }
