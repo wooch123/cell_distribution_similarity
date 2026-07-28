@@ -1,0 +1,581 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "VTH Training API",
+    "version": "2.0.0",
+    "description": "V-NAND VTH graph images, separate standardized/source previews, and browser-extracted shape descriptors for incremental similarity retrieval."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:4173"
+    }
+  ],
+  "paths": {
+    "/api/v1/similarity-search": {
+      "get": {
+        "summary": "Check the offline image similarity-search API",
+        "responses": {
+          "200": {
+            "description": "Supported inputs, limits, bundled corpus count, and offline policy"
+          }
+        }
+      },
+      "post": {
+        "summary": "Return ranked VTH shape matches for every chart in one PNG or JPEG image",
+        "description": "Charts at different coordinates are detected, cropped, and ranked independently in reading order. The legacy top-level query/results mirror panel 0. The query image is processed in memory only and is not saved or used for training. Results include normalized score components and loopback URLs for the standardized curve and, when available, its original source preview.",
+        "parameters": [
+          {
+            "name": "topK",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10,
+              "default": 8
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "image/png": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/jpeg": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["image"],
+                "properties": {
+                  "image": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "topK": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10
+                  }
+                }
+              }
+            },
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["imageDataUrl"],
+                "properties": {
+                  "imageDataUrl": {
+                    "type": "string",
+                    "description": "data:image/png;base64,... or data:image/jpeg;base64,..."
+                  },
+                  "topK": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ranked matching distributions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimilaritySearchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid image, request, or topK"
+          },
+          "401": {
+            "description": "API key is required when VTH_API_KEY is configured"
+          },
+          "413": {
+            "description": "Request exceeds 20 MB, image exceeds 12 MB, or image exceeds 8 million pixels"
+          },
+          "415": {
+            "description": "Only PNG and JPEG are supported"
+          },
+          "422": {
+            "description": "The declared image is malformed or cannot be decoded"
+          },
+          "500": {
+            "description": "Unexpected similarity-processing failure"
+          }
+        }
+      }
+    },
+    "/api/v1/runtime": {
+      "get": {
+        "summary": "Verify the standalone offline runtime policy",
+        "responses": {
+          "200": {
+            "description": "Bundled components and external-network policy"
+          }
+        }
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "summary": "Check local service and writable training store",
+        "responses": {
+          "200": {
+            "description": "Service health and training counts"
+          }
+        }
+      }
+    },
+    "/api/v1/training-samples": {
+      "get": {
+        "summary": "List search-ready learned candidates",
+        "responses": {
+          "200": {
+            "description": "Ready candidates"
+          }
+        }
+      },
+      "post": {
+        "summary": "Add an image with a 256-point profile and descriptor",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrainingSampleInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Immediately search-ready sample"
+          }
+        }
+      }
+    },
+    "/api/v1/training-images": {
+      "post": {
+        "summary": "Push a raw PNG/JPEG/WEBP image for later feature extraction",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "label",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "image/png": {},
+            "image/jpeg": {},
+            "image/webp": {},
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "imageDataUrl"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "imageDataUrl": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Image stored with pending status"
+          },
+          "201": {
+            "description": "Search-ready when profile and descriptor are also provided"
+          }
+        }
+      }
+    },
+    "/api/v1/training-samples/{id}": {
+      "get": {
+        "summary": "Get one learned or pending sample",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SampleId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sample metadata"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete a learned sample and its image",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SampleId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted"
+          }
+        }
+      }
+    },
+    "/api/v1/training-samples/{id}/source-image": {
+      "get": {
+        "summary": "Get the stored original preview for a learned sample",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SampleId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Metadata-free source preview"
+          },
+          "404": {
+            "description": "Source preview not found"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "SampleId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "schemas": {
+      "SimilaritySearchResponse": {
+        "type": "object",
+        "required": ["schemaVersion", "requestId", "service", "inputHandling", "warnings", "privacy", "model", "query", "candidateCount", "matchedCandidateCount", "processingMs", "results", "panelCount", "panelLayout", "panelDetection", "panels"],
+        "properties": {
+          "schemaVersion": {
+            "type": "integer",
+            "const": 1
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string",
+            "const": "vth-similarity-search-api"
+          },
+          "inputHandling": {
+            "type": "object",
+            "required": ["stored", "usedForTraining", "processing"],
+            "properties": {
+              "stored": { "type": "boolean", "const": false },
+              "usedForTraining": { "type": "boolean", "const": false },
+              "processing": { "type": "string", "const": "transient-memory-only" }
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["code", "message"],
+              "properties": {
+                "code": { "type": "string" },
+                "message": { "type": "string" }
+              }
+            }
+          },
+          "privacy": {
+            "type": "object",
+            "required": ["inputStored", "inputUsedForTraining", "externalNetworkAllowed"],
+            "properties": {
+              "inputStored": { "type": "boolean", "const": false },
+              "inputUsedForTraining": { "type": "boolean", "const": false },
+              "externalNetworkAllowed": { "type": "boolean", "const": false }
+            }
+          },
+          "model": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "candidateCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "matchedCandidateCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "processingMs": {
+            "type": "number"
+          },
+          "query": {
+            "type": "object"
+          },
+          "panelCount": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "panelLayout": {
+            "$ref": "#/components/schemas/PanelLayout"
+          },
+          "panelDetection": {
+            "type": "object",
+            "required": ["fallbackUsed", "readingOrder", "detectedPanelCount", "analyzedPanelCount", "maxPanels", "truncated"],
+            "properties": {
+              "fallbackUsed": {
+                "type": "boolean"
+              },
+              "readingOrder": {
+                "type": "string",
+                "const": "top-to-bottom-left-to-right"
+              },
+              "detectedPanelCount": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Number of credible panels detected before applying the analysis limit."
+              },
+              "analyzedPanelCount": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 24,
+                "description": "Number of panels independently analyzed and returned in panels."
+              },
+              "maxPanels": {
+                "type": "integer",
+                "const": 24,
+                "description": "Maximum number of chart panels analyzed from one image."
+              },
+              "truncated": {
+                "type": "boolean",
+                "description": "True when detectedPanelCount exceeded maxPanels and lower-confidence panels were omitted."
+              }
+            }
+          },
+          "panels": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/PanelSearchResult"
+            }
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["rank", "id", "score", "scorePercent", "imageUrl"],
+              "properties": {
+                "rank": {
+                  "type": "integer"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "score": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Calibrated shape similarity, not a probability."
+                },
+                "scorePercent": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "imageUrl": {
+                  "type": ["string", "null"],
+                  "format": "uri"
+                },
+                "sourceImageUrl": {
+                  "type": ["string", "null"],
+                  "format": "uri"
+                },
+                "scores": {
+                  "type": "object",
+                  "description": "Curve, peak, valley, tail, and retrieval score components."
+                },
+                "reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "PanelLayout": {
+        "type": "object",
+        "required": ["rows", "columns"],
+        "properties": {
+          "rows": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "columns": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "PanelBounds": {
+        "type": "object",
+        "required": ["x", "y", "width", "height"],
+        "properties": {
+          "x": {
+            "type": "number",
+            "minimum": 0
+          },
+          "y": {
+            "type": "number",
+            "minimum": 0
+          },
+          "width": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "height": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        }
+      },
+      "PanelSearchResult": {
+        "type": "object",
+        "required": ["panelIndex", "bounds", "confidence", "detectionReason", "axisMode", "query", "matchedCandidateCount", "results"],
+        "properties": {
+          "panelIndex": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "bounds": {
+            "type": "object",
+            "required": ["processed", "source", "normalized"],
+            "properties": {
+              "processed": {
+                "$ref": "#/components/schemas/PanelBounds"
+              },
+              "source": {
+                "$ref": "#/components/schemas/PanelBounds"
+              },
+              "normalized": {
+                "$ref": "#/components/schemas/PanelBounds"
+              }
+            }
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "detectionReason": {
+            "type": "string"
+          },
+          "axisMode": {
+            "type": "string"
+          },
+          "query": {
+            "type": "object"
+          },
+          "matchedCandidateCount": {
+            "type": "integer"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        }
+      },
+      "TrainingSampleInput": {
+        "type": "object",
+        "required": [
+          "id",
+          "imageDataUrl",
+          "sourceImageDataUrl",
+          "profile",
+          "descriptor"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "integer",
+            "const": 1
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "imageDataUrl": {
+            "type": "string"
+          },
+          "sourceImageDataUrl": {
+            "type": "string",
+            "description": "Metadata-free original preview shown beside the standardized Curve when recommended."
+          },
+          "profile": {
+            "type": "array",
+            "minItems": 256,
+            "maxItems": 256,
+            "items": {
+              "type": "number"
+            }
+          },
+          "descriptor": {
+            "type": "object",
+            "required": [
+              "stateCount",
+              "peakLocations",
+              "peakWidths",
+              "valleyHeights",
+              "valleyLocations",
+              "valleyDepths",
+              "valleyPositionRatios",
+              "peakValleyDistances",
+              "tailSlopes",
+              "area"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

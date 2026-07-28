@@ -1,0 +1,23 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+/build/
+/dist/
+*.egg-info/
+artifacts/
+tmp/
+
+# Measurement data can be large or confidential.
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Runtime-local learned samples must never be published.
+data/training-index.json
+data/images/

@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1785152439941,
+      "tag": "0000_fat_nightmare",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1785156655497,
+      "tag": "0001_brief_madrox",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785166018399,
+      "tag": "0002_early_luminals",
+      "breakpoints": true
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+image_path,image_id,state_count,observed_state_count,state_coverage,y_scale,y_min,y_max,similarity_group,product_group,notes,source_id,source_url,figure_id,source_kind,independence_group,is_measured
+images/graph_001.png,Q-001,8,8,full,log10,1e-6,1,A,anonymous-product-1,line plot,source-1,,figure-1,equipment-export,independent-1,true
+images/graph_002.png,Q-002,8,8,full,log10,1e-6,1,A,anonymous-product-1,filled plot,source-1,,figure-2,equipment-export,independent-1,true
+images/graph_003.png,Q-003,8,7,partial,log10,1e-6,1,B,anonymous-product-1,erase State excluded,source-2,,figure-1,equipment-export,independent-2,true

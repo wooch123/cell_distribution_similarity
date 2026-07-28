@@ -1,0 +1,350 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "V-NAND Similarity Search API",
+    "version": "1.0.0",
+    "description": "Log-scale VTH distribution shape retrieval. The request image is processed only for this search and is not stored or used for training. Scores are calibrated similarity values, not probabilities."
+  },
+  "servers": [
+    {
+      "url": "https://dove9999.com"
+    }
+  ],
+  "paths": {
+    "/api/v1/similarity-search": {
+      "get": {
+        "summary": "Get API capability and input handling metadata",
+        "responses": {
+          "200": {
+            "description": "Service metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Find V-NAND distribution images with similar shape",
+        "description": "Accepts PNG or JPEG as raw bytes, multipart/form-data, or a Base64 data URL JSON body. Multiple charts at different coordinates are detected, cropped, and ranked independently in reading order. The legacy top-level `query` and `results` mirror panel 0. `topK` defaults to 8 and is limited to 1–10 per panel. When the deployment configures `VTH_SEARCH_API_KEY`, send it as `Authorization: Bearer <key>` or `X-API-Key`.",
+        "parameters": [
+          {
+            "name": "topK",
+            "in": "query",
+            "description": "Number of ranked candidates to return. Overrides a multipart or JSON body value.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10,
+              "default": 8
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "image/png": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/jpeg": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["image"],
+                "properties": {
+                  "image": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "PNG or JPEG graph image"
+                  },
+                  "topK": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10
+                  }
+                }
+              }
+            },
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["imageDataUrl"],
+                "properties": {
+                  "imageDataUrl": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "data:image/png;base64,... or data:image/jpeg;base64,..."
+                  },
+                  "topK": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ranked visual-shape matches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/RequestError" },
+          "401": { "$ref": "#/components/responses/RequestError" },
+          "413": { "$ref": "#/components/responses/RequestError" },
+          "415": { "$ref": "#/components/responses/RequestError" },
+          "422": { "$ref": "#/components/responses/RequestError" },
+          "500": { "$ref": "#/components/responses/RequestError" }
+        }
+      },
+      "options": {
+        "summary": "CORS preflight response",
+        "responses": {
+          "204": {
+            "description": "CORS headers"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      },
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key"
+      }
+    },
+    "responses": {
+      "RequestError": {
+        "description": "Request or processing error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "HealthResponse": {
+        "type": "object",
+        "required": ["service", "version", "status", "method", "openapi", "multiChart", "inputHandling"],
+        "properties": {
+          "service": { "type": "string" },
+          "version": { "type": "integer" },
+          "status": { "type": "string", "example": "ok" },
+          "method": { "type": "string", "example": "POST" },
+          "openapi": { "type": "string" },
+          "supportedImageTypes": { "type": "array", "items": { "type": "string" } },
+          "maxImageBytes": { "type": "integer" },
+          "maxRequestBodyBytes": { "type": "integer" },
+          "maxResults": { "type": "integer" },
+          "multiChart": {
+            "type": "object",
+            "required": ["supported", "ranking", "readingOrder", "maxPanels", "overflowPolicy"],
+            "properties": {
+              "supported": { "type": "boolean", "const": true },
+              "ranking": { "type": "string", "const": "per-panel" },
+              "readingOrder": { "type": "string", "const": "top-to-bottom-left-to-right" },
+              "maxPanels": {
+                "type": "integer",
+                "const": 24,
+                "description": "Maximum number of chart panels analyzed from one image."
+              },
+              "overflowPolicy": {
+                "type": "string",
+                "const": "highest-confidence-then-reading-order",
+                "description": "When more than 24 credible panels are detected, retain the highest-confidence panels and return them in reading order."
+              }
+            }
+          },
+          "inputHandling": { "$ref": "#/components/schemas/InputHandling" }
+        }
+      },
+      "InputHandling": {
+        "type": "object",
+        "required": ["stored", "usedForTraining", "processing"],
+        "properties": {
+          "stored": { "type": "boolean", "example": false },
+          "usedForTraining": { "type": "boolean", "example": false },
+          "processing": { "type": "string", "example": "transient-memory-only" }
+        }
+      },
+      "SearchResponse": {
+        "type": "object",
+        "required": ["schemaVersion", "requestId", "service", "inputHandling", "warnings", "model", "query", "candidateCount", "matchedCandidateCount", "processingMs", "results", "panelCount", "panelLayout", "panelDetection", "panels"],
+        "properties": {
+          "schemaVersion": { "type": "integer", "example": 1 },
+          "requestId": { "type": "string" },
+          "service": { "type": "string", "const": "vth-similarity-search-api" },
+          "inputHandling": { "$ref": "#/components/schemas/InputHandling" },
+          "warnings": { "type": "array", "items": { "$ref": "#/components/schemas/Warning" } },
+          "model": { "type": "object", "additionalProperties": true },
+          "query": { "type": "object", "additionalProperties": true },
+          "candidateCount": { "type": "integer" },
+          "matchedCandidateCount": { "type": "integer" },
+          "processingMs": { "type": "number" },
+          "results": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/RankedResult" }
+          },
+          "panelCount": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Number of independently detected and searched chart panels."
+          },
+          "panelLayout": { "$ref": "#/components/schemas/PanelLayout" },
+          "panelDetection": {
+            "type": "object",
+            "required": ["fallbackUsed", "readingOrder", "detectedPanelCount", "analyzedPanelCount", "maxPanels", "truncated"],
+            "properties": {
+              "fallbackUsed": { "type": "boolean" },
+              "readingOrder": {
+                "type": "string",
+                "const": "top-to-bottom-left-to-right"
+              },
+              "detectedPanelCount": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Number of credible panels detected before applying the analysis limit."
+              },
+              "analyzedPanelCount": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 24,
+                "description": "Number of panels independently analyzed and returned in panels."
+              },
+              "maxPanels": {
+                "type": "integer",
+                "const": 24,
+                "description": "Maximum number of chart panels analyzed from one image."
+              },
+              "truncated": {
+                "type": "boolean",
+                "description": "True when detectedPanelCount exceeded maxPanels and lower-confidence panels were omitted."
+              }
+            }
+          },
+          "panels": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/components/schemas/PanelSearchResult" }
+          }
+        }
+      },
+      "PanelLayout": {
+        "type": "object",
+        "required": ["rows", "columns"],
+        "properties": {
+          "rows": { "type": "integer", "minimum": 1 },
+          "columns": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "PanelBounds": {
+        "type": "object",
+        "required": ["x", "y", "width", "height"],
+        "properties": {
+          "x": { "type": "number", "minimum": 0 },
+          "y": { "type": "number", "minimum": 0 },
+          "width": { "type": "number", "exclusiveMinimum": 0 },
+          "height": { "type": "number", "exclusiveMinimum": 0 }
+        }
+      },
+      "PanelSearchResult": {
+        "type": "object",
+        "required": ["panelIndex", "bounds", "confidence", "detectionReason", "axisMode", "query", "matchedCandidateCount", "results"],
+        "properties": {
+          "panelIndex": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Zero-based top-to-bottom, left-to-right reading order."
+          },
+          "bounds": {
+            "type": "object",
+            "required": ["processed", "source", "normalized"],
+            "properties": {
+              "processed": { "$ref": "#/components/schemas/PanelBounds" },
+              "source": { "$ref": "#/components/schemas/PanelBounds" },
+              "normalized": { "$ref": "#/components/schemas/PanelBounds" }
+            }
+          },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "detectionReason": { "type": "string" },
+          "axisMode": { "type": "string" },
+          "query": { "type": "object", "additionalProperties": true },
+          "matchedCandidateCount": { "type": "integer" },
+          "results": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/RankedResult" }
+          }
+        }
+      },
+      "Warning": {
+        "type": "object",
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "type": "string" },
+          "message": { "type": "string" }
+        }
+      },
+      "RankedResult": {
+        "type": "object",
+        "required": ["rank", "id", "label", "score", "scorePercent", "stateCount", "family", "learned", "storage", "scores", "reasons"],
+        "properties": {
+          "rank": { "type": "integer", "minimum": 1 },
+          "id": { "type": "string" },
+          "label": { "type": "string" },
+          "score": { "type": "number", "minimum": 0, "maximum": 1 },
+          "scorePercent": { "type": "number", "minimum": 0, "maximum": 100 },
+          "stateCount": { "type": "integer" },
+          "family": { "type": "string" },
+          "learned": { "type": "boolean" },
+          "storage": { "type": "string" },
+          "imageUrl": { "type": ["string", "null"], "format": "uri" },
+          "sourceImageUrl": { "type": ["string", "null"], "format": "uri" },
+          "scores": { "type": "object", "additionalProperties": { "type": ["number", "null"] } },
+          "curveHypothesisIndex": { "type": "integer" },
+          "reasons": { "type": "array", "items": { "type": "string" }, "maxItems": 3 }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+              "code": { "type": "string" },
+              "message": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

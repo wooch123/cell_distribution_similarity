@@ -1,0 +1,383 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "VTH Shared Training API",
+    "version": "4.0.0",
+    "description": "Stores axis-free standardized VTH Curves together with a browser-sanitized original preview as shared similarity-search candidates, plus anonymous schema-v3 relevance judgments for model retraining. Filenames and embedded metadata are not stored."
+  },
+  "servers": [
+    {
+      "url": "https://dove9999.com"
+    }
+  ],
+  "paths": {
+    "/api/v1/shared-training-health": {
+      "get": {
+        "summary": "Check shared training storage and active candidate count",
+        "responses": {
+          "200": {
+            "description": "Shared service status"
+          }
+        }
+      }
+    },
+    "/api/v1/shared-training-samples": {
+      "get": {
+        "summary": "List active shared VTH candidates",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 500
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque keyset cursor returned as nextCursor by the previous page.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 256
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One search-ready page. Follow nextCursor until it is null to load all active candidates."
+          }
+        }
+      },
+      "post": {
+        "summary": "Share one browser-standardized VTH candidate and its sanitized source preview",
+        "description": "The caller must extract the 256-point Curve and re-encode the source graph as a metadata-free JPEG preview before calling. The server renders a separate axis-free standardized preview and stores both images so learned recommendations can show their source.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "payload",
+                  "sourceImage"
+                ],
+                "properties": {
+                  "payload": {
+                    "type": "string",
+                    "description": "JSON-encoded SharedTrainingInput"
+                  },
+                  "sourceImage": {
+                    "type": "string",
+                    "format": "binary",
+                    "contentMediaType": "image/jpeg",
+                    "maxLength": 3145728
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "New shared candidate"
+          },
+          "200": {
+            "description": "Equivalent Curve already existed and was deduplicated"
+          },
+          "400": {
+            "description": "Invalid Curve, descriptor, consent, token or source JPEG"
+          },
+          "429": {
+            "description": "Daily contributor or global corpus limit reached"
+          }
+        }
+      }
+    },
+    "/api/v1/shared-training-samples/{id}": {
+      "delete": {
+        "summary": "Delete a candidate using its uploader-only token",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^shared-"
+            }
+          },
+          {
+            "name": "x-vth-delete-token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Candidate deleted"
+          },
+          "404": {
+            "description": "Candidate not found or token did not match"
+          }
+        }
+      }
+    },
+    "/api/v1/shared-training-samples/{id}/source-image": {
+      "get": {
+        "summary": "Get the metadata-free original preview for a learned candidate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^shared-"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sanitized original JPEG preview"
+          },
+          "404": {
+            "description": "Candidate or original preview not found"
+          }
+        }
+      }
+    },
+    "/api/v1/shared-relevance-health": {
+      "get": {
+        "summary": "Check anonymous relevance report storage and consensus-ready counts",
+        "responses": {
+          "200": {
+            "description": "Shared relevance service status"
+          }
+        }
+      }
+    },
+    "/api/v1/shared-relevance-reports": {
+      "post": {
+        "summary": "Store or update one anonymous schema-v3 relevance report",
+        "description": "One active report is retained per hashed Query code and hashed anonymous annotator code. Raw images, filenames and the caller-provided codes are not stored.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SharedRelevanceInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "New anonymous report"
+          },
+          "200": {
+            "description": "Existing Query and annotator report updated"
+          },
+          "400": {
+            "description": "Invalid report, privacy flags, consent or token"
+          },
+          "429": {
+            "description": "Daily contributor or global report limit reached"
+          }
+        }
+      }
+    },
+    "/api/v1/shared-relevance-reports/{id}": {
+      "delete": {
+        "summary": "Delete a relevance report using its submitter-only token",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^relevance-"
+            }
+          },
+          {
+            "name": "x-vth-delete-token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Report deleted"
+          },
+          "404": {
+            "description": "Report not found or token did not match"
+          }
+        }
+      }
+    },
+    "/api/v1/shared-relevance-export": {
+      "get": {
+        "summary": "Export active privacy-preserving reports for consensus training",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000,
+              "default": 10000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Schema-v3 reports with hashed Query and annotator IDs"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "SharedTrainingInput": {
+        "type": "object",
+        "required": [
+          "schemaVersion",
+          "label",
+          "profile",
+          "descriptor",
+          "sharingConsent",
+          "consentVersion",
+          "contributorToken",
+          "deletionToken"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "integer",
+            "const": 2
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "profile": {
+            "type": "array",
+            "minItems": 256,
+            "maxItems": 256,
+            "items": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1.5
+            }
+          },
+          "descriptor": {
+            "type": "object",
+            "required": [
+              "stateCount",
+              "peakLocations",
+              "peakWidths",
+              "valleyHeights",
+              "valleyLocations",
+              "valleyDepths",
+              "valleyPositionRatios",
+              "peakValleyDistances",
+              "tailSlopes",
+              "area"
+            ]
+          },
+          "sharingConsent": {
+            "type": "boolean",
+            "const": true
+          },
+          "consentVersion": {
+            "type": "string",
+            "const": "2026-07-27-v1"
+          },
+          "contributorToken": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 128
+          },
+          "deletionToken": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 128
+          }
+        }
+      },
+      "SharedRelevanceInput": {
+        "type": "object",
+        "required": [
+          "schemaVersion",
+          "report",
+          "sharingConsent",
+          "consentVersion",
+          "contributorToken",
+          "deletionToken"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "integer",
+            "const": 1
+          },
+          "report": {
+            "type": "object",
+            "required": [
+              "schema_version",
+              "report_type",
+              "privacy",
+              "annotator",
+              "query",
+              "corpus",
+              "judgments"
+            ],
+            "properties": {
+              "schema_version": {
+                "type": "integer",
+                "const": 3
+              },
+              "report_type": {
+                "type": "string",
+                "const": "vth-expert-relevance"
+              },
+              "judgments": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 10
+              }
+            }
+          },
+          "sharingConsent": {
+            "type": "boolean",
+            "const": true
+          },
+          "consentVersion": {
+            "type": "string",
+            "const": "2026-07-27-v1"
+          },
+          "contributorToken": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 128
+          },
+          "deletionToken": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 128
+          }
+        }
+      }
+    }
+  }
+}
