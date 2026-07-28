@@ -118,7 +118,7 @@ test("ships the verified Windows standalone package as a web download", async ()
   const [metadataText, checksumText] = await Promise.all([
     readFile(
       new URL(
-        "../public/downloads/windows-package-v1.27.0.json",
+        "../public/downloads/windows-package-v1.28.0.json",
         import.meta.url,
       ),
       "utf8",
@@ -147,7 +147,7 @@ test("ships the verified Windows standalone package as a web download", async ()
 
   assert.deepEqual(deployedParts, sourceParts);
   assert.equal(metadata.schemaVersion, 1);
-  assert.equal(metadata.version, "1.27.0");
+  assert.equal(metadata.version, "1.28.0");
   assert.equal(metadata.fileName, "vth-similarity-windows-x64.zip");
   assert.equal(metadata.delivery, "browser-assembled");
   assert.equal(metadata.bytes, zip.length);
@@ -181,7 +181,7 @@ test("ships the verified Windows standalone package as a web download", async ()
     onProgress: (event) => progress.push(event),
   });
   const downloaded = Buffer.from(await assembled.blob.arrayBuffer());
-  assert.equal(assembled.fileName, "vth-similarity-windows-x64-v1.27.0.zip");
+  assert.equal(assembled.fileName, "vth-similarity-windows-x64-v1.28.0.zip");
   assert.equal(assembled.manifest.sha256, digest);
   assert.equal(downloaded.length, zip.length);
   assert.equal(
@@ -378,7 +378,12 @@ test("shares standardized candidates and anonymous relevance labels centrally", 
     ),
   ]);
   assert.match(source, /createImageBitmap\(file\)/);
-  assert.match(source, /buildForegroundMasks\(pixels, width, height, 4\)/);
+  assert.match(
+    source,
+    /buildForegroundMasks\(\s*pixels,\s*width,\s*height,\s*4,\s*\{ sourceScale: analysisScale \},\s*\)/s,
+  );
+  assert.match(source, /boundedRasterScale/);
+  assert.match(source, /무작위 배치·저해상도/);
   assert.match(source, /analyzeForegroundMasks/);
   assert.match(source, /detectChartPanels/);
   assert.match(source, /extractChartProfiles/);

@@ -125,6 +125,39 @@ function twelvePanelPng() {
   });
 }
 
+function lowResolutionScatteredPanelPng() {
+  const width = 320;
+  const height = 180;
+  const rgb = new Uint8Array(width * height * 3).fill(255);
+  const charts = [
+    [4, 4, 80, 50],
+    [117, 12, 198, 61],
+    [237, 5, 316, 55],
+    [25, 82, 107, 136],
+    [143, 72, 230, 126],
+    [243, 112, 318, 174],
+  ];
+  charts.forEach(([left, top, right, bottom], index) => {
+    drawChart(
+      rgb,
+      width,
+      height,
+      left,
+      top,
+      right,
+      bottom,
+      index * 0.31,
+    );
+  });
+  return encodePng({
+    width,
+    height,
+    data: rgb,
+    channels: 3,
+    depth: 8,
+  });
+}
+
 test("parses a raw PNG similarity request and query-string topK", async () => {
   const parsed = await parseSimilarityImageRequest(
     new Request(
@@ -315,6 +348,32 @@ test("separates a multi-chart image and ranks every chart independently", async 
       [1, 2, 3],
     );
   }
+});
+
+test("upscales and separates low-resolution charts at scattered coordinates", async () => {
+  const response = await searchSimilarityImage({
+    bytes: lowResolutionScatteredPanelPng(),
+    mimeType: "image/png",
+    topK: 1,
+    corpus,
+    origin: "https://dove9999.com",
+  });
+
+  assert.equal(response.panelCount, 6);
+  assert.equal(response.panelDetection.detectedPanelCount, 6);
+  assert.equal(response.panelDetection.truncated, false);
+  assert.ok(response.panelLayout.rows >= 2);
+  assert.ok(
+    response.panels.every(
+      (panel) =>
+        panel.bounds.processed.width >=
+          panel.bounds.source.width * 3 &&
+        panel.query.processedWidth >=
+          panel.bounds.source.width * 3 &&
+        panel.results.length === 1,
+    ),
+    "low-resolution chart detection and Curve analysis should use an enlarged working raster",
+  );
 });
 
 test("returns independent rankings for twelve charts on one PPT slide", async () => {

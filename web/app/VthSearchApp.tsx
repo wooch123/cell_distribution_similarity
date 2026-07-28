@@ -252,21 +252,40 @@ async function canvasToBlob(
   return blob;
 }
 
+function boundedRasterScale(
+  width: number,
+  height: number,
+  maximumWidth: number,
+  maximumHeight: number,
+  maximumPixels: number,
+  maximumScale = 4,
+) {
+  const allowedScale =
+    Math.min(width, height) < 360 ? maximumScale : 1;
+  return Math.min(
+    allowedScale,
+    maximumWidth / Math.max(1, width),
+    maximumHeight / Math.max(1, height),
+    Math.sqrt(maximumPixels / Math.max(1, width * height)),
+  );
+}
+
 async function extractChartProfiles(file: Blob) {
   const bitmap = await createImageBitmap(file);
   try {
-    const documentScale = Math.min(
-      1,
-      1600 / bitmap.width,
-      1200 / bitmap.height,
-      Math.sqrt(2_000_000 / (bitmap.width * bitmap.height)),
+    const documentScale = boundedRasterScale(
+      bitmap.width,
+      bitmap.height,
+      1600,
+      1200,
+      2_000_000,
     );
     const documentWidth = Math.max(
-      80,
+      1,
       Math.round(bitmap.width * documentScale),
     );
     const documentHeight = Math.max(
-      60,
+      1,
       Math.round(bitmap.height * documentScale),
     );
     const documentCanvas = document.createElement("canvas");
@@ -278,6 +297,8 @@ async function extractChartProfiles(file: Blob) {
     if (!documentContext) {
       throw new Error("이미지를 분석할 수 없는 브라우저입니다.");
     }
+    documentContext.imageSmoothingEnabled = true;
+    documentContext.imageSmoothingQuality = "high";
     documentContext.fillStyle = "#ffffff";
     documentContext.fillRect(0, 0, documentWidth, documentHeight);
     documentContext.drawImage(bitmap, 0, 0, documentWidth, documentHeight);
@@ -292,6 +313,7 @@ async function extractChartProfiles(file: Blob) {
       documentWidth,
       documentHeight,
       4,
+      { sourceScale: documentScale },
     ) as {
       panels: Array<{
         index: number;
@@ -366,17 +388,19 @@ async function extractChartProfiles(file: Blob) {
         bitmap.height - sourceBounds.y,
       );
 
-      const analysisScale = Math.min(
-        1,
-        1100 / sourceBounds.width,
-        720 / sourceBounds.height,
+      const analysisScale = boundedRasterScale(
+        sourceBounds.width,
+        sourceBounds.height,
+        1100,
+        720,
+        800_000,
       );
       const width = Math.max(
-        80,
+        1,
         Math.round(sourceBounds.width * analysisScale),
       );
       const height = Math.max(
-        60,
+        1,
         Math.round(sourceBounds.height * analysisScale),
       );
       const canvas = document.createElement("canvas");
@@ -388,6 +412,8 @@ async function extractChartProfiles(file: Blob) {
       if (!context) {
         throw new Error("이미지를 분석할 수 없는 브라우저입니다.");
       }
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
       context.fillStyle = "#ffffff";
       context.fillRect(0, 0, width, height);
       context.drawImage(
@@ -403,7 +429,13 @@ async function extractChartProfiles(file: Blob) {
       );
       const startedAt = performance.now();
       const pixels = context.getImageData(0, 0, width, height).data;
-      const foreground = buildForegroundMasks(pixels, width, height, 4);
+      const foreground = buildForegroundMasks(
+        pixels,
+        width,
+        height,
+        4,
+        { sourceScale: analysisScale },
+      );
       const extracted = analyzeForegroundMasks(
         foreground.broadMask,
         foreground.salientMask,
@@ -2388,7 +2420,9 @@ export function VthSearchApp() {
                 </span>
                 <strong>그래프를 놓거나 붙여넣으세요</strong>
                 <span>클릭하여 파일 선택 · Ctrl+V / ⌘V</span>
-                <small>PNG · JPG · WEBP / 최대 12MB · 한 장당 최대 24차트</small>
+                <small>
+                  PNG · JPG · WEBP / 무작위 배치·저해상도 / 최대 24차트
+                </small>
               </button>
             )}
           </div>

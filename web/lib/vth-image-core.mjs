@@ -82,8 +82,15 @@ function rgbHue(red, green, blue) {
  * @param {number} width
  * @param {number} height
  * @param {number} channels
+ * @param {{sourceScale?: number}} [options]
  */
-export function buildForegroundMasks(pixels, width, height, channels) {
+export function buildForegroundMasks(
+  pixels,
+  width,
+  height,
+  channels,
+  options = {},
+) {
   if (![3, 4].includes(channels)) {
     throw new Error("RGB 또는 RGBA 픽셀만 분석할 수 있습니다.");
   }
@@ -134,6 +141,22 @@ export function buildForegroundMasks(pixels, width, height, channels) {
   const salientMask = new Uint8Array(width * height);
   const curveSalientMask = new Uint8Array(width * height);
   const colorBins = Array(12).fill(null);
+  const sourceScale = Math.max(
+    1,
+    Math.min(4, Number(options.sourceScale) || 1),
+  );
+  const lowResolutionRecoveryStrength =
+    (sourceScale - 1) / 3;
+  const strictLuminanceMinimum = Math.round(
+    145 - 27 * lowResolutionRecoveryStrength,
+  );
+  const retrievalLuminanceMinimum = Math.round(
+    120 - 20 * lowResolutionRecoveryStrength,
+  );
+  const strictThresholdMultiplier =
+    2.4 - 0.22 * lowResolutionRecoveryStrength;
+  const retrievalThresholdMultiplier =
+    2.1 - 0.18 * lowResolutionRecoveryStrength;
   const backgroundLuminance =
     background[0] * 0.2126 +
     background[1] * 0.7152 +
@@ -171,9 +194,15 @@ export function buildForegroundMasks(pixels, width, height, channels) {
     }
     if (
       // Keep the established State-count decision stable by rejecting
-      // medium-gray grids and guides.
+      // medium-gray grids and guides. When the caller enlarged a genuinely
+      // low-resolution source, keep antialiased neutral Curve pixels that
+      // would otherwise disappear at the fixed high-resolution threshold.
       chromaticCurve ||
-      luminanceContrast >= Math.max(145, threshold * 2.4)
+      luminanceContrast >=
+        Math.max(
+          strictLuminanceMinimum,
+          threshold * strictThresholdMultiplier,
+        )
     ) {
       salientMask[index] = 1;
     }
@@ -181,7 +210,11 @@ export function buildForegroundMasks(pixels, width, height, channels) {
       // Retrieval also keeps a more inclusive high-contrast Curve hypothesis
       // so a neutral-gray last State survives JPEG, rotation and dense grids.
       chromaticCurve ||
-      luminanceContrast >= Math.max(120, threshold * 2.1)
+      luminanceContrast >=
+        Math.max(
+          retrievalLuminanceMinimum,
+          threshold * retrievalThresholdMultiplier,
+        )
     ) {
       curveSalientMask[index] = 1;
     }
@@ -199,7 +232,12 @@ export function buildForegroundMasks(pixels, width, height, channels) {
       .filter(
         (mask) =>
           mask.reduce((sum, value) => sum + value, 0) >=
-          Math.max(18, width * height * 0.00004),
+          Math.max(
+            Math.round(
+              18 - 10 * lowResolutionRecoveryStrength,
+            ),
+            width * height * 0.00004,
+          ),
       )
       .map((mask) => suppressMaskNoise(mask, width, height)),
     background,

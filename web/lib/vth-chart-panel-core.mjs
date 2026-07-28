@@ -86,6 +86,72 @@ function scanRuns(length, activeAt, maximumGap, minimumSpan) {
   return runs;
 }
 
+/**
+ * Repair only short horizontal/vertical gaps in a foreground mask.
+ *
+ * Low-resolution screenshots and JPEG thumbnails frequently turn a one-pixel
+ * chart frame into several short collinear runs. Closing only gaps bounded by
+ * foreground pixels preserves the original chart coordinates and avoids the
+ * broad dilation that would merge nearby, randomly positioned panels.
+ */
+export function repairLowResolutionLineMask(
+  mask,
+  width,
+  height,
+  options = {},
+) {
+  const maximumGap = clamp(
+    Math.round(
+      options.maximumGap ??
+        Math.min(width, height) * 0.012,
+    ),
+    2,
+    5,
+  );
+  const repaired = mask.slice();
+  let repairedPixelCount = 0;
+
+  const fillBoundedGaps = (length, indexAt) => {
+    let previousActive = -1;
+    for (let position = 0; position < length; position += 1) {
+      const index = indexAt(position);
+      if (!mask[index]) continue;
+      const gap = position - previousActive - 1;
+      if (
+        previousActive >= 0 &&
+        gap > 0 &&
+        gap <= maximumGap
+      ) {
+        for (
+          let fillPosition = previousActive + 1;
+          fillPosition < position;
+          fillPosition += 1
+        ) {
+          const fillIndex = indexAt(fillPosition);
+          if (!repaired[fillIndex]) {
+            repaired[fillIndex] = 1;
+            repairedPixelCount += 1;
+          }
+        }
+      }
+      previousActive = position;
+    }
+  };
+
+  for (let y = 0; y < height; y += 1) {
+    fillBoundedGaps(width, (x) => y * width + x);
+  }
+  for (let x = 0; x < width; x += 1) {
+    fillBoundedGaps(height, (y) => y * width + x);
+  }
+
+  return {
+    mask: repaired,
+    maximumGap,
+    repairedPixelCount,
+  };
+}
+
 function extractLineBands(
   mask,
   width,
@@ -96,7 +162,7 @@ function extractLineBands(
   const horizontal = orientation === "horizontal";
   const primaryLength = horizontal ? height : width;
   const secondaryLength = horizontal ? width : height;
-  const safeMinimumSpan = Math.max(18, Math.round(minimumSpan));
+  const safeMinimumSpan = Math.max(14, Math.round(minimumSpan));
   const maximumGap = Math.max(
     2,
     Math.round(secondaryLength * 0.006),
@@ -895,6 +961,8 @@ function selectHighestQualityPanels(candidates, width, height) {
  *   minimumPanelHeightRatio?: number;
  *   fallbackToWholeImage?: boolean;
  *   edgeEvidenceMask?: Uint8Array;
+ *   recoverLowResolution?: boolean;
+ *   maximumLineGap?: number;
  * }} [options]
  */
 export function detectChartPanelsFromMask(
@@ -916,7 +984,7 @@ export function detectChartPanelsFromMask(
     options.minimumPanelAreaRatio ??
     DEFAULT_MINIMUM_PANEL_AREA_RATIO;
   const minimumWidth = Math.max(
-    26,
+    20,
     Math.round(
       width *
         (options.minimumPanelWidthRatio ??
@@ -924,29 +992,50 @@ export function detectChartPanelsFromMask(
     ),
   );
   const minimumHeight = Math.max(
-    22,
+    16,
     Math.round(
       height *
         (options.minimumPanelHeightRatio ??
           DEFAULT_MINIMUM_PANEL_HEIGHT_RATIO),
     ),
   );
+  const recovered =
+    options.recoverLowResolution === false
+      ? {
+          mask,
+          maximumGap: 0,
+          repairedPixelCount: 0,
+        }
+      : repairLowResolutionLineMask(mask, width, height, {
+          maximumGap: options.maximumLineGap,
+        });
+  const workingMask = recovered.mask;
+  const edgeEvidenceMask = options.edgeEvidenceMask
+    ? repairLowResolutionLineMask(
+        options.edgeEvidenceMask,
+        width,
+        height,
+        {
+          maximumGap: Math.max(2, recovered.maximumGap - 1),
+        },
+      ).mask
+    : undefined;
   const horizontalLines = extractLineBands(
-    mask,
+    workingMask,
     width,
     height,
     "horizontal",
     minimumWidth,
   );
   const verticalLines = extractLineBands(
-    mask,
+    workingMask,
     width,
     height,
     "vertical",
     minimumHeight,
   );
   const rectangleCandidates = detectRectangleCandidates(
-    mask,
+    workingMask,
     width,
     height,
     horizontalLines,
@@ -955,7 +1044,7 @@ export function detectChartPanelsFromMask(
     minimumHeight,
   );
   const lAxisCandidates = detectLAxisCandidates(
-    mask,
+    workingMask,
     width,
     height,
     horizontalLines,
@@ -965,7 +1054,7 @@ export function detectChartPanelsFromMask(
   );
   const candidates = removeDuplicateAndGridCandidates(
     [...rectangleCandidates, ...lAxisCandidates],
-    options.edgeEvidenceMask,
+    edgeEvidenceMask,
     width,
     height,
   ).filter(
@@ -1005,6 +1094,11 @@ export function detectChartPanelsFromMask(
       detectedPanelCount: 0,
       truncated: false,
       maxPanels: MAXIMUM_CHART_PANELS,
+      lowResolutionRecovery: {
+        applied: recovered.repairedPixelCount > 0,
+        maximumGap: recovered.maximumGap,
+        repairedPixelCount: recovered.repairedPixelCount,
+      },
     };
   }
   const selected = selectHighestQualityPanels(
@@ -1019,6 +1113,11 @@ export function detectChartPanelsFromMask(
     detectedPanelCount: candidates.length,
     truncated: candidates.length > selected.length,
     maxPanels: MAXIMUM_CHART_PANELS,
+    lowResolutionRecovery: {
+      applied: recovered.repairedPixelCount > 0,
+      maximumGap: recovered.maximumGap,
+      repairedPixelCount: recovered.repairedPixelCount,
+    },
   };
 }
 
@@ -1033,6 +1132,7 @@ export function detectChartPanelsFromMask(
  * @param {number} width
  * @param {number} height
  * @param {3 | 4} [channels]
+ * @param {{sourceScale?: number; maximumLineGap?: number}} [options]
  * @returns {{
  *   panels: Array<{
  *     index: number;
@@ -1051,7 +1151,13 @@ export function detectChartPanelsFromMask(
  *   maxPanels: number;
  * }}
  */
-export function detectChartPanels(rgb, width, height, channels = 4) {
+export function detectChartPanels(
+  rgb,
+  width,
+  height,
+  channels = 4,
+  options = {},
+) {
   const pixelCount = width * height;
   const inferredChannels =
     rgb.length === pixelCount * channels
@@ -1069,9 +1175,13 @@ export function detectChartPanels(rgb, width, height, channels = 4) {
     width,
     height,
     inferredChannels,
+    {
+      sourceScale: options.sourceScale,
+    },
   );
   return detectChartPanelsFromMask(broadMask, width, height, {
     edgeEvidenceMask: salientMask,
+    maximumLineGap: options.maximumLineGap,
   });
 }
 

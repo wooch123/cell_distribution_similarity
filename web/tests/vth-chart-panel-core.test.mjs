@@ -8,6 +8,7 @@ import {
   cropInterleavedPixels,
   detectChartPanels,
   detectChartPanelsFromMask,
+  repairLowResolutionLineMask,
 } from "../lib/vth-chart-panel-core.mjs";
 
 const pptSample = decodePng(
@@ -74,6 +75,40 @@ function drawLabel(mask, width, left, top, textWidth) {
     drawLine(mask, width, x, top, x, top + 7, 1);
     if (glyph % 2 === 0) {
       drawLine(mask, width, x, top + 7, x + glyphWidth, top + 7);
+    }
+  }
+}
+
+function breakAxisRuns(
+  mask,
+  width,
+  height,
+  left,
+  top,
+  right,
+  bottom,
+  mode,
+) {
+  const clear = (x, y) => {
+    if (x < 0 || x >= width || y < 0 || y >= height) return;
+    mask[y * width + x] = 0;
+  };
+  for (let x = left + 7; x < right - 4; x += 13) {
+    for (let gap = 0; gap < 3; gap += 1) {
+      for (const y of mode === "rectangle"
+        ? [top, top + 1, bottom, bottom + 1]
+        : [bottom, bottom + 1]) {
+        clear(x + gap, y);
+      }
+    }
+  }
+  for (let y = top + 6; y < bottom - 4; y += 11) {
+    for (let gap = 0; gap < 3; gap += 1) {
+      for (const x of mode === "rectangle"
+        ? [left, left + 1, right, right + 1]
+        : [left, left + 1]) {
+        clear(x, y + gap);
+      }
     }
   }
 }
@@ -287,6 +322,87 @@ test("separates twelve staggered PPT charts with titles, labels, and gridlines",
   // A generous guard against accidentally reintroducing combinatorial
   // candidate matching for dense 4-column slides.
   assert.ok(elapsedMs < 1500, `detection took ${elapsedMs.toFixed(1)} ms`);
+});
+
+test("recovers ten low-resolution charts scattered at unrelated coordinates", () => {
+  const width = 420;
+  const height = 260;
+  const mask = new Uint8Array(width * height);
+  const charts = [
+    [8, 8, 90, 58, "rectangle"],
+    [130, 4, 213, 56, "l-axis"],
+    [284, 18, 412, 75, "rectangle"],
+    [35, 85, 111, 139, "l-axis"],
+    [165, 76, 258, 136, "rectangle"],
+    [304, 100, 396, 153, "l-axis"],
+    [6, 164, 99, 221, "rectangle"],
+    [126, 183, 213, 250, "l-axis"],
+    [244, 160, 327, 217, "rectangle"],
+    [340, 190, 414, 246, "rectangle"],
+  ];
+  const expectedCenters = [];
+
+  charts.forEach(([left, top, right, bottom, mode], index) => {
+    if (mode === "rectangle") {
+      drawFrame(mask, width, left, top, right, bottom);
+    } else {
+      drawLine(mask, width, left, top, left, bottom, 2);
+      drawLine(mask, width, left, bottom, right, bottom, 2);
+    }
+    breakAxisRuns(
+      mask,
+      width,
+      height,
+      left,
+      top,
+      right,
+      bottom,
+      mode,
+    );
+    drawCurve(
+      mask,
+      width,
+      left + 5,
+      top + 5,
+      right - 5,
+      bottom - 5,
+      index * 0.27,
+    );
+    expectedCenters.push({
+      x: (left + right) / 2,
+      y: (top + bottom) / 2,
+      mode,
+    });
+  });
+  drawLabel(mask, width, 225, 7, 38);
+  drawLabel(mask, width, 108, 151, 32);
+
+  const repaired = repairLowResolutionLineMask(
+    mask,
+    width,
+    height,
+  );
+  assert.ok(repaired.repairedPixelCount > 100);
+  assert.equal(repaired.maximumGap, 3);
+
+  const result = detectChartPanelsFromMask(mask, width, height);
+  assert.equal(result.fallbackUsed, false);
+  assert.equal(result.panels.length, charts.length);
+  assert.equal(result.detectedPanelCount, charts.length);
+  assert.equal(result.lowResolutionRecovery.applied, true);
+  assert.ok(
+    result.panels.some((panel) => panel.axisMode === "l-axis"),
+  );
+
+  for (const expected of expectedCenters) {
+    const match = result.panels.find(
+      (panel) =>
+        Math.abs(panel.x + panel.width / 2 - expected.x) <= 7 &&
+        Math.abs(panel.y + panel.height / 2 - expected.y) <= 7,
+    );
+    assert.ok(match, `missing scattered panel at ${expected.x},${expected.y}`);
+    assert.equal(match.axisMode, expected.mode);
+  }
 });
 
 test("keeps a dense 4 by 4 slide as sixteen panels instead of grid cells", () => {

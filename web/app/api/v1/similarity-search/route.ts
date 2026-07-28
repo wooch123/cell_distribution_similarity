@@ -129,7 +129,9 @@ export async function GET() {
     multiChart: {
       supported: true,
       ranking: "per-panel",
+      placement: "arbitrary-non-overlapping",
       readingOrder: "top-to-bottom-left-to-right",
+      lowResolutionRecovery: true,
       maxPanels: MAXIMUM_CHART_PANELS,
       overflowPolicy: "highest-confidence-then-reading-order",
     },

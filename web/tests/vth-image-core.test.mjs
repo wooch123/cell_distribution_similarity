@@ -650,6 +650,42 @@ test("builds identical broad and salience masks from RGB or RGBA pixels", () => 
   assert.equal(rgb.curveSalientMask[50 * width + 300], 1);
 });
 
+test("keeps antialiased neutral Curve pixels from an enlarged low-resolution source", () => {
+  const width = 120;
+  const height = 72;
+  const pixels = new Uint8Array(width * height * 3).fill(255);
+  for (let x = 12; x <= 108; x += 1) {
+    const y = Math.round(
+      48 - 18 * Math.sin(((x - 12) / 96) * Math.PI),
+    );
+    for (let offset = -1; offset <= 1; offset += 1) {
+      const pixelOffset = ((y + offset) * width + x) * 3;
+      pixels[pixelOffset] = 125;
+      pixels[pixelOffset + 1] = 125;
+      pixels[pixelOffset + 2] = 125;
+    }
+  }
+
+  const defaultMasks = buildForegroundMasks(
+    pixels,
+    width,
+    height,
+    3,
+  );
+  const recoveredMasks = buildForegroundMasks(
+    pixels,
+    width,
+    height,
+    3,
+    { sourceScale: 4 },
+  );
+  const curveIndex = 30 * width + 60;
+
+  assert.equal(defaultMasks.salientMask[curveIndex], 0);
+  assert.equal(recoveredMasks.salientMask[curveIndex], 1);
+  assert.equal(recoveredMasks.curveSalientMask[curveIndex], 1);
+});
+
 test("does not let an aggressive hypothesis flip a valid physical State count", () => {
   const primary = {
     stateCount: 4,

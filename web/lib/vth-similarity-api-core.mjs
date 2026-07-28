@@ -307,16 +307,27 @@ function resizeRgb(
   height,
   maximumWidth = 1100,
   maximumHeight = 720,
+  options = {},
 ) {
+  const maximumScale =
+    Math.min(width, height) <
+    (options.upscaleBelowDimension ?? 360)
+      ? options.maximumScale ?? 1
+      : 1;
   const scale = Math.min(
-    1,
+    maximumScale,
     maximumWidth / width,
     maximumHeight / height,
+    Math.sqrt(
+      (options.maximumPixels ??
+        maximumWidth * maximumHeight) /
+        Math.max(1, width * height),
+    ),
   );
-  const targetWidth = Math.max(80, Math.round(width * scale));
-  const targetHeight = Math.max(60, Math.round(height * scale));
+  const targetWidth = Math.max(1, Math.round(width * scale));
+  const targetHeight = Math.max(1, Math.round(height * scale));
   if (targetWidth === width && targetHeight === height) {
-    return { data: source, width, height };
+    return { data: source, width, height, scale: 1 };
   }
 
   const output = new Uint8Array(targetWidth * targetHeight * 3);
@@ -350,7 +361,12 @@ function resizeRgb(
       }
     }
   }
-  return { data: output, width: targetWidth, height: targetHeight };
+  return {
+    data: output,
+    width: targetWidth,
+    height: targetHeight,
+    scale,
+  };
 }
 
 async function decodeSimilarityImage(bytes, mimeType) {
@@ -387,7 +403,17 @@ async function decodeSimilarityImage(bytes, mimeType) {
     );
   }
 
-  const resized = resizeRgb(decoded.data, decoded.width, decoded.height);
+  const resized = resizeRgb(
+    decoded.data,
+    decoded.width,
+    decoded.height,
+    1600,
+    1200,
+    {
+      maximumScale: 4,
+      maximumPixels: 2_000_000,
+    },
+  );
   return {
     ...resized,
     sourceData: decoded.data,
@@ -396,12 +422,18 @@ async function decodeSimilarityImage(bytes, mimeType) {
   };
 }
 
-function analyzeSimilarityPixels(data, width, height) {
+function analyzeSimilarityPixels(
+  data,
+  width,
+  height,
+  sourceScale = 1,
+) {
   const foreground = buildForegroundMasks(
     data,
     width,
     height,
     3,
+    { sourceScale },
   );
   return analyzeForegroundMasks(
     foreground.broadMask,
@@ -419,6 +451,7 @@ export async function analyzeSimilarityImage(bytes, mimeType) {
     decoded.data,
     decoded.width,
     decoded.height,
+    decoded.scale,
   );
   return {
     ...analysis,
@@ -447,11 +480,16 @@ function sourceResolutionPanelPixels(decoded, sourceBounds) {
     sourceCrop.height,
     900,
     600,
+    {
+      maximumScale: 4,
+      maximumPixels: 540_000,
+    },
   );
   return {
     pixels: resized.data,
     width: resized.width,
     height: resized.height,
+    scale: resized.scale,
   };
 }
 
@@ -619,6 +657,7 @@ export async function searchSimilarityImage({
     decoded.width,
     decoded.height,
     3,
+    { sourceScale: decoded.scale },
   );
   // A single detected frame is deliberately analyzed as the complete image.
   // This preserves the established single-chart extraction, including titles
@@ -658,6 +697,7 @@ export async function searchSimilarityImage({
       cropped.pixels,
       cropped.width,
       cropped.height,
+      cropped.scale ?? decoded.scale,
     );
     const ranked = searchCorpus(
       analysis.profile,
