@@ -1,3 +1,5 @@
+import { descriptorFromProfile } from "./vth-shape-core.mjs";
+
 const VALID_STATE_COUNTS = new Set([2, 4, 8, 16]);
 
 function copyNumberArray(value, expectedLength = null) {
@@ -148,24 +150,35 @@ export function buildSharedTrainingApiPayload(
   if (!candidate?.learned || candidate.profile.length !== 256) {
     throw new Error("검증된 학습 후보가 필요합니다.");
   }
+  // Shared records use one canonical descriptor derived from the exact
+  // persisted profile. The UI may choose a regularized alternative State
+  // hypothesis for local search, which is valid locally but must not make the
+  // public payload internally contradictory.
+  const canonicalDescriptor = descriptorFromProfile(candidate.profile);
   return {
     schemaVersion: 2,
     label: candidate.label,
     profile: [...candidate.profile],
     descriptor: {
-      stateCount: candidate.stateCount,
+      stateCount: canonicalDescriptor.stateCount,
       observedStateCount:
-        descriptor?.observedStateCount ?? candidate.stateCount,
-      regularized: Boolean(descriptor?.regularized),
-      peakLocations: [...candidate.peakLocations],
-      peakWidths: [...candidate.peakWidths],
-      valleyHeights: [...candidate.valleyHeights],
-      valleyLocations: [...candidate.valleyLocations],
-      valleyDepths: [...candidate.valleyDepths],
-      valleyPositionRatios: [...candidate.valleyPositionRatios],
-      peakValleyDistances: [...candidate.peakValleyDistances],
-      tailSlopes: [...candidate.tailSlopes],
-      area: candidate.area,
+        descriptor?.observedStateCount ??
+        canonicalDescriptor.observedStateCount ??
+        canonicalDescriptor.stateCount,
+      regularized: Boolean(canonicalDescriptor.regularized),
+      peakLocations: [...canonicalDescriptor.peakLocations],
+      peakWidths: [...canonicalDescriptor.peakWidths],
+      valleyHeights: [...canonicalDescriptor.valleyHeights],
+      valleyLocations: [...canonicalDescriptor.valleyLocations],
+      valleyDepths: [...canonicalDescriptor.valleyDepths],
+      valleyPositionRatios: [
+        ...canonicalDescriptor.valleyPositionRatios,
+      ],
+      peakValleyDistances: [
+        ...canonicalDescriptor.peakValleyDistances,
+      ],
+      tailSlopes: [...canonicalDescriptor.tailSlopes],
+      area: canonicalDescriptor.area,
     },
     sharingConsent: true,
     consentVersion,

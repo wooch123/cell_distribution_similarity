@@ -54,7 +54,7 @@
       },
       "post": {
         "summary": "Share one browser-standardized VTH candidate and its sanitized source preview",
-        "description": "The caller must extract the 256-point Curve and re-encode the source graph as a metadata-free JPEG preview before calling. The server renders a separate axis-free standardized preview and stores both images so learned recommendations can show their source.",
+        "description": "The caller must extract the 256-point Curve and re-encode the source graph as a metadata-free JPEG preview before calling. Before storage, the server verifies one isolated distribution waveform and checks that its Curve provenance matches the submitted profile. It then replaces caller-controlled shape fields with a source-derived profile, canonical descriptor and State, and renders the stored axis-free standardized SVG from that authoritative Curve. The response candidate can therefore differ from the input profile, descriptor and State. Its deduplication fingerprint is recomputed internally from the canonical source-derived profile and State; callers cannot supply or override it. Small graph labels may remain in the displayed source preview but are excluded from the verified Curve. Both images are stored so learned recommendations can show their source.",
         "requestBody": {
           "required": true,
           "content": {
@@ -83,16 +83,25 @@
         },
         "responses": {
           "201": {
-            "description": "New shared candidate"
+            "description": "New shared candidate. Returned shape fields are source-derived canonical values and may differ from the request."
           },
           "200": {
-            "description": "Equivalent Curve already existed and was deduplicated"
+            "description": "Equivalent source-derived canonical Curve fingerprint already existed and was deduplicated"
           },
           "400": {
             "description": "Invalid Curve, descriptor, consent, token or source JPEG"
           },
+          "422": {
+            "description": "The source JPEG is not one isolated distribution waveform or does not match the submitted profile"
+          },
+          "413": {
+            "description": "Multipart request exceeds 4MB or the source JPEG exceeds 3MB"
+          },
           "429": {
             "description": "Daily contributor or global corpus limit reached"
+          },
+          "503": {
+            "description": "Waveform verification or shared D1/R2 storage is temporarily unavailable"
           }
         }
       }
@@ -302,7 +311,7 @@
           },
           "consentVersion": {
             "type": "string",
-            "const": "2026-07-27-v1"
+            "const": "2026-07-28-v2"
           },
           "contributorToken": {
             "type": "string",

@@ -351,6 +351,7 @@ async function extractChartProfiles(file: Blob) {
         width: number;
         height: number;
         confidence: number;
+        detectionReason: string;
         axisMode: "rectangle" | "l-axis" | "content";
       }>;
       layout: { rows: number; columns: number };
@@ -360,11 +361,19 @@ async function extractChartProfiles(file: Blob) {
       truncated: boolean;
       maxPanels: number;
     };
+    if (!detection.panels.length) {
+      throw new Error(
+        "분포 파형을 찾지 못했습니다. 텍스트·표·빈 좌표계·사각형 및 설명 도형은 검색과 학습에서 제외됩니다.",
+      );
+    }
     const multiplePanels = detection.panels.length > 1;
     const panels = [];
 
     for (const detectedPanel of detection.panels) {
-      const documentBounds = multiplePanels
+      const useDetectedBounds =
+        multiplePanels ||
+        detectedPanel.detectionReason !== "whole-image-fallback";
+      const documentBounds = useDetectedBounds
         ? {
             x: detectedPanel.x,
             y: detectedPanel.y,
@@ -491,7 +500,7 @@ async function extractChartProfiles(file: Blob) {
         };
       };
       let previewBlob: Blob = file;
-      if (multiplePanels) {
+      if (useDetectedBounds) {
         const previewScale = Math.min(
           1,
           1280 / sourceBounds.width,
@@ -2536,7 +2545,7 @@ export function VthSearchApp() {
                 <strong>그래프를 놓거나 붙여넣으세요</strong>
                 <span>클릭하여 파일 선택 · Ctrl+V / ⌘V</span>
                 <small>
-                  PNG · JPG · WEBP / 무작위 배치·저해상도·FHD 밀집 / 최대 30차트
+                  PNG · JPG · WEBP / 무작위 배치·저해상도·FHD 밀집 / 비차트 자동 제외 / 최대 30차트
                 </small>
               </button>
             )}
@@ -3382,7 +3391,7 @@ export function VthSearchApp() {
             <article>
               <span>01</span>
               <h2>프레임 정규화</h2>
-              <p>그래프 영역을 찾아 축, 눈금, 격자와 캡처 기울기를 제거합니다.</p>
+              <p>분포 파형만 찾아 텍스트, 표, 빈 좌표계와 설명 도형을 제외한 뒤 축·격자·기울기를 제거합니다.</p>
             </article>
             <article>
               <span>02</span>
@@ -3447,7 +3456,7 @@ export function VthSearchApp() {
           <span>유사 산포 검색</span>
         </div>
         <p>Shape-first retrieval for log-scale V-NAND distributions.</p>
-        <span>ENGINE V3.3 / 2·4·8·16-STATE · 30-PANEL MAX</span>
+        <span>ENGINE V3.4 / WAVEFORM-ONLY · 2·4·8·16-STATE · 30-PANEL MAX</span>
       </footer>
     </main>
   );

@@ -102,6 +102,134 @@ function twoPanelPng() {
   });
 }
 
+function nonDistributionCompositePng() {
+  const width = 640;
+  const height = 360;
+  const rgb = new Uint8Array(width * height * 3).fill(255);
+
+  // Dense table.
+  for (let column = 0; column <= 6; column += 1) {
+    const x = 24 + column * 48;
+    drawLine(rgb, width, height, x, 34, x, 178, 2);
+  }
+  for (let row = 0; row <= 4; row += 1) {
+    const y = 34 + row * 36;
+    drawLine(rgb, width, height, 24, y, 312, y, 2);
+  }
+
+  // Empty coordinate system with ticks but no distribution trace.
+  drawLine(rgb, width, height, 366, 34, 366, 178, 2);
+  drawLine(rgb, width, height, 366, 178, 612, 178, 2);
+  for (let index = 1; index <= 4; index += 1) {
+    const x = 366 + index * 48;
+    drawLine(rgb, width, height, x, 174, x, 182, 2);
+  }
+  for (let index = 1; index <= 3; index += 1) {
+    const y = 178 - index * 36;
+    drawLine(rgb, width, height, 362, y, 370, y, 2);
+  }
+
+  // Flow-chart boxes and straight connectors.
+  const boxes = [
+    [40, 232, 144, 304],
+    [258, 218, 382, 292],
+    [492, 238, 604, 316],
+  ];
+  for (const [left, top, right, bottom] of boxes) {
+    drawLine(rgb, width, height, left, top, right, top, 2);
+    drawLine(rgb, width, height, left, bottom, right, bottom, 2);
+    drawLine(rgb, width, height, left, top, left, bottom, 2);
+    drawLine(rgb, width, height, right, top, right, bottom, 2);
+    for (let line = 0; line < 3; line += 1) {
+      const y = top + 18 + line * 14;
+      drawLine(rgb, width, height, left + 16, y, right - 16, y, 2);
+    }
+  }
+  drawLine(rgb, width, height, 144, 268, 258, 255, 2);
+  drawLine(rgb, width, height, 382, 255, 492, 277, 2);
+
+  return encodePng({
+    width,
+    height,
+    data: rgb,
+    channels: 3,
+    depth: 8,
+  });
+}
+
+function singleDistributionWithDistractorsPng() {
+  const width = 760;
+  const height = 420;
+  const rgb = new Uint8Array(width * height * 3).fill(255);
+  const left = 24;
+  const top = 42;
+  const right = 364;
+  const bottom = 366;
+  drawLine(rgb, width, height, left, top, right, top, 2);
+  drawLine(rgb, width, height, left, bottom, right, bottom, 2);
+  drawLine(rgb, width, height, left, top, left, bottom, 2);
+  drawLine(rgb, width, height, right, top, right, bottom, 2);
+
+  let previous = null;
+  for (let x = left + 14; x <= right - 14; x += 1) {
+    const progress = (x - left - 14) / (right - left - 28);
+    const response = Math.max(
+      ...[0.13, 0.39, 0.64, 0.87].map((center) => {
+        const distance = (progress - center) / 0.07;
+        return Math.exp(-0.5 * distance * distance);
+      }),
+    );
+    const y = Math.round(bottom - 18 - response * 244);
+    if (previous) {
+      drawLine(
+        rgb,
+        width,
+        height,
+        previous.x,
+        previous.y,
+        x,
+        y,
+        2,
+      );
+    }
+    previous = { x, y };
+  }
+
+  // Explanatory table and card outside the real distribution panel.
+  for (let column = 0; column <= 5; column += 1) {
+    const x = 430 + column * 58;
+    drawLine(rgb, width, height, x, 48, x, 228, 2);
+  }
+  for (let row = 0; row <= 5; row += 1) {
+    const y = 48 + row * 36;
+    drawLine(rgb, width, height, 430, y, 720, y, 2);
+  }
+  drawLine(rgb, width, height, 450, 278, 710, 278, 2);
+  drawLine(rgb, width, height, 450, 370, 710, 370, 2);
+  drawLine(rgb, width, height, 450, 278, 450, 370, 2);
+  drawLine(rgb, width, height, 710, 278, 710, 370, 2);
+  for (let row = 0; row < 4; row += 1) {
+    drawLine(
+      rgb,
+      width,
+      height,
+      476,
+      298 + row * 16,
+      674 - row * 14,
+      298 + row * 16,
+      2,
+    );
+  }
+
+  return encodePng({
+    width,
+    height,
+    data: rgb,
+    channels: 3,
+    depth: 8,
+  });
+}
+
 function twelvePanelPng() {
   const width = 960;
   const height = 600;
@@ -325,6 +453,47 @@ test("searches the public corpus and returns ordered absolute-URL results", asyn
       );
     }
   }
+});
+
+test("rejects tables, empty axes, text-like rows, and diagram boxes without a distribution waveform", async () => {
+  await assert.rejects(
+    () =>
+      searchSimilarityImage({
+        bytes: nonDistributionCompositePng(),
+        mimeType: "image/png",
+        topK: 3,
+        corpus,
+        origin: "https://dove9999.com",
+      }),
+    (error) => {
+      assert.ok(error instanceof SimilarityApiError);
+      assert.equal(error.status, 422);
+      assert.equal(error.code, "distribution_waveform_not_found");
+      assert.match(error.message, /분포 파형/);
+      return true;
+    },
+  );
+});
+
+test("crops one valid distribution away from surrounding table and explanation content", async () => {
+  const response = await searchSimilarityImage({
+    bytes: singleDistributionWithDistractorsPng(),
+    mimeType: "image/png",
+    topK: 1,
+    corpus,
+    origin: "https://dove9999.com",
+  });
+
+  assert.equal(response.panelCount, 1);
+  assert.equal(response.panelDetection.fallbackUsed, false);
+  assert.ok(response.panelDetection.rejectedNonChartCount >= 1);
+  assert.notEqual(
+    response.panels[0].detectionReason,
+    "whole-image-fallback",
+  );
+  assert.ok(response.panels[0].bounds.normalized.width < 0.6);
+  assert.ok(response.panels[0].bounds.normalized.x < 0.1);
+  assert.equal(response.panels[0].results.length, 1);
 });
 
 test("separates a multi-chart image and ranks every chart independently", async () => {

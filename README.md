@@ -34,8 +34,11 @@ PNG/JPEG/WEBP 로그 스케일 VTH 그래프를 파일 선택, 끌어놓기 또�
 축·격자·라벨 제거와 비정규 Curve 선택을 독립 실행하고 화면 탭에서 별도
 검색 결과를 보여줍니다. 화면·여러 파일·폴더 학습에서도 분리된 차트마다
 독립 후보와 크롭 원본 미리보기를 저장합니다. 축 모양의 사각형이 있더라도
-내부에 연속된 분포 Curve가 없으면 표·플로우차트·사진 영역으로 판정해
-제외하고, API는 제외 건수를 `rejectedNonChartCount`로 반환합니다.
+내부에 연속성·곡률·수직 변화와 peak/tail 근거를 갖춘 분포 파형이 없으면
+설명 텍스트·표·빈 좌표계·사각형·순서도·사진 영역으로 판정해 검색과
+학습에서 제외합니다. API는 제외 건수를 `rejectedNonChartCount`로
+반환하며 이미지 전체에 유효한 분포 파형이 없으면
+`422 distribution_waveform_not_found`를 반환합니다.
 PPT 카드 안에 플롯이 들어 있는 경우에는 실제 내부 플롯의 경계 증거를
 우선하며, 패널 위치 검출 후 원본 해상도 크롭에서 Curve를 다시 분석합니다.
 FHD 1920×1080 입력은 축소하지 않아 3–4px의 좁은 차트 간격과 가는
@@ -56,7 +59,7 @@ descriptor, 파일명·메타데이터를 제거하고 JPEG로 다시 만든 원
 
 ## Windows 무설치판과 Ubuntu 외부 Web 서버판
 
-`artifacts/windows/vth-similarity-windows-x64-v1.33.0.zip`은 공식
+`artifacts/windows/vth-similarity-windows-x64-v1.34.0.zip`은 공식
 Windows x64 Node 런타임, 웹 빌드, 로컬 학습 API를 함께 담습니다. 다른
 Windows PC에서 압축을 푼 뒤 `start.bat`을 실행하면 설치 없이
 `http://127.0.0.1:4173`에서 동작합니다. 코퍼스, 모델, 웹 화면, 런타임이
@@ -103,9 +106,9 @@ Node.js나 npm을 설치하지 않고 `.tar.gz`를 풀어 `./start.sh`를 실행
 `data/` 학습 저장소와 추천 후보를 공유하지만 외부 공용 서버로 원본이나
 학습 데이터를 전송하지 않습니다.
 
-v1.33.0 웹 배포는
-`/downloads/windows-package-v1.33.0.json`과
-`/downloads/ubuntu-package-v1.33.0.json`을 고정 매니페스트 경로로
+v1.34.0 웹 배포는
+`/downloads/windows-package-v1.34.0.json`과
+`/downloads/ubuntu-package-v1.34.0.json`을 고정 매니페스트 경로로
 사용합니다. 두 매니페스트 모두 schema-v1 `browser-assembled` 계약과
 SHA-256 조각 목록을 제공하며 브라우저는 각 조각과 완성 파일을 검증한 뒤
 저장합니다. Windows 결과물은 ZIP이고 Ubuntu는

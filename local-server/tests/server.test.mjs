@@ -12,6 +12,7 @@ import {
   parseArguments,
   startVthServer,
 } from "../server.mjs";
+import { nonDistributionPng } from "../non-distribution-fixture.mjs";
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(testDirectory, "../..");
@@ -23,28 +24,68 @@ const tinyPng = Buffer.from(
 const demoQuery = await readFile(
   path.join(projectRoot, "web", "public", "demo-query.png"),
 );
+const corpus = JSON.parse(
+  await readFile(
+    path.join(projectRoot, "web", "public", "corpus-index.json"),
+    "utf8",
+  ),
+);
+const trainingCandidate = corpus.candidates.find(
+  (candidate) => candidate.id === "vnand-fault-001",
+);
+assert.ok(trainingCandidate);
+const trainingSourcePng = await readFile(
+  path.join(
+    projectRoot,
+    "web",
+    "public",
+    trainingCandidate.image.replace(/^\/+/, ""),
+  ),
+);
+const sameStateSourceCandidate = corpus.candidates.find(
+  (candidate) => candidate.id === "vth-08s-s0042-00000",
+);
+const sameStateWrongCandidate = corpus.candidates.find(
+  (candidate) => candidate.id === "vth-08s-s0042-00003",
+);
+assert.ok(sameStateSourceCandidate);
+assert.ok(sameStateWrongCandidate);
+const sameStateSourcePng = await readFile(
+  path.join(
+    projectRoot,
+    "web",
+    "public",
+    sameStateSourceCandidate.image.replace(/^\/+/, ""),
+  ),
+);
 
-function trainingPayload(id = "sample-1") {
+function trainingPayload(
+  id = "sample-1",
+  {
+    candidate = trainingCandidate,
+    sourcePng = trainingSourcePng,
+  } = {},
+) {
   return {
     schemaVersion: 2,
     id,
     label: "Retention sample",
     imageDataUrl: `data:image/png;base64,${tinyPng.toString("base64")}`,
-    sourceImageDataUrl: `data:image/png;base64,${tinyPng.toString("base64")}`,
-    profile: Array.from({ length: 256 }, (_, index) => index / 255),
+    sourceImageDataUrl: `data:image/png;base64,${sourcePng.toString("base64")}`,
+    profile: candidate.profile,
     descriptor: {
-      stateCount: 8,
-      observedStateCount: 8,
-      regularized: false,
-      peakLocations: [0.1, 0.2],
-      peakWidths: [0.04, 0.05],
-      valleyHeights: [0.8],
-      valleyLocations: [0.15],
-      valleyDepths: [0.12],
-      valleyPositionRatios: [0.5],
-      peakValleyDistances: [0.05, 0.05],
-      tailSlopes: [0.02, 0.02],
-      area: 0.73,
+      stateCount: candidate.stateCount,
+      observedStateCount: candidate.observedStateCount,
+      regularized: candidate.regularized,
+      peakLocations: candidate.peakLocations,
+      peakWidths: candidate.peakWidths,
+      valleyHeights: candidate.valleyHeights,
+      valleyLocations: candidate.valleyLocations,
+      valleyDepths: candidate.valleyDepths,
+      valleyPositionRatios: candidate.valleyPositionRatios,
+      peakValleyDistances: candidate.peakValleyDistances,
+      tailSlopes: candidate.tailSlopes,
+      area: candidate.area,
     },
     metadata: {
       learnedAt: "2026-07-27T00:00:00.000Z",
@@ -235,6 +276,10 @@ test("serves the web app and persists ready and pending training images", async 
     assert.equal(createdPayload.sample.status, "ready");
     assert.equal(createdPayload.sample.profile.length, 256);
     assert.equal(
+      createdPayload.sample.metadata.authoritativeSourceProfile,
+      true,
+    );
+    assert.equal(
       createdPayload.sample.sourceImage,
       "/api/v1/training-samples/sample-1/source-image",
     );
@@ -243,14 +288,28 @@ test("serves the web app and persists ready and pending training images", async 
       `${running.baseUrl}/api/v1/training-samples/sample-1/image`,
     );
     assert.equal(image.status, 200);
-    assert.equal(image.headers.get("content-type"), "image/png");
-    assert.deepEqual(Buffer.from(await image.arrayBuffer()), tinyPng);
+    assert.equal(
+      image.headers.get("content-type"),
+      "image/svg+xml",
+    );
+    const standardizedImage = await image.text();
+    assert.match(standardizedImage, /^<\?xml/);
+    assert.match(standardizedImage, /<polyline points="/);
+    assert.equal(
+      standardizedImage.includes(
+        tinyPng.toString("base64"),
+      ),
+      false,
+    );
     const sourceImage = await fetch(
       `${running.baseUrl}/api/v1/training-samples/sample-1/source-image`,
     );
     assert.equal(sourceImage.status, 200);
     assert.equal(sourceImage.headers.get("content-type"), "image/png");
-    assert.deepEqual(Buffer.from(await sourceImage.arrayBuffer()), tinyPng);
+    assert.deepEqual(
+      Buffer.from(await sourceImage.arrayBuffer()),
+      trainingSourcePng,
+    );
 
     const pending = await fetch(
       `${running.baseUrl}/api/v1/training-images?id=pending-1&label=Raw`,
@@ -286,6 +345,85 @@ test("serves the web app and persists ready and pending training images", async 
       { method: "DELETE" },
     );
     assert.equal(removed.status, 200);
+  } finally {
+    await running.close();
+  }
+});
+
+test("rejects unverified ready sources while preserving raw pending ingestion", async () => {
+  const running = await startServer();
+  try {
+    const nonDistribution = nonDistributionPng();
+    const invalidReady = trainingPayload("non-waveform-ready");
+    invalidReady.sourceImageDataUrl =
+      `data:image/png;base64,${nonDistribution.toString("base64")}`;
+
+    for (const endpoint of [
+      "/api/v1/training-samples",
+      "/api/v1/training-images",
+    ]) {
+      const response = await fetch(`${running.baseUrl}${endpoint}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(invalidReady),
+      });
+      assert.equal(response.status, 422);
+      const payload = await response.json();
+      assert.equal(
+        payload.error.code,
+        "distribution_waveform_not_found",
+      );
+      assert.match(payload.error.message, /분포 파형/);
+    }
+
+    const sameStatePoison = trainingPayload(
+      "same-state-profile-poison",
+      {
+        candidate: sameStateWrongCandidate,
+        sourcePng: sameStateSourcePng,
+      },
+    );
+    const poisonedResponse = await fetch(
+      `${running.baseUrl}/api/v1/training-samples`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(sameStatePoison),
+      },
+    );
+    assert.equal(poisonedResponse.status, 422);
+    const poisonedPayload = await poisonedResponse.json();
+    assert.equal(
+      poisonedPayload.error.code,
+      "training_profile_image_mismatch",
+    );
+
+    const pending = await fetch(
+      `${running.baseUrl}/api/v1/training-images?id=raw-non-waveform`,
+      {
+        method: "POST",
+        headers: { "content-type": "image/png" },
+        body: nonDistribution,
+      },
+    );
+    assert.equal(pending.status, 202);
+    const pendingPayload = await pending.json();
+    assert.equal(pendingPayload.sample.status, "pending");
+
+    const ready = await fetch(
+      `${running.baseUrl}/api/v1/training-samples`,
+    ).then((response) => response.json());
+    assert.deepEqual(ready.samples, []);
+    const all = await fetch(
+      `${running.baseUrl}/api/v1/training-samples?includePending=1`,
+    ).then((response) => response.json());
+    assert.deepEqual(
+      all.samples.map((sample) => [
+        sample.id,
+        sample.status,
+      ]),
+      [["raw-non-waveform", "pending"]],
+    );
   } finally {
     await running.close();
   }
@@ -482,6 +620,26 @@ test("protects network-bound training data with a bootstrap cookie", async () =>
     assert.ok(
       openApi.paths["/api/v1/training-samples"].get.responses["401"],
     );
+    assert.ok(
+      openApi.paths["/api/v1/training-samples"].post.responses["422"],
+    );
+    assert.ok(
+      openApi.paths["/api/v1/training-images"].post.responses["422"],
+    );
+    for (const pathName of [
+      "/api/v1/training-samples",
+      "/api/v1/training-images",
+    ]) {
+      const responses =
+        openApi.paths[pathName].post.responses;
+      for (const status of ["400", "413", "415"]) {
+        assert.ok(
+          responses[status],
+          `${pathName} must document response ${status}`,
+        );
+        assert.ok(responses[status].description);
+      }
+    }
     const panelContract =
       openApi.components.schemas.SimilaritySearchResponse.properties;
     assert.equal(panelContract.panelCount.maximum, 30);

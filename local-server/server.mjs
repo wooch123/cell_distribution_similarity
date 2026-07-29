@@ -521,7 +521,21 @@ export async function createVthServer(options = {}) {
   const siteDirectory = path.resolve(
     options.siteDirectory ?? path.join(rootDirectory, "site"),
   );
-  const store = await new TrainingStore(dataDirectory).initialize();
+  const store = await new TrainingStore(dataDirectory, {
+    validateReadyImage: async (input) => {
+      const engine = await loadSimilarityEngine();
+      if (typeof engine.validateTrainingWaveformImage !== "function") {
+        throw Object.assign(
+          new Error("학습 원본 파형 검증기가 준비되지 않았습니다."),
+          {
+            status: 503,
+            code: "waveform_validator_unavailable",
+          },
+        );
+      }
+      return engine.validateTrainingWaveformImage(input);
+    },
+  }).initialize();
   const corpus = JSON.parse(
     await readFile(path.join(siteDirectory, "client", "corpus-index.json"), "utf8"),
   );
@@ -753,6 +767,23 @@ export async function createVthServer(options = {}) {
       });
     }
     if (method === "POST" && pathName === "/api/v1/training-samples") {
+      const contentType = String(
+        nodeRequest.headers["content-type"] || "",
+      )
+        .split(";")[0]
+        .trim()
+        .toLowerCase();
+      if (contentType !== "application/json") {
+        throw Object.assign(
+          new Error(
+            "Content-Type은 application/json이어야 합니다.",
+          ),
+          {
+            status: 415,
+            code: "unsupported_media_type",
+          },
+        );
+      }
       const body = await readNodeBody(nodeRequest, JSON_BODY_LIMIT);
       const record = await store.upsertReady(JSON.parse(body.toString("utf8")));
       return jsonResponse({ sample: record }, 201);
@@ -782,8 +813,14 @@ export async function createVthServer(options = {}) {
         return jsonResponse({ sample: record }, 202);
       }
       if (!["image/png", "image/jpeg", "image/webp"].includes(contentType)) {
-        throw new Error(
-          "Content-Type은 image/png, image/jpeg, image/webp 또는 application/json이어야 합니다.",
+        throw Object.assign(
+          new Error(
+            "Content-Type은 image/png, image/jpeg, image/webp 또는 application/json이어야 합니다.",
+          ),
+          {
+            status: 415,
+            code: "unsupported_media_type",
+          },
         );
       }
       const bytes = await readNodeBody(nodeRequest, MAX_IMAGE_BYTES);

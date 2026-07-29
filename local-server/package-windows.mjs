@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(moduleDirectory, "..");
-const version = "1.33.0";
+const version = "1.34.0";
 const packageName = `vth-similarity-windows-x64-v${version}`;
 const artifactsDirectory = path.join(projectRoot, "artifacts", "windows");
 const cacheDirectory = path.join(artifactsDirectory, "cache");

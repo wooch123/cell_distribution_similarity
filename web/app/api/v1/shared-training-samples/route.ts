@@ -8,7 +8,12 @@ import {
   sharedApiJson,
   sharedApiOptions,
 } from "../../../../lib/vth-shared-api";
-import { MAX_SHARED_SOURCE_IMAGE_BYTES } from "../../../../lib/vth-shared-training-core.mjs";
+import { validateTrainingWaveformImage } from "../../../../lib/vth-similarity-api-core.mjs";
+import {
+  MAX_SHARED_SOURCE_IMAGE_BYTES,
+  validateSharedTrainingPayload,
+} from "../../../../lib/vth-shared-training-core.mjs";
+import { descriptorFromProfile } from "../../../../lib/vth-shape-core.mjs";
 
 const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 
@@ -86,9 +91,28 @@ export async function POST(request: Request) {
     ) {
       throw new Error("원본 미리보기의 JPEG 데이터가 올바르지 않습니다.");
     }
+    const parsedPayload = JSON.parse(payloadPart);
+    const normalizedPayload =
+      validateSharedTrainingPayload(parsedPayload);
+    const verification = await validateTrainingWaveformImage({
+      bytes: sourceBytes,
+      mimeType: "image/jpeg",
+      profile: normalizedPayload.profile,
+      stateCount: normalizedPayload.descriptor.stateCount,
+    });
+    const authoritativeProfile =
+      verification.authoritativeProfile;
+    const authoritativePayload = {
+      ...parsedPayload,
+      profile: authoritativeProfile,
+      descriptor: descriptorFromProfile(authoritativeProfile),
+    };
+    // Keep identity/consent fields from the request, but make every
+    // searchable shape field server-derived from the accepted source.
+    validateSharedTrainingPayload(authoritativePayload);
     const url = new URL(request.url);
     const result = await createSharedTrainingCandidate(
-      JSON.parse(payloadPart),
+      authoritativePayload,
       url.origin,
       request.headers.get("cf-connecting-ip") || "",
       { bytes: sourceBytes, mimeType: "image/jpeg" },

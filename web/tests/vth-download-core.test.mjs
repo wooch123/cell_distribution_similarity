@@ -20,7 +20,7 @@ function fixture({
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const manifest = {
     schemaVersion: 1,
-    version: "1.33.0",
+    version: "1.34.0",
     fileName,
     delivery: "browser-assembled",
     bytes: bytes.length,
@@ -49,12 +49,12 @@ function fixture({
   return { bytes, fetchImpl, manifest, requests };
 }
 
-test("assembles the Windows v1.33.0 ZIP from its default manifest", async () => {
+test("assembles the Windows v1.34.0 ZIP from its default manifest", async () => {
   const sample = fixture({
     fileName: "vth-similarity-windows-x64.zip",
-    manifestPath: "/downloads/windows-package-v1.33.0.json",
+    manifestPath: "/downloads/windows-package-v1.34.0.json",
     partPath:
-      "/downloads/chunks/vth-similarity-windows-x64-v1.33.0.zip.part-000",
+      "/downloads/chunks/vth-similarity-windows-x64-v1.34.0.zip.part-000",
   });
 
   const result = await assembleWindowsPackage({
@@ -63,7 +63,7 @@ test("assembles the Windows v1.33.0 ZIP from its default manifest", async () => 
 
   assert.equal(
     result.fileName,
-    "vth-similarity-windows-x64-v1.33.0.zip",
+    "vth-similarity-windows-x64-v1.34.0.zip",
   );
   assert.equal(result.blob.type, "application/zip");
   assert.deepEqual(
@@ -71,17 +71,17 @@ test("assembles the Windows v1.33.0 ZIP from its default manifest", async () => 
     sample.bytes,
   );
   assert.deepEqual(sample.requests, [
-    "/downloads/windows-package-v1.33.0.json",
+    "/downloads/windows-package-v1.34.0.json",
     sample.manifest.parts[0].path,
   ]);
 });
 
-test("preserves the Ubuntu tar.gz format declared by its v1.33.0 manifest", async () => {
+test("preserves the Ubuntu tar.gz format declared by its v1.34.0 manifest", async () => {
   const sample = fixture({
     fileName: "vth-similarity-ubuntu-x64.tar.gz",
-    manifestPath: "/downloads/ubuntu-package-v1.33.0.json",
+    manifestPath: "/downloads/ubuntu-package-v1.34.0.json",
     partPath:
-      "/downloads/chunks/vth-similarity-ubuntu-x64-v1.33.0.tar.gz.part-000",
+      "/downloads/chunks/vth-similarity-ubuntu-x64-v1.34.0.tar.gz.part-000",
   });
 
   const result = await assembleUbuntuPackage({
@@ -90,7 +90,7 @@ test("preserves the Ubuntu tar.gz format declared by its v1.33.0 manifest", asyn
 
   assert.equal(
     result.fileName,
-    "vth-similarity-ubuntu-x64-v1.33.0.tar.gz",
+    "vth-similarity-ubuntu-x64-v1.34.0.tar.gz",
   );
   assert.equal(result.blob.type, "application/gzip");
   assert.deepEqual(
@@ -98,7 +98,7 @@ test("preserves the Ubuntu tar.gz format declared by its v1.33.0 manifest", asyn
     sample.bytes,
   );
   assert.deepEqual(sample.requests, [
-    "/downloads/ubuntu-package-v1.33.0.json",
+    "/downloads/ubuntu-package-v1.34.0.json",
     sample.manifest.parts[0].path,
   ]);
 });
@@ -106,9 +106,9 @@ test("preserves the Ubuntu tar.gz format declared by its v1.33.0 manifest", asyn
 test("rejects an Ubuntu manifest that names another platform package", async () => {
   const sample = fixture({
     fileName: "vth-similarity-windows-x64.zip",
-    manifestPath: "/downloads/ubuntu-package-v1.33.0.json",
+    manifestPath: "/downloads/ubuntu-package-v1.34.0.json",
     partPath:
-      "/downloads/chunks/vth-similarity-windows-x64-v1.33.0.zip.part-000",
+      "/downloads/chunks/vth-similarity-windows-x64-v1.34.0.zip.part-000",
   });
 
   await assert.rejects(

@@ -11,6 +11,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { nonDistributionPng } from "./non-distribution-fixture.mjs";
+
 function run(command, args) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -195,6 +197,20 @@ async function verifyService(packageDirectory, validationDirectory) {
         candidate.image.replace(/^\/+/, ""),
       ),
     );
+    const packagedEngine = await import(
+      `${pathToFileURL(
+        path.join(
+          packageDirectory,
+          "server",
+          "similarity-engine.mjs",
+        ),
+      ).href}?package-verification=${Date.now()}`
+    );
+    const authoritativeAnalysis =
+      await packagedEngine.analyzeSimilarityImage(
+        imageBytes,
+        "image/png",
+      );
 
     const similarityResponse = await fetch(
       `${baseUrl}/api/v1/similarity-search?topK=3`,
@@ -224,6 +240,21 @@ async function verifyService(packageDirectory, validationDirectory) {
             result.imageUrl.startsWith(baseUrl),
         ),
       "Packaged similarity ranking or image URLs are invalid.",
+    );
+    const nonDistributionResponse = await fetch(
+      `${baseUrl}/api/v1/similarity-search?topK=1`,
+      {
+        method: "POST",
+        headers: { "content-type": "image/png" },
+        body: nonDistributionPng(),
+      },
+    );
+    const nonDistribution = await nonDistributionResponse.json();
+    assert(
+      nonDistributionResponse.status === 422 &&
+        nonDistribution.error?.code ===
+          "distribution_waveform_not_found",
+      "Packaged API did not reject table and diagram-only content.",
     );
     assert(
       similarity.results[0].score >= similarity.results[1].score &&
@@ -426,23 +457,20 @@ async function verifyService(packageDirectory, validationDirectory) {
           label: "Package verification",
           imageDataUrl: `data:image/png;base64,${imageBytes.toString("base64")}`,
           sourceImageDataUrl: `data:image/png;base64,${imageBytes.toString("base64")}`,
-          profile: candidate.profile,
+          profile: authoritativeAnalysis.profile,
           descriptor: {
-            stateCount: candidate.stateCount,
-            peakLocations: candidate.peakLocations,
-            peakWidths: candidate.peakWidths,
-            valleyHeights: candidate.valleyHeights,
-            valleyLocations: candidate.valleyLocations,
-            valleyDepths: candidate.valleyDepths,
-            valleyPositionRatios: candidate.valleyPositionRatios,
-            peakValleyDistances: candidate.peakValleyDistances,
-            tailSlopes: candidate.tailSlopes,
-            area: candidate.area,
+            ...authoritativeAnalysis.descriptor,
           },
         }),
       },
     );
-    assert(readyResponse.status === 201, "Ready sample API did not return 201.");
+    const readyPayload = await readyResponse.json();
+    assert(
+      readyResponse.status === 201,
+      `Ready sample API did not return 201: ${
+        readyPayload?.error?.message || readyResponse.status
+      }`,
+    );
 
     const listResponse = await fetch(`${baseUrl}/api/v1/training-samples`);
     const list = await listResponse.json();
@@ -454,6 +482,32 @@ async function verifyService(packageDirectory, validationDirectory) {
       (sample) => sample.id === "package-ready",
     );
     assert(readySample?.sourceImage, "Ready sample source image is missing.");
+    assert(
+      readySample?.mimeType === "image/svg+xml" &&
+        readySample?.metadata?.authoritativeSourceProfile === true,
+      "Ready sample did not persist its source-derived standardized Curve.",
+    );
+    assert(
+      readySample.profile.length ===
+        authoritativeAnalysis.profile.length &&
+        readySample.profile.every(
+          (value, index) =>
+            Math.abs(
+              value - authoritativeAnalysis.profile[index],
+            ) < 1e-9,
+        ),
+      "Ready sample profile is not authoritative to its source image.",
+    );
+    const standardizedImageResponse = await fetch(
+      `${baseUrl}${readySample.image}`,
+    );
+    assert(
+      standardizedImageResponse.status === 200 &&
+        standardizedImageResponse.headers
+          .get("content-type")
+          ?.startsWith("image/svg+xml"),
+      "Ready sample standardized SVG is not served.",
+    );
     const sourceImageResponse = await fetch(`${baseUrl}${readySample.sourceImage}`);
     assert(
       sourceImageResponse.status === 200,
@@ -565,7 +619,7 @@ async function main() {
       ),
     );
     assert(
-      manifest.version === "1.33.0" &&
+      manifest.version === "1.34.0" &&
         manifest.platform === "windows-x64" &&
         manifest.network?.mode === "offline-loopback-only" &&
         manifest.network?.externalNetworkAllowed === false &&

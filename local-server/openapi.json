@@ -36,7 +36,7 @@
       },
       "post": {
         "summary": "Return ranked VTH shape matches for every chart in one PNG or JPEG image",
-        "description": "Charts at different coordinates are detected, cropped, and ranked independently in reading order. The legacy top-level query/results mirror panel 0. The query image is processed in memory only and is not saved or used for training. Results include normalized score components and request-origin URLs for the standardized curve and, when available, its original source preview. Authentication is required when VTH_API_KEY is configured or the service is bound to a non-loopback host.",
+        "description": "Charts at different coordinates are detected, cropped, and ranked independently in reading order. Text, tables, empty axes, rectangles, and explanatory diagrams without a coherent distribution waveform are excluded; a request with no distribution waveform returns 422 distribution_waveform_not_found. The legacy top-level query/results mirror panel 0. The query image is processed in memory only and is not saved or used for training. Results include normalized score components and request-origin URLs for the standardized curve and, when available, its original source preview. Authentication is required when VTH_API_KEY is configured or the service is bound to a non-loopback host.",
         "security": [
           {},
           {
@@ -136,7 +136,7 @@
             "description": "Only PNG and JPEG are supported"
           },
           "422": {
-            "description": "The declared image is malformed or cannot be decoded"
+            "description": "The image is malformed, cannot be decoded, or contains no coherent VTH distribution waveform after non-chart rejection"
           },
           "500": {
             "description": "Unexpected similarity-processing failure"
@@ -190,7 +190,7 @@
         }
       },
       "post": {
-        "summary": "Add an image with a 256-point profile and descriptor",
+        "summary": "Verify a source waveform and add a server-authoritative learned sample",
         "security": [
           {},
           {
@@ -215,7 +215,22 @@
         },
         "responses": {
           "201": {
-            "description": "Immediately search-ready sample"
+            "description": "Immediately search-ready sample whose profile, descriptor, State, and standardized SVG were regenerated from sourceImageDataUrl"
+          },
+          "400": {
+            "description": "Malformed JSON, profile, descriptor, ID, image data URL, or missing sourceImageDataUrl"
+          },
+          "413": {
+            "description": "JSON request exceeds 20MB or a decoded training image exceeds 12MB"
+          },
+          "415": {
+            "description": "Content-Type must be application/json"
+          },
+          "422": {
+            "description": "The source image is not one isolated distribution waveform or does not match the submitted profile"
+          },
+          "503": {
+            "description": "The source-authoritative waveform validator is unavailable"
           },
           "401": {
             "description": "A configured or automatically generated API key is required"
@@ -287,6 +302,21 @@
           },
           "201": {
             "description": "Search-ready when profile and descriptor are also provided"
+          },
+          "400": {
+            "description": "Malformed JSON, image data URL, profile, descriptor, ID, or ready-mode sourceImageDataUrl"
+          },
+          "413": {
+            "description": "Request body exceeds 12MB for raw images or 20MB for JSON, or a decoded image exceeds 12MB"
+          },
+          "415": {
+            "description": "Content-Type must be image/png, image/jpeg, image/webp, or application/json"
+          },
+          "422": {
+            "description": "Ready-mode source image is not one isolated distribution waveform or does not match the submitted profile. Raw image-only uploads remain pending."
+          },
+          "503": {
+            "description": "The source-authoritative waveform validator is unavailable for JSON ready mode"
           },
           "401": {
             "description": "A configured or automatically generated API key is required"
@@ -691,11 +721,12 @@
             "type": "string"
           },
           "imageDataUrl": {
-            "type": "string"
+            "type": "string",
+            "description": "Compatibility input only. The server discards this caller-controlled preview and generates the stored standardized SVG from the verified source waveform."
           },
           "sourceImageDataUrl": {
             "type": "string",
-            "description": "Metadata-free original preview shown beside the standardized Curve when recommended."
+            "description": "Required PNG/JPEG provenance preview. Ready ingestion verifies one isolated distribution waveform, then stores a server-derived profile, descriptor, State, and standardized SVG from this source; raw image-only uploads remain pending."
           },
           "profile": {
             "type": "array",

@@ -18,10 +18,13 @@
 좌표로 환산해 크롭·검색·학습합니다. 기존 연동을 위해 최상위 `query`와
 `results`는 첫 번째 패널을 그대로 가리킵니다. FHD 한 이미지당 최대
 30개를 분석하며, 초과 시 신뢰도가 높은 30개를 선택하고
-`panelDetection.truncated`로 알립니다. 프레임 후보 안에 긴 수평 Curve,
-충분한 y 변화량과 연속 경로가 함께 있는지도 검사해 표, 플로우차트, 사진
-영역은 검색 패널에서 제외하며 제외 수는
-`panelDetection.rejectedNonChartCount`로 반환합니다.
+`panelDetection.truncated`로 알립니다. 프레임 후보 안에서 연속 경로,
+직선으로 설명되지 않는 곡률, 충분한 y 변화량과 rounded peak/tail 근거를
+함께 검사합니다. 설명 텍스트, 표·격자, 빈 좌표계, 사각형과 순서도 같은
+설명 도형은 검색·학습 패널에서 제외하며 제외 수는
+`panelDetection.rejectedNonChartCount`로 반환합니다. 이미지 전체에
+유효한 분포 파형이 없으면 API는
+`422 distribution_waveform_not_found`를 반환합니다.
 1920×1080 FHD 입력은 1600×900으로 축소하지 않고 원본 분석 크기를
 보존해 3–4px의 좁은 차트 간격과 가는 프레임을 유지합니다.
 
@@ -66,7 +69,7 @@ Web 서버 패키지에도 포함됩니다.
 `node scripts/generate-random-multichart-samples.mjs`, FHD 밀집 샘플은
 `node scripts/generate-fhd-30-chart-sample.mjs`로 재생성합니다.
 같은 샘플과 무작위 배치·저해상도 복원을 포함한 최대 30차트 분리기는
-Windows x64 및 Ubuntu x64 v1.33.0 독립판에도 함께 포함됩니다.
+Windows x64 및 Ubuntu x64 v1.34.0 독립판에도 함께 포함됩니다.
 추출 결과는 함께 배포된 읽기 전용 코퍼스와 로컬로 비교합니다.
 격자는 실선과 점선의 긴 수평·수직 run을 함께 검출하며, 삭제 후 Curve가
 양쪽에서 이어지는 교차 픽셀만 복원해 peak·valley 단절을 줄입니다.
@@ -107,9 +110,9 @@ Ubuntu x64 패키지는 별도 외부 Web 서버용 배포본입니다. 상단�
 `UBUNTU X64 · WEB SERVER` 버튼으로 내려받으며 Windows 오프라인 실행판과
 용도와 버튼을 분리합니다. 웹 다운로드는 두 운영체제 모두 schema-v1
 매니페스트와 SHA-256 조각 검증을 거쳐 브라우저에서 원본 패키지를
-재조립합니다. v1.33.0의 고정 매니페스트 경로는
-`/downloads/windows-package-v1.33.0.json`과
-`/downloads/ubuntu-package-v1.33.0.json`입니다. Ubuntu 매니페스트의
+재조립합니다. v1.34.0의 고정 매니페스트 경로는
+`/downloads/windows-package-v1.34.0.json`과
+`/downloads/ubuntu-package-v1.34.0.json`입니다. Ubuntu 매니페스트의
 `fileName`은 우선 `vth-similarity-ubuntu-x64.tar.gz`를 사용하며, 다운로드
 코어는 검증된 `.tar.gz` 또는 `.zip` 파일명을 그대로 받아 버전이 붙은
 파일명으로 저장합니다.

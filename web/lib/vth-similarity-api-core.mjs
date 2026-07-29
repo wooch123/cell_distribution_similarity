@@ -9,7 +9,12 @@ import {
 import { analyzeForegroundMasks } from "./vth-image-analysis-core.mjs";
 import { buildForegroundMasks } from "./vth-image-core.mjs";
 import { mergeCandidateSets } from "./vth-learning-core.mjs";
-import { clamp, searchCorpus } from "./vth-shape-core.mjs";
+import {
+  alignedCurveSimilarity,
+  clamp,
+  descriptorFromProfile,
+  searchCorpus,
+} from "./vth-shape-core.mjs";
 
 export const MAX_SIMILARITY_IMAGE_BYTES = 12 * 1024 * 1024;
 export const MAX_SIMILARITY_IMAGE_PIXELS = 8_000_000;
@@ -462,6 +467,231 @@ export async function analyzeSimilarityImage(bytes, mimeType) {
   };
 }
 
+function distributionWaveformNotFound(message) {
+  throw new SimilarityApiError(
+    message ??
+      "학습 원본에서 독립된 분포 파형 하나를 찾지 못했습니다.",
+    422,
+    "distribution_waveform_not_found",
+  );
+}
+
+function waveformOnlySource(detected, panel, width, height) {
+  if (panel.detectionReason === "whole-image-fallback") {
+    // The detector only emits this fallback after verifying the complete
+    // source as a waveform. Deep valleys can fragment into several rejected
+    // geometric regions, so that diagnostic count is not a purity signal.
+    return true;
+  }
+  const widthRatio = panel.width / Math.max(1, width);
+  const heightRatio = panel.height / Math.max(1, height);
+  const areaRatio =
+    (panel.width * panel.height) / Math.max(1, width * height);
+  const leftMargin = panel.x / Math.max(1, width);
+  const topMargin = panel.y / Math.max(1, height);
+  const rightMargin =
+    (width - panel.x - panel.width) / Math.max(1, width);
+  const bottomMargin =
+    (height - panel.y - panel.height) / Math.max(1, height);
+  return (
+    widthRatio >= 0.7 &&
+    heightRatio >= 0.58 &&
+    areaRatio >= 0.48 &&
+    leftMargin <= 0.2 &&
+    rightMargin <= 0.2 &&
+    topMargin <= 0.24 &&
+    bottomMargin <= 0.24
+  );
+}
+
+/**
+ * Verify that a ready-to-search training payload is backed by the submitted
+ * source image rather than by caller-controlled Curve JSON alone.
+ *
+ * Raw `/training-images` uploads deliberately bypass this gate while pending;
+ * every immediately ready candidate must contain exactly one isolated
+ * waveform, occupy the source preview instead of sharing it with document
+ * content, and reproduce the supplied canonical profile.
+ */
+export async function validateTrainingWaveformImage({
+  bytes,
+  mimeType,
+  profile,
+  stateCount,
+}) {
+  if (
+    !Array.isArray(profile) ||
+    profile.length !== 256 ||
+    profile.some((value) => !Number.isFinite(Number(value)))
+  ) {
+    throw new SimilarityApiError(
+      "학습 provenance 검증에는 256-point profile이 필요합니다.",
+      400,
+      "invalid_training_profile",
+    );
+  }
+  const normalizedProfile = profile.map(Number);
+  const suppliedDescriptor = descriptorFromProfile(normalizedProfile);
+  const normalizedStateCount = Number(
+    stateCount ?? suppliedDescriptor.stateCount,
+  );
+  if (![2, 4, 8, 16].includes(normalizedStateCount)) {
+    throw new SimilarityApiError(
+      "학습 provenance의 State는 2, 4, 8 또는 16이어야 합니다.",
+      400,
+      "invalid_training_profile",
+    );
+  }
+
+  const decoded = await decodeSimilarityImage(bytes, mimeType);
+  const detected = detectChartPanels(
+    decoded.data,
+    decoded.width,
+    decoded.height,
+    3,
+    { sourceScale: decoded.scale },
+  );
+  if (
+    detected.panels.length !== 1 ||
+    !waveformOnlySource(
+      detected,
+      detected.panels[0],
+      decoded.width,
+      decoded.height,
+    )
+  ) {
+    distributionWaveformNotFound(
+      "학습 원본에는 다른 텍스트·표·도형 없이 분포 파형 하나만 있어야 합니다.",
+    );
+  }
+
+  const panel = detected.panels[0];
+  const sourceBounds = sourcePanelBounds(
+    panel,
+    decoded.width,
+    decoded.height,
+    decoded.sourceWidth,
+    decoded.sourceHeight,
+  );
+  // The browser has already isolated `sourceImageDataUrl` to this chart.
+  // Detection here is a provenance purity gate; cropping its accepted panel
+  // again would trim the same chart twice. Re-rasterize the accepted preview
+  // with the browser analysis limits so PNG/JPEG encoding cannot select a
+  // different hypothesis merely because the server used a larger raster.
+  const provenanceRaster = resizeRgb(
+    decoded.sourceData,
+    decoded.sourceWidth,
+    decoded.sourceHeight,
+    1100,
+    720,
+    {
+      maximumScale: 4,
+      maximumPixels: 800_000,
+    },
+  );
+  const cropped = {
+    pixels: provenanceRaster.data,
+    width: provenanceRaster.width,
+    height: provenanceRaster.height,
+    scale: provenanceRaster.scale,
+  };
+  const analysis = analyzeSimilarityPixels(
+    cropped.pixels,
+    cropped.width,
+    cropped.height,
+    cropped.scale ?? decoded.scale,
+  );
+  const hypotheses = [
+    {
+      profile: analysis.profile,
+      descriptor: analysis.descriptor,
+    },
+    ...(analysis.alternatives ?? []),
+  ];
+  const scoredHypotheses = hypotheses.map((hypothesis) => ({
+    hypothesis,
+    similarity: alignedCurveSimilarity(
+      hypothesis.profile,
+      normalizedProfile,
+    ),
+  }));
+  const matchingStateHypotheses = hypotheses.filter(
+    (hypothesis) =>
+      hypothesis.descriptor?.stateCount === normalizedStateCount,
+  );
+  const matchingStateSimilarity = Math.max(
+    0,
+    ...matchingStateHypotheses.map((hypothesis) =>
+      alignedCurveSimilarity(
+        hypothesis.profile,
+        normalizedProfile,
+      ),
+    ),
+  );
+  const codecStableSimilarity = Math.max(
+    0,
+    ...scoredHypotheses.map(({ similarity }) => similarity),
+  );
+  const minimumProvenanceSimilarity = 0.985;
+  const profileSimilarity = Math.max(
+    matchingStateSimilarity,
+    codecStableSimilarity >= minimumProvenanceSimilarity
+      ? codecStableSimilarity
+      : 0,
+  );
+  if (
+    matchingStateSimilarity < minimumProvenanceSimilarity &&
+    codecStableSimilarity < minimumProvenanceSimilarity
+  ) {
+    throw new SimilarityApiError(
+      "학습 원본의 파형과 제출한 profile이 일치하지 않습니다.",
+      422,
+      "training_profile_image_mismatch",
+    );
+  }
+  const authoritativeHypothesis = scoredHypotheses.reduce(
+    (best, current) =>
+      current.similarity > best.similarity ? current : best,
+  ).hypothesis;
+  const authoritativeProfile = [
+    ...authoritativeHypothesis.profile,
+  ];
+  const authoritativeDescriptor = descriptorFromProfile(
+    authoritativeProfile,
+  );
+
+  return {
+    panelCount: 1,
+    fallbackUsed: Boolean(detected.fallbackUsed),
+    detectionReason: panel.detectionReason,
+    sourceBounds,
+    stateCount: normalizedStateCount,
+    profileSimilarity,
+    stateHypothesisMatched:
+      matchingStateSimilarity >= minimumProvenanceSimilarity,
+    authoritativeProfile,
+    authoritativeDescriptor: {
+      ...authoritativeDescriptor,
+      peakLocations: [
+        ...authoritativeDescriptor.peakLocations,
+      ],
+      peakWidths: [...authoritativeDescriptor.peakWidths],
+      valleyHeights: [...authoritativeDescriptor.valleyHeights],
+      valleyLocations: [
+        ...authoritativeDescriptor.valleyLocations,
+      ],
+      valleyDepths: [...authoritativeDescriptor.valleyDepths],
+      valleyPositionRatios: [
+        ...authoritativeDescriptor.valleyPositionRatios,
+      ],
+      peakValleyDistances: [
+        ...authoritativeDescriptor.peakValleyDistances,
+      ],
+      tailSlopes: [...authoritativeDescriptor.tailSlopes],
+    },
+  };
+}
+
 function sourceResolutionPanelPixels(decoded, sourceBounds) {
   const sourceCrop = cropInterleavedPixels(
     decoded.sourceData,
@@ -659,20 +889,28 @@ export async function searchSimilarityImage({
     3,
     { sourceScale: decoded.scale },
   );
-  // A single detected frame is deliberately analyzed as the complete image.
-  // This preserves the established single-chart extraction, including titles
-  // and outer margins, while enabling independent crops only when multiple
-  // charts are confidently present.
+  if (!detected.panels.length) {
+    throw new SimilarityApiError(
+      "분포 파형을 찾지 못했습니다. 텍스트·표·빈 좌표계·사각형 및 설명 도형은 분석 대상에서 제외됩니다.",
+      422,
+      "distribution_waveform_not_found",
+    );
+  }
+  // Only the verified whole-image fallback keeps the complete input. A
+  // geometric or frameless singleton is cropped as well, so nearby prose,
+  // tables and explanation shapes cannot leak into Curve extraction merely
+  // because the document contains one valid distribution.
   const panels =
-    detected.panels.length > 1
-      ? detected.panels
-      : [
+    detected.panels.length === 1 &&
+    detected.panels[0].detectionReason === "whole-image-fallback"
+      ? [
           wholeImagePanel(
             decoded.width,
             decoded.height,
             detected.panels[0],
           ),
-        ];
+        ]
+      : detected.panels;
   const candidates = mergeCandidateSets(
     corpus.candidates,
     learnedCandidates,
@@ -686,7 +924,7 @@ export async function searchSimilarityImage({
       decoded.sourceHeight,
     );
     const cropped =
-      panels.length === 1
+      panel.detectionReason === "whole-image-fallback"
         ? {
             pixels: decoded.data,
             width: decoded.width,

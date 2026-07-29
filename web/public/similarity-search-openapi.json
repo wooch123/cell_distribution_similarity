@@ -3,7 +3,7 @@
   "info": {
     "title": "V-NAND Similarity Search API",
     "version": "1.0.0",
-    "description": "Log-scale VTH distribution shape retrieval. The request image is processed only for this search and is not stored or used for training. Scores are calibrated similarity values, not probabilities."
+    "description": "Log-scale VTH distribution shape retrieval. Only coherent distribution waveforms are analyzed; explanatory text, tables, empty coordinate systems, rectangles, and diagram shapes are rejected. The request image is processed only for this search and is not stored or used for training. Scores are calibrated similarity values, not probabilities."
   },
   "servers": [
     {
@@ -29,7 +29,7 @@
       },
       "post": {
         "summary": "Find V-NAND distribution images with similar shape",
-        "description": "Accepts PNG or JPEG as raw bytes, multipart/form-data, or a Base64 data URL JSON body. Multiple charts at different coordinates are detected, cropped, and ranked independently in reading order. The legacy top-level `query` and `results` mirror panel 0. `topK` defaults to 8 and is limited to 1–10 per panel. When the deployment configures `VTH_SEARCH_API_KEY`, send it as `Authorization: Bearer <key>` or `X-API-Key`.",
+        "description": "Accepts PNG or JPEG as raw bytes, multipart/form-data, or a Base64 data URL JSON body. Multiple charts at different coordinates are detected, cropped, and ranked independently in reading order. Text, tables, empty axes, rectangles, and explanatory diagrams without a coherent distribution waveform are excluded; a request with no distribution waveform returns 422 `distribution_waveform_not_found`. The legacy top-level `query` and `results` mirror panel 0. `topK` defaults to 8 and is limited to 1–10 per panel. When the deployment configures `VTH_SEARCH_API_KEY`, send it as `Authorization: Bearer <key>` or `X-API-Key`.",
         "parameters": [
           {
             "name": "topK",

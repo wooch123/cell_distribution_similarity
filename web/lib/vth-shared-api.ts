@@ -42,23 +42,38 @@ export function sharedApiJson(
 export function sharedApiError(request: Request, error: unknown) {
   const message =
     error instanceof Error ? error.message : "요청을 처리하지 못했습니다.";
+  const typedError =
+    error && typeof error === "object"
+      ? (error as { status?: unknown; code?: unknown })
+      : {};
+  const explicitStatus = Number(typedError.status);
   const status =
-    message.includes("하루에") || message.includes("저장 한도")
-      ? 429
-      : message.includes("준비되지 않았") ||
-          message.includes("no such table")
-        ? 503
-        : 400;
+    Number.isInteger(explicitStatus) &&
+    explicitStatus >= 400 &&
+    explicitStatus <= 599
+      ? explicitStatus
+      : message.includes("하루에") || message.includes("저장 한도")
+        ? 429
+        : message.includes("준비되지 않았") ||
+            message.includes("no such table")
+          ? 503
+          : 400;
+  const explicitCode =
+    typeof typedError.code === "string" &&
+    /^[a-z0-9_]{3,64}$/.test(typedError.code)
+      ? typedError.code
+      : "";
   return sharedApiJson(
     request,
     {
       error: {
         code:
-          status === 429
+          explicitCode ||
+          (status === 429
             ? "rate_limited"
             : status === 503
               ? "storage_unavailable"
-              : "invalid_request",
+              : "invalid_request"),
         message,
       },
     },

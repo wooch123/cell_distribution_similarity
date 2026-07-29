@@ -1,4 +1,7 @@
-import { buildForegroundMasks } from "./vth-image-core.mjs";
+import {
+  buildForegroundMasks,
+  deskewForegroundMasks,
+} from "./vth-image-core.mjs";
 
 // A 4 × 4 PPT grid leaves roughly 2.5–4% of the slide for each plot once
 // titles and gutters are excluded. Keep enough headroom for 5 × 4 layouts and
@@ -962,6 +965,8 @@ export function measureChartCurveEvidence(
       horizontalCoverage: 0,
       continuousCoverage: 0,
       verticalVariation: 0,
+      linearDeviation: 0,
+      directionChangeCount: 0,
     };
   }
   const candidateWidth = candidate.right - candidate.left + 1;
@@ -981,9 +986,30 @@ export function measureChartCurveEvidence(
       horizontalCoverage: 0,
       continuousCoverage: 0,
       verticalVariation: 0,
+      linearDeviation: 0,
+      directionChangeCount: 0,
     };
   }
 
+  let topBoundaryActiveColumns = 0;
+  for (
+    let x = candidate.left;
+    x <= candidate.right;
+    x += 1
+  ) {
+    let active = false;
+    for (
+      let y = candidate.top;
+      y < top && !active;
+      y += 1
+    ) {
+      active = Boolean(mask[y * width + x]);
+    }
+    if (active) topBoundaryActiveColumns += 1;
+  }
+  const topBoundaryCoverage =
+    topBoundaryActiveColumns /
+    Math.max(1, candidateWidth);
   const rowCounts = new Uint32Array(interiorHeight);
   const columnCounts = new Uint32Array(interiorWidth);
   for (let y = top; y <= bottom; y += 1) {
@@ -1005,6 +1031,10 @@ export function measureChartCurveEvidence(
       ignoredColumns[column] = 1;
     }
   }
+  const ignoredRowCount = ignoredRows.reduce(
+    (sum, value) => sum + value,
+    0,
+  );
 
   const columnPixels = Array.from(
     { length: interiorWidth },
@@ -1035,6 +1065,183 @@ export function measureChartCurveEvidence(
     activeColumns / Math.max(1, interiorWidth);
   const meanPixelsPerActiveColumn =
     residualPixels / Math.max(1, activeColumns);
+  const separatedRunsByColumn = columnPixels.map((values) => {
+    if (!values.length) return [];
+    const runs = [];
+    let start = values[0];
+    let end = values[0];
+    for (const value of values.slice(1)) {
+      if (value <= end + 1) {
+        end = value;
+        continue;
+      }
+      runs.push((start + end) / 2);
+      start = value;
+      end = value;
+    }
+    runs.push((start + end) / 2);
+    return runs;
+  });
+  let currentTwoBranchGaps = [];
+  let longestTwoBranchGaps = [];
+  const finishTwoBranchSpan = () => {
+    if (
+      currentTwoBranchGaps.length >
+      longestTwoBranchGaps.length
+    ) {
+      longestTwoBranchGaps = currentTwoBranchGaps;
+    }
+    currentTwoBranchGaps = [];
+  };
+  const minimumBranchGap = Math.max(
+    3,
+    interiorHeight * 0.012,
+  );
+  for (const runs of separatedRunsByColumn) {
+    if (
+      runs.length === 2 &&
+      runs[1] - runs[0] >= minimumBranchGap
+    ) {
+      currentTwoBranchGaps.push(runs[1] - runs[0]);
+    } else {
+      finishTwoBranchSpan();
+    }
+  }
+  finishTwoBranchSpan();
+  const twoBranchCoverage =
+    longestTwoBranchGaps.length /
+    Math.max(1, interiorWidth);
+  const maximumBranchGap = longestTwoBranchGaps.length
+    ? Math.max(...longestTwoBranchGaps)
+    : 0;
+  const branchGapVariation = longestTwoBranchGaps
+    .slice(1)
+    .reduce(
+      (sum, value, index) =>
+        sum +
+        Math.abs(
+          value - longestTwoBranchGaps[index],
+        ),
+      0,
+    );
+  const firstBranchGap =
+    longestTwoBranchGaps[0] ?? 0;
+  const lastBranchGap =
+    longestTwoBranchGaps.at(-1) ?? 0;
+  const expectedBranchGapVariation =
+    Math.max(0, maximumBranchGap - firstBranchGap) +
+    Math.max(0, maximumBranchGap - lastBranchGap);
+  const branchGapSmoothness = clamp(
+    expectedBranchGapVariation /
+      Math.max(1, branchGapVariation),
+    0,
+    1,
+  );
+  const closedTwoBranchArtifact =
+    twoBranchCoverage >= 0.18 &&
+    maximumBranchGap >= interiorHeight * 0.08 &&
+    firstBranchGap <= maximumBranchGap * 0.35 &&
+    lastBranchGap <= maximumBranchGap * 0.35 &&
+    branchGapSmoothness >= 0.72;
+  let enclosedHoleCoverage = 0;
+  if (twoBranchCoverage >= 0.04) {
+    const cellCount = interiorWidth * interiorHeight;
+    const visitedBackground = new Uint8Array(cellCount);
+    const queue = new Int32Array(cellCount);
+    const residualActiveAt = (localX, localY) =>
+      !ignoredColumns[localX] &&
+      !ignoredRows[localY] &&
+      mask[(top + localY) * width + left + localX];
+    let queueHead = 0;
+    let queueTail = 0;
+    const enqueueBackground = (localX, localY) => {
+      const index = localY * interiorWidth + localX;
+      if (
+        visitedBackground[index] ||
+        residualActiveAt(localX, localY)
+      ) {
+        return;
+      }
+      visitedBackground[index] = 1;
+      queue[queueTail] = index;
+      queueTail += 1;
+    };
+    for (let x = 0; x < interiorWidth; x += 1) {
+      enqueueBackground(x, 0);
+      enqueueBackground(x, interiorHeight - 1);
+    }
+    for (let y = 1; y + 1 < interiorHeight; y += 1) {
+      enqueueBackground(0, y);
+      enqueueBackground(interiorWidth - 1, y);
+    }
+    while (queueHead < queueTail) {
+      const index = queue[queueHead];
+      queueHead += 1;
+      const x = index % interiorWidth;
+      const y = Math.floor(index / interiorWidth);
+      if (x > 0) enqueueBackground(x - 1, y);
+      if (x + 1 < interiorWidth) enqueueBackground(x + 1, y);
+      if (y > 0) enqueueBackground(x, y - 1);
+      if (y + 1 < interiorHeight) {
+        enqueueBackground(x, y + 1);
+      }
+    }
+
+    let largestHoleArea = 0;
+    for (let start = 0; start < cellCount; start += 1) {
+      if (
+        visitedBackground[start] ||
+        residualActiveAt(
+          start % interiorWidth,
+          Math.floor(start / interiorWidth),
+        )
+      ) {
+        continue;
+      }
+      let holeArea = 0;
+      queueHead = 0;
+      queueTail = 1;
+      queue[0] = start;
+      visitedBackground[start] = 1;
+      while (queueHead < queueTail) {
+        const index = queue[queueHead];
+        queueHead += 1;
+        holeArea += 1;
+        const x = index % interiorWidth;
+        const y = Math.floor(index / interiorWidth);
+        const visitHoleNeighbor = (localX, localY) => {
+          const neighbor =
+            localY * interiorWidth + localX;
+          if (
+            visitedBackground[neighbor] ||
+            residualActiveAt(localX, localY)
+          ) {
+            return;
+          }
+          visitedBackground[neighbor] = 1;
+          queue[queueTail] = neighbor;
+          queueTail += 1;
+        };
+        if (x > 0) visitHoleNeighbor(x - 1, y);
+        if (x + 1 < interiorWidth) {
+          visitHoleNeighbor(x + 1, y);
+        }
+        if (y > 0) visitHoleNeighbor(x, y - 1);
+        if (y + 1 < interiorHeight) {
+          visitHoleNeighbor(x, y + 1);
+        }
+      }
+      largestHoleArea = Math.max(
+        largestHoleArea,
+        holeArea,
+      );
+    }
+    enclosedHoleCoverage =
+      largestHoleArea / Math.max(1, cellCount);
+  }
+  const closedLoopArtifact =
+    twoBranchCoverage >= 0.04 &&
+    enclosedHoleCoverage >= 0.008;
   const maximumGap = Math.max(
     2,
     Math.round(interiorWidth * 0.018),
@@ -1047,12 +1254,21 @@ export function measureChartCurveEvidence(
   let gap = 0;
   let currentPath = [];
   let longestPath = [];
+  const traceSegments = [];
+  const finishCurrentPath = () => {
+    if (!currentPath.length) return;
+    traceSegments.push(currentPath);
+    if (currentPath.length > longestPath.length) {
+      longestPath = currentPath;
+    }
+    currentPath = [];
+  };
   for (const values of columnPixels) {
     if (!values.length) {
       gap += 1;
       if (gap > maximumGap) {
         previousY = null;
-        currentPath = [];
+        finishCurrentPath();
       }
       continue;
     }
@@ -1073,15 +1289,13 @@ export function measureChartCurveEvidence(
       Math.abs(selectedY - previousY) >
         maximumStep * Math.max(1, gap + 1)
     ) {
-      currentPath = [];
+      finishCurrentPath();
     }
     currentPath.push(selectedY);
-    if (currentPath.length > longestPath.length) {
-      longestPath = [...currentPath];
-    }
     previousY = selectedY;
     gap = 0;
   }
+  finishCurrentPath();
 
   const continuousCoverage =
     longestPath.length / Math.max(1, interiorWidth);
@@ -1141,6 +1355,144 @@ export function measureChartCurveEvidence(
     (sum, slope) => sum + Math.abs(slope),
     0,
   );
+  const traceMeanX =
+    (longestPath.length - 1) / 2;
+  const traceMeanY = average(longestPath);
+  let traceLinearNumerator = 0;
+  let traceLinearDenominator = 0;
+  for (let index = 0; index < longestPath.length; index += 1) {
+    const centeredX = index - traceMeanX;
+    traceLinearNumerator +=
+      centeredX * (longestPath[index] - traceMeanY);
+    traceLinearDenominator += centeredX * centeredX;
+  }
+  const traceLinearSlope =
+    traceLinearNumerator /
+    Math.max(1, traceLinearDenominator);
+  const traceLinearIntercept =
+    traceMeanY - traceLinearSlope * traceMeanX;
+  const linearDeviation = longestPath.length
+    ? Math.sqrt(
+        average(
+          longestPath.map((value, index) => {
+            const residual =
+              value -
+              (traceLinearIntercept +
+                traceLinearSlope * index);
+            return residual * residual;
+          }),
+        ),
+      ) / interiorHeight
+    : 0;
+  const armLinearDeviation = (values) => {
+    if (values.length < 4) return 1;
+    const meanX = (values.length - 1) / 2;
+    const meanY = average(values);
+    let numerator = 0;
+    let denominator = 0;
+    for (let index = 0; index < values.length; index += 1) {
+      const centeredX = index - meanX;
+      numerator +=
+        centeredX * (values[index] - meanY);
+      denominator += centeredX * centeredX;
+    }
+    const slope = numerator / Math.max(1, denominator);
+    const intercept = meanY - slope * meanX;
+    return (
+      Math.sqrt(
+        average(
+          values.map((value, index) => {
+            const residual =
+              value - (intercept + slope * index);
+            return residual * residual;
+          }),
+        ),
+      ) / interiorHeight
+    );
+  };
+  const leftArmLinearDeviation = armLinearDeviation(
+    longestPath.slice(0, peakIndex + 1),
+  );
+  const rightArmLinearDeviation = armLinearDeviation(
+    longestPath.slice(peakIndex),
+  );
+  const turnLag = clamp(
+    Math.round(longestPath.length * 0.035),
+    2,
+    8,
+  );
+  const turnTolerance = Math.max(
+    1,
+    interiorHeight * 0.012,
+  );
+  const turnDirections = [];
+  for (
+    let index = turnLag;
+    index + turnLag < longestPath.length;
+    index += turnLag
+  ) {
+    const delta =
+      longestPath[index + turnLag] -
+      longestPath[index - turnLag];
+    if (Math.abs(delta) < turnTolerance) continue;
+    const direction = Math.sign(delta);
+    if (
+      direction !==
+      turnDirections[turnDirections.length - 1]
+    ) {
+      turnDirections.push(direction);
+    }
+  }
+  const directionChangeCount = Math.max(
+    0,
+    turnDirections.length - 1,
+  );
+  const minimumCurvedSegmentLength = Math.max(
+    5,
+    Math.round(interiorWidth * 0.012),
+  );
+  let curvedSegmentCount = 0;
+  let curvedSegmentColumns = 0;
+  for (const segment of traceSegments) {
+    if (segment.length < minimumCurvedSegmentLength) {
+      continue;
+    }
+    const segmentMeanX = (segment.length - 1) / 2;
+    const segmentMeanY = average(segment);
+    let numerator = 0;
+    let denominator = 0;
+    for (let index = 0; index < segment.length; index += 1) {
+      const centeredX = index - segmentMeanX;
+      numerator +=
+        centeredX * (segment[index] - segmentMeanY);
+      denominator += centeredX * centeredX;
+    }
+    const slope = numerator / Math.max(1, denominator);
+    const intercept = segmentMeanY - slope * segmentMeanX;
+    const deviation =
+      Math.sqrt(
+        average(
+          segment.map((value, index) => {
+            const residual =
+              value - (intercept + slope * index);
+            return residual * residual;
+          }),
+        ),
+      ) / interiorHeight;
+    const segmentVariation =
+      (Math.max(...segment) - Math.min(...segment)) /
+      interiorHeight;
+    if (
+      deviation >= 0.006 &&
+      segmentVariation >= 0.025
+    ) {
+      curvedSegmentCount += 1;
+      curvedSegmentColumns += segment.length;
+    }
+  }
+  const curvedSegmentCoverage =
+    curvedSegmentColumns /
+    Math.max(1, interiorWidth);
   const expectedSinglePeakVariation = Math.max(
     0,
     leftEndpointY - peakY,
@@ -1213,9 +1565,8 @@ export function measureChartCurveEvidence(
       Math.max(9, interiorHeight * 0.2) &&
     residualDensity <= 0.24;
   const coherentTrace =
-    continuousCoverage >= 0.2 ||
-    (horizontalCoverage >= 0.58 &&
-      verticalVariation >= 0.2);
+    continuousCoverage >= 0.18 &&
+    linearDeviation >= 0.012;
   const baseSinglePeakShape =
     horizontalCoverage >= 0.2 &&
     continuousCoverage >= 0.18 &&
@@ -1235,6 +1586,12 @@ export function measureChartCurveEvidence(
       traceSmoothness >= 0.92 &&
       roundedApexScore >= 0.1) ||
       logScaleParabolicPeak);
+  const straightSidedApex =
+    baseSinglePeakShape &&
+    leftArmSpan >= 5 &&
+    rightArmSpan >= 5 &&
+    leftArmLinearDeviation <= 0.012 &&
+    rightArmLinearDeviation <= 0.012;
   // A single-state plot can occupy only the middle of a wide axis. Requiring
   // the same full-width coverage as a multi-State chain drops these otherwise
   // valid charts, especially on PPT slides. Keep a localized trace only when
@@ -1244,9 +1601,10 @@ export function measureChartCurveEvidence(
   const localizedSinglePeak = smoothSinglePeakShape;
   const sharpSinglePeakArtifact =
     baseSinglePeakShape &&
-    singlePeakMonotonicity >= 0.9 &&
-    traceSmoothness >= 0.75 &&
-    !smoothSinglePeakShape;
+    ((singlePeakMonotonicity >= 0.9 &&
+      traceSmoothness >= 0.75 &&
+      !smoothSinglePeakShape) ||
+      straightSidedApex);
   // Some dense V-NAND plots use broad, highly overlapping States. Their
   // salient-color mask contains several short peak arcs instead of one path
   // spanning 20% of the frame, even though those arcs cover most x columns
@@ -1258,20 +1616,103 @@ export function measureChartCurveEvidence(
     horizontalCoverage >= 0.62 &&
     continuousCoverage >= 0.08 &&
     verticalVariation >= 0.08 &&
+    linearDeviation >= 0.02 &&
     residualDensity <= 0.1 &&
     thinEnough &&
     !sharpSinglePeakArtifact;
+  const segmentedWaveformTrace =
+    candidate.axisMode === "content" &&
+    horizontalCoverage >= 0.3 &&
+    curvedSegmentCount >= 2 &&
+    curvedSegmentCoverage >= 0.16 &&
+    verticalVariation >= 0.045 &&
+    linearDeviation >= 0.012 &&
+    thinEnough &&
+    !sharpSinglePeakArtifact;
+  const minimumFullWidthCoverage =
+    candidate.axisMode === "content" ? 0.35 : 0.42;
+  const contentHasWaveformTurn =
+    candidate.axisMode !== "content" ||
+    directionChangeCount >= 1;
+  const clippedPlateauWaveform =
+    candidate.axisMode === "content" &&
+    ignoredRowCount >= 1 &&
+    horizontalCoverage >= 0.33 &&
+    continuousCoverage >= 0.3 &&
+    verticalVariation >= 0.04 &&
+    verticalVariation <= 0.2 &&
+    linearDeviation >= 0.015 &&
+    curvedSegmentCoverage >= 0.3 &&
+    thinEnough;
+  const boundaryClippedShallowWaveform =
+    candidate.axisMode === "content" &&
+    topBoundaryCoverage >= 0.22 &&
+    horizontalCoverage >= 0.3 &&
+    continuousCoverage >= 0.3 &&
+    verticalVariation >= 0.035 &&
+    verticalVariation <= 0.2 &&
+    linearDeviation >= 0.012 &&
+    curvedSegmentCoverage >= 0.3 &&
+    thinEnough;
+  // In a two-State log plot both maxima can be clipped above the image,
+  // leaving only one broad valley. Browser upscaling thickens the visible
+  // arms and may split the turn at the valley, so the longest greedy path
+  // becomes monotone even though the combined trace is a real distribution.
+  // Require substantial top clipping, curvature, span, and exactly one
+  // y-run per column to keep this rescue distinct from closed explanation
+  // shapes.
+  const boundaryClippedValleyWaveform =
+    candidate.axisMode === "content" &&
+    topBoundaryCoverage >= 0.28 &&
+    horizontalCoverage >= 0.6 &&
+    continuousCoverage >= 0.58 &&
+    verticalVariation >= 0.2 &&
+    verticalVariation <= 0.42 &&
+    linearDeviation >= 0.045 &&
+    curvedSegmentCoverage >= 0.58 &&
+    directionChangeCount === 0 &&
+    twoBranchCoverage < 0.003 &&
+    thinEnough;
+  const simpleTwoBranchOutlineArtifact =
+    twoBranchCoverage >= 0.12 &&
+    maximumBranchGap >= interiorHeight * 0.06 &&
+    branchGapSmoothness >= 0.62 &&
+    directionChangeCount <= 1 &&
+    curvedSegmentCount <= 4;
+  // A steep or partially clipped ellipse may expose only two monotone arcs,
+  // so neither the enclosed-hole test nor the longer parallel-branch test
+  // sees a complete loop. A true Curve can also split at a sharp apex, but it
+  // still contributes only one connected y-run per x column. Reject the
+  // double-run monotone outline without penalizing that real single peak.
+  const clippedClosedOutlineArtifact =
+    candidate.axisMode === "content" &&
+    directionChangeCount === 0 &&
+    curvedSegmentCount >= 2 &&
+    twoBranchCoverage >= 0.003 &&
+    maximumBranchGap >= interiorHeight * 0.035;
   const fullWidthTrace =
-    (horizontalCoverage >= 0.42 &&
+    (horizontalCoverage >= minimumFullWidthCoverage &&
       coherentTrace &&
       verticalVariation >= 0.045 &&
+      contentHasWaveformTurn &&
       thinEnough &&
       !sharpSinglePeakArtifact) ||
-    segmentedShallowTrace;
-  const valid = fullWidthTrace || localizedSinglePeak;
+    segmentedShallowTrace ||
+    segmentedWaveformTrace ||
+    clippedPlateauWaveform ||
+    boundaryClippedShallowWaveform ||
+    boundaryClippedValleyWaveform;
+  const valid =
+    !closedTwoBranchArtifact &&
+    !closedLoopArtifact &&
+    !simpleTwoBranchOutlineArtifact &&
+    !clippedClosedOutlineArtifact &&
+    (fullWidthTrace ||
+      (localizedSinglePeak && !straightSidedApex));
   const score = clamp(
     horizontalCoverage * 0.34 +
       continuousCoverage * 0.38 +
+      Math.min(0.18, curvedSegmentCoverage * 0.24) +
       Math.min(1, verticalVariation * 3.2) * 0.2 +
       (thinEnough ? 0.08 : 0) +
       (localizedSinglePeak ? 0.1 : 0),
@@ -1288,11 +1729,31 @@ export function measureChartCurveEvidence(
     logScaleParabolicPeak,
     fullWidthTrace,
     segmentedShallowTrace,
+    segmentedWaveformTrace,
+    clippedPlateauWaveform,
+    boundaryClippedShallowWaveform,
+    boundaryClippedValleyWaveform,
     peakPosition,
     peakProminence,
     singlePeakMonotonicity,
     traceSmoothness,
     roundedApexScore,
+    linearDeviation,
+    leftArmLinearDeviation,
+    rightArmLinearDeviation,
+    straightSidedApex,
+    directionChangeCount,
+    curvedSegmentCount,
+    curvedSegmentCoverage,
+    twoBranchCoverage,
+    branchGapSmoothness,
+    closedTwoBranchArtifact,
+    enclosedHoleCoverage,
+    closedLoopArtifact,
+    simpleTwoBranchOutlineArtifact,
+    clippedClosedOutlineArtifact,
+    ignoredRowCount,
+    topBoundaryCoverage,
     thinEnough,
     residualDensity,
     meanPixelsPerActiveColumn,
@@ -1764,15 +2225,25 @@ function paddedNonOverlappingCandidates(candidates, width, height) {
       2,
       8,
     );
+    // Frameless candidates are separated by actual blank gutters. Expanding
+    // them sideways would re-introduce pixels from a neighbouring waveform
+    // into the crop, which is especially harmful for tightly packed PPT
+    // charts. Keep vertical breathing room, but preserve the detected x
+    // boundary exactly.
+    const horizontalPadding =
+      candidate.axisMode === "content" ? 0 : padding;
     return {
       ...candidate,
       originalLeft: candidate.left,
       originalTop: candidate.top,
       originalRight: candidate.right,
       originalBottom: candidate.bottom,
-      left: Math.max(0, candidate.left - padding),
+      left: Math.max(0, candidate.left - horizontalPadding),
       top: Math.max(0, candidate.top - padding),
-      right: Math.min(width - 1, candidate.right + padding),
+      right: Math.min(
+        width - 1,
+        candidate.right + horizontalPadding,
+      ),
       bottom: Math.min(height - 1, candidate.bottom + padding),
     };
   });
@@ -2116,16 +2587,27 @@ function extractFramelessCurveCandidates(
       (curveEvidence.singlePeakMonotonicity >= 0.82 &&
         curveEvidence.traceSmoothness >= 0.92 &&
         curveEvidence.roundedApexScore >= 0.1);
-    const validShape =
-      curveEvidence.valid &&
-      curveEvidence.horizontalCoverage >= 0.35 &&
-      curveEvidence.continuousCoverage >= 0.3 &&
+    const splitSteepPeak =
+      curveEvidence.segmentedWaveformTrace &&
+      curveEvidence.curvedSegmentCount === 2 &&
+      curveEvidence.curvedSegmentCoverage >= 0.55 &&
+      curveEvidence.verticalVariation >= 0.4 &&
+      curveEvidence.linearDeviation >= 0.04 &&
+      curveEvidence.traceSmoothness >= 0.85 &&
+      curveEvidence.roundedApexScore >= 0.2;
+    const standardPeakShape =
       curveEvidence.verticalVariation >= 0.08 &&
       curveEvidence.peakPosition >= 0.06 &&
       curveEvidence.peakPosition <= 0.94 &&
       curveEvidence.peakProminence >= 0.055 &&
-      curveEvidence.score >= 0.48 &&
       roundedPeak;
+    const validShape =
+      curveEvidence.valid &&
+      curveEvidence.horizontalCoverage >= 0.35 &&
+      (curveEvidence.continuousCoverage >= 0.3 ||
+        curveEvidence.segmentedWaveformTrace) &&
+      curveEvidence.score >= 0.48 &&
+      (standardPeakShape || splitSteepPeak);
     if (!validShape) {
       rejectedComponentCount += 1;
       continue;
@@ -2158,6 +2640,7 @@ function detectFramelessCurveCandidates(
   curveColorMasks,
   width,
   height,
+  sourceScale = 1,
 ) {
   if (!curveEvidenceMask) {
     return { candidates: [], rejectedComponentCount: 0 };
@@ -2199,7 +2682,7 @@ function detectFramelessCurveCandidates(
         area(right) - area(left) ||
         right.confidence - left.confidence,
     );
-  const candidates = [];
+  let candidates = [];
   for (const candidate of ranked) {
     if (
       candidates.some(
@@ -2213,11 +2696,309 @@ function detectFramelessCurveCandidates(
     }
     candidates.push(candidate);
   }
+  if (candidates.length >= 2) {
+    const ordered = [...candidates].sort(
+      (left, right) =>
+        left.left - right.left ||
+        left.top - right.top,
+    );
+    const merged = [];
+    const clippedBottomY = (
+      candidate,
+      edgeX,
+    ) => {
+      let maximumY = -1;
+      for (
+        let x = Math.max(
+          candidate.left,
+          edgeX - 3,
+        );
+        x <= Math.min(candidate.right, edgeX + 3);
+        x += 1
+      ) {
+        for (let y = 0; y < height; y += 1) {
+          if (curveEvidenceMask[y * width + x]) {
+            maximumY = Math.max(maximumY, y);
+          }
+        }
+      }
+      return maximumY;
+    };
+    const localColumnCenterY = (
+      candidate,
+      targetX,
+    ) => {
+      const values = [];
+      for (
+        let x = Math.max(
+          candidate.left,
+          targetX - 1,
+        );
+        x <= Math.min(candidate.right, targetX + 1);
+        x += 1
+      ) {
+        for (let y = 0; y < height; y += 1) {
+          if (curveEvidenceMask[y * width + x]) {
+            values.push(y);
+          }
+        }
+      }
+      if (!values.length) return Number.NaN;
+      values.sort((left, right) => left - right);
+      return values[Math.floor(values.length / 2)];
+    };
+    for (let index = 0; index < ordered.length; index += 1) {
+      const first = ordered[index];
+      const second = ordered[index + 1];
+      const horizontalGap = second
+        ? second.left - first.right - 1
+        : Number.POSITIVE_INFINITY;
+      const verticalOverlap = second
+        ? intervalOverlapRatio(
+            first.top,
+            first.bottom,
+            second.top,
+            second.bottom,
+          )
+        : 0;
+      const firstInnerBottom = second
+        ? clippedBottomY(first, first.right)
+        : -1;
+      const secondInnerBottom = second
+        ? clippedBottomY(second, second.left)
+        : -1;
+      const firstProbe = second
+        ? clamp(
+            Math.round(
+              (first.right - first.left + 1) * 0.025,
+            ),
+            6,
+            14,
+          )
+        : 0;
+      const secondProbe = second
+        ? clamp(
+            Math.round(
+              (second.right - second.left + 1) * 0.025,
+            ),
+            6,
+            14,
+          )
+        : 0;
+      const firstInnerCenter = second
+        ? localColumnCenterY(first, first.right)
+        : Number.NaN;
+      const firstOuterCenter = second
+        ? localColumnCenterY(
+            first,
+            first.right - firstProbe,
+          )
+        : Number.NaN;
+      const secondInnerCenter = second
+        ? localColumnCenterY(second, second.left)
+        : Number.NaN;
+      const secondOuterCenter = second
+        ? localColumnCenterY(
+            second,
+            second.left + secondProbe,
+          )
+        : Number.NaN;
+      const overlappingTraceContinuation =
+        second &&
+        horizontalGap >= -4 &&
+        horizontalGap <= 0 &&
+        verticalOverlap >= 0.45;
+      const bottomClippedValleyContinuation =
+        second &&
+        horizontalGap >= -1 &&
+        horizontalGap <= Math.ceil(3 * sourceScale) &&
+        verticalOverlap >= 0.55 &&
+        firstInnerBottom >= height * 0.85 &&
+        secondInnerBottom >= height * 0.85 &&
+        Math.abs(firstInnerBottom - secondInnerBottom) <=
+          height * 0.08 &&
+        firstInnerCenter - firstOuterCenter >=
+          height * 0.1 &&
+        secondInnerCenter - secondOuterCenter >=
+          height * 0.1;
+      if (
+        overlappingTraceContinuation ||
+        bottomClippedValleyContinuation
+      ) {
+        const combined = {
+          left: Math.min(first.left, second.left),
+          top: Math.min(first.top, second.top),
+          right: Math.max(first.right, second.right),
+          bottom: Math.max(first.bottom, second.bottom),
+          axisMode: "content",
+        };
+        const curveEvidence = measureChartCurveEvidence(
+          combined,
+          curveEvidenceMask,
+          width,
+        );
+        if (curveEvidence.valid) {
+          merged.push({
+            ...combined,
+            confidence: clamp(
+              Math.max(
+                first.confidence,
+                second.confidence,
+              ) +
+                0.015,
+              0,
+              0.97,
+            ),
+            detectionScale: "content",
+            detectionReason: "frameless-curve-region",
+            curveEvidence,
+            curveSource:
+              first.curveSource === "salience" ||
+              second.curveSource === "salience"
+                ? "salience"
+                : first.curveSource,
+          });
+          index += 1;
+          continue;
+        }
+      }
+      merged.push(first);
+    }
+    candidates = merged;
+  }
 
-  // One unframed Curve is already handled correctly by whole-image fallback.
-  // Requiring two independent regions prevents a logo, arrow or formula from
-  // turning an ordinary single-chart upload into multiple panels.
+  // A lone frameless Curve normally stays on the established whole-image
+  // path. When substantial unrelated foreground also exists, however, that
+  // fallback would ingest the surrounding prose/table/diagram. In that case
+  // retain one exceptionally strong Curve component so downstream analysis
+  // can crop away the non-waveform content.
   if (candidates.length < 2) {
+    const candidate = candidates[0];
+    if (candidate) {
+      let totalInk = 0;
+      let candidateInk = 0;
+      const outsideRowInk = new Uint32Array(height);
+      const outsideColumnInk = new Uint32Array(width);
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          if (!curveEvidenceMask[y * width + x]) continue;
+          totalInk += 1;
+          if (
+            x >= candidate.left &&
+            x <= candidate.right &&
+            y >= candidate.top &&
+            y <= candidate.bottom
+          ) {
+            candidateInk += 1;
+          } else {
+            outsideRowInk[y] += 1;
+            outsideColumnInk[x] += 1;
+          }
+        }
+      }
+      const outsideInk = totalInk - candidateInk;
+      let boundaryContinuationColumns = 0;
+      const continuationRadius = clamp(
+        Math.ceil(6 * sourceScale),
+        6,
+        24,
+      );
+      const continuationVerticalMargin = clamp(
+        Math.ceil(4 * sourceScale),
+        4,
+        16,
+      );
+      for (const [startX, endX] of [
+        [
+          Math.max(
+            0,
+            candidate.left - continuationRadius,
+          ),
+          candidate.left - 1,
+        ],
+        [
+          candidate.right + 1,
+          Math.min(
+            width - 1,
+            candidate.right + continuationRadius,
+          ),
+        ],
+      ]) {
+        for (let x = startX; x <= endX; x += 1) {
+          let hasContinuationInk = false;
+          for (
+            let y = Math.max(
+              0,
+              candidate.top - continuationVerticalMargin,
+            );
+            y <=
+            Math.min(
+              height - 1,
+              candidate.bottom +
+                continuationVerticalMargin,
+            );
+            y += 1
+          ) {
+            if (curveEvidenceMask[y * width + x]) {
+              hasContinuationInk = true;
+              break;
+            }
+          }
+          if (hasContinuationInk) {
+            boundaryContinuationColumns += 1;
+          }
+        }
+      }
+      const outsideArtifactLineCount =
+        outsideRowInk.reduce(
+          (count, value) =>
+            count +
+            (value >= Math.max(12, width * 0.025)
+              ? 1
+              : 0),
+          0,
+        ) +
+        outsideColumnInk.reduce(
+          (count, value) =>
+            count +
+            (value >= Math.max(10, height * 0.035)
+              ? 1
+              : 0),
+          0,
+        );
+      const evidence = candidate.curveEvidence;
+      const strongSingleton =
+        evidence.valid &&
+        evidence.score >= 0.58 &&
+        (evidence.continuousCoverage >= 0.42 ||
+          evidence.segmentedWaveformTrace) &&
+        evidence.linearDeviation >= 0.025 &&
+        evidence.thinEnough &&
+        (evidence.localizedSinglePeak ||
+          evidence.directionChangeCount >= 1);
+      const substantialNonCurveContent =
+        outsideInk >= Math.max(24, totalInk * 0.035) &&
+        outsideArtifactLineCount >= 2 &&
+        // Even one occupied neighbour column is evidence that the selected
+        // component is only a fragment of a deeper multi-State waveform.
+        // Tables, prose blocks and diagrams normally have a real gutter.
+        boundaryContinuationColumns === 0;
+      if (strongSingleton && substantialNonCurveContent) {
+        return {
+          candidates: [candidate],
+          rejectedComponentCount: Math.min(
+            99,
+            Math.max(
+              1,
+              ...hypotheses.map(
+                (hypothesis) =>
+                  hypothesis.rejectedComponentCount,
+              ),
+            ),
+          ),
+        };
+      }
+    }
     return { candidates: [], rejectedComponentCount: 0 };
   }
   return {
@@ -2256,6 +3037,7 @@ function detectFramelessCurveCandidates(
  *   curveColorMasks?: Uint8Array[];
  *   recoverLowResolution?: boolean;
  *   maximumLineGap?: number;
+ *   sourceScale?: number;
  * }} [options]
  */
 export function detectChartPanelsFromMask(
@@ -2378,7 +3160,11 @@ export function detectChartPanelsFromMask(
   const curveEvidenceMask =
     options.curveEvidenceMask ??
     edgeEvidenceMask ??
-    workingMask;
+    // Line-gap repair is useful for geometric axes, but applying it to the
+    // Curve source can join two independent frameless charts across a real
+    // 1–3 px gutter. Preserve the original topology when the caller provides
+    // only one mask.
+    mask;
   const sharedFrameCellCandidates =
     detectSharedFrameCellCandidates(
       mask,
@@ -2410,6 +3196,7 @@ export function detectChartPanelsFromMask(
     options.curveColorMasks,
     width,
     height,
+    options.sourceScale,
   );
   const geometricCandidates = removeDuplicateAndGridCandidates(
     [
@@ -2495,43 +3282,88 @@ export function detectChartPanelsFromMask(
     (candidate) =>
       candidate.detectionReason === "frameless-curve-region",
   );
-  const rejectedNonChartCount =
+  let rejectedNonChartCount =
     geometricRejectedNonChartCount +
     (framelessUsed
       ? framelessDetection.rejectedComponentCount
       : 0);
 
   if (!candidates.length && options.fallbackToWholeImage !== false) {
-    return {
-      panels: [
+    // A slightly rotated plot can hide its waveform behind a long diagonal
+    // frame stroke: the greedy trace follows that straight border instead of
+    // the peaks. Deskew only this rare fallback path, using the same bounded
+    // projection routine as normal Curve extraction, then apply the exact
+    // same waveform gate to the corrected salience mask.
+    const rawWholeImageCurveEvidence = measureChartCurveEvidence(
+      {
+        left: 0,
+        top: 0,
+        right: width - 1,
+        bottom: height - 1,
+        axisMode: "content",
+      },
+      curveEvidenceMask,
+      width,
+    );
+    let wholeImageCurveEvidence =
+      rawWholeImageCurveEvidence;
+    if (!rawWholeImageCurveEvidence.valid) {
+      const fallbackMasks = deskewForegroundMasks(
+        mask,
+        edgeEvidenceMask ?? mask,
+        width,
+        height,
+        curveEvidenceMask,
+      );
+      wholeImageCurveEvidence = measureChartCurveEvidence(
         {
-          index: 0,
           left: 0,
           top: 0,
           right: width - 1,
           bottom: height - 1,
-          x: 0,
-          y: 0,
-          width,
-          height,
-          confidence: 0.2,
-          detectionReason: "whole-image-fallback",
-          mode: "content",
           axisMode: "content",
         },
-      ],
-      layout: { rows: 1, columns: 1 },
-      fallbackUsed: true,
-      detectedPanelCount: 0,
-      rejectedNonChartCount,
-      truncated: false,
-      maxPanels: MAXIMUM_CHART_PANELS,
-      lowResolutionRecovery: {
-        applied: recovered.repairedPixelCount > 0,
-        maximumGap: recovered.maximumGap,
-        repairedPixelCount: recovered.repairedPixelCount,
-      },
-    };
+        fallbackMasks.curveSalientMask,
+        width,
+      );
+    }
+    if (wholeImageCurveEvidence.valid) {
+      return {
+        panels: [
+          {
+            index: 0,
+            left: 0,
+            top: 0,
+            right: width - 1,
+            bottom: height - 1,
+            x: 0,
+            y: 0,
+            width,
+            height,
+            confidence: 0.2,
+            detectionReason: "whole-image-fallback",
+            mode: "content",
+            axisMode: "content",
+          },
+        ],
+        layout: { rows: 1, columns: 1 },
+        fallbackUsed: true,
+        detectedPanelCount: 0,
+        rejectedNonChartCount,
+        truncated: false,
+        maxPanels: MAXIMUM_CHART_PANELS,
+        lowResolutionRecovery: {
+          applied: recovered.repairedPixelCount > 0,
+          maximumGap: recovered.maximumGap,
+          repairedPixelCount: recovered.repairedPixelCount,
+        },
+      };
+    }
+    // A fallback is safe only when the whole image itself contains a coherent,
+    // curved trace. Text, tables, empty coordinates, boxes and connector
+    // diagrams must not silently become a synthetic Curve and enter training
+    // or retrieval.
+    rejectedNonChartCount += 1;
   }
   const selected = selectHighestQualityPanels(
     candidates,
@@ -2559,7 +3391,9 @@ export function detectChartPanelsFromMask(
  *
  * This is deliberately framework-agnostic: callers provide decoded pixels,
  * and receive deterministic, reading-order crop rectangles in the same pixel
- * coordinate system. At least one panel is always returned.
+ * coordinate system. A waveform-only whole-image fallback is returned for a
+ * credible unframed distribution; non-distribution-only input returns no
+ * panels so callers cannot accidentally train on prose, tables or diagrams.
  *
  * @param {Uint8Array | Uint8ClampedArray | Buffer} rgb
  * @param {number} width
@@ -2623,6 +3457,7 @@ export function detectChartPanels(
     curveEvidenceMask: curveSalientMask,
     curveColorMasks,
     maximumLineGap: options.maximumLineGap,
+    sourceScale: options.sourceScale,
   });
 }
 

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { access, readFile, readdir } from "node:fs/promises";
 import test from "node:test";
+import jpeg from "jpeg-js";
 import {
   assembleUbuntuPackage,
   assembleWindowsPackage,
@@ -52,6 +53,32 @@ async function render() {
   );
 }
 
+function nonDistributionJpeg() {
+  const width = 320;
+  const height = 180;
+  const rgba = new Uint8Array(width * height * 4).fill(255);
+  const paint = (x, y) => {
+    if (x < 0 || x >= width || y < 0 || y >= height) return;
+    const offset = (y * width + x) * 4;
+    rgba[offset] = 20;
+    rgba[offset + 1] = 20;
+    rgba[offset + 2] = 20;
+  };
+  for (let x = 12; x <= 308; x += 20) {
+    for (let y = 10; y <= 170; y += 1) {
+      paint(x, y);
+      paint(x + 1, y);
+    }
+  }
+  for (let y = 10; y <= 170; y += 20) {
+    for (let x = 12; x <= 308; x += 1) {
+      paint(x, y);
+      paint(x, y + 1);
+    }
+  }
+  return jpeg.encode({ data: rgba, width, height }, 84).data;
+}
+
 test("server-renders the VTH similarity product", async () => {
   const response = await render();
   assert.equal(response.status, 200);
@@ -99,13 +126,87 @@ test("server-renders the VTH similarity product", async () => {
   assert.match(html, /WINDOWS X64 · FULL OFFLINE/);
   assert.match(html, /UBUNTU X64 · WEB SERVER/);
   assert.match(html, /외부 Web 서버 다운로드/);
-  assert.match(html, /ENGINE V3\.3/);
+  assert.match(html, /ENGINE V3\.4/);
+  assert.match(html, /WAVEFORM-ONLY/);
   assert.match(html, /30-PANEL MAX/);
   assert.match(
     html,
     /동의 시 표준 Curve \+ 원본 미리보기를 공용 학습/,
   );
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
+});
+
+test("public shared ready ingestion rejects a non-waveform source before storage", async () => {
+  const corpus = JSON.parse(
+    await readFile(
+      new URL("../public/corpus-index.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const candidate = corpus.candidates.find(
+    (item) => item.id === "vth-08s-s0042-00000",
+  );
+  assert.ok(candidate);
+  const form = new FormData();
+  form.append(
+    "payload",
+    JSON.stringify({
+      schemaVersion: 2,
+      label: "Rejected table",
+      profile: candidate.profile,
+      descriptor: {
+        stateCount: candidate.stateCount,
+        observedStateCount: candidate.observedStateCount,
+        regularized: candidate.regularized,
+        peakLocations: candidate.peakLocations,
+        peakWidths: candidate.peakWidths,
+        valleyHeights: candidate.valleyHeights,
+        valleyLocations: candidate.valleyLocations,
+        valleyDepths: candidate.valleyDepths,
+        valleyPositionRatios: candidate.valleyPositionRatios,
+        peakValleyDistances: candidate.peakValleyDistances,
+        tailSlopes: candidate.tailSlopes,
+        area: candidate.area,
+      },
+      sharingConsent: true,
+      consentVersion: "2026-07-28-v2",
+      contributorToken: "a".repeat(32),
+      deletionToken: "b".repeat(32),
+    }),
+  );
+  form.append(
+    "sourceImage",
+    new File([nonDistributionJpeg()], "table.jpg", {
+      type: "image/jpeg",
+    }),
+  );
+
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set(
+    "shared-ingestion-test",
+    `${process.pid}-${Date.now()}`,
+  );
+  const { default: worker } = await import(workerUrl.href);
+  const response = await worker.fetch(
+    new Request(
+      "http://localhost/api/v1/shared-training-samples",
+      {
+        method: "POST",
+        body: form,
+      },
+    ),
+    { ASSETS: assetsFromDist() },
+    {
+      waitUntil() {},
+      passThroughOnException() {},
+    },
+  );
+  assert.equal(response.status, 422);
+  const payload = await response.json();
+  assert.equal(
+    payload.error.code,
+    "distribution_waveform_not_found",
+  );
 });
 
 test("stacks the source panel above a wide, shallow normalized Curve", async () => {
@@ -235,24 +336,24 @@ async function verifyStandalonePackageDownload({
 
 test("ships the verified Windows standalone package as a web download", async () => {
   await verifyStandalonePackageDownload({
-    manifestFileName: "windows-package-v1.33.0.json",
+    manifestFileName: "windows-package-v1.34.0.json",
     checksumFileName: "vth-similarity-windows-x64.sha256",
-    expectedVersion: "1.33.0",
+    expectedVersion: "1.34.0",
     expectedFileName: "vth-similarity-windows-x64.zip",
     expectedDownloadFileName:
-      "vth-similarity-windows-x64-v1.33.0.zip",
+      "vth-similarity-windows-x64-v1.34.0.zip",
     assemble: assembleWindowsPackage,
   });
 });
 
 test("ships the verified Ubuntu external Web server package as a web download", async () => {
   await verifyStandalonePackageDownload({
-    manifestFileName: "ubuntu-package-v1.33.0.json",
+    manifestFileName: "ubuntu-package-v1.34.0.json",
     checksumFileName: "vth-similarity-ubuntu-x64.sha256",
-    expectedVersion: "1.33.0",
+    expectedVersion: "1.34.0",
     expectedFileName: "vth-similarity-ubuntu-x64.tar.gz",
     expectedDownloadFileName:
-      "vth-similarity-ubuntu-x64-v1.33.0.tar.gz",
+      "vth-similarity-ubuntu-x64-v1.34.0.tar.gz",
     assemble: assembleUbuntuPackage,
   });
 });
@@ -524,6 +625,8 @@ test("shares standardized candidates and anonymous relevance labels centrally", 
   );
   assert.match(source, /boundedRasterScale/);
   assert.match(source, /무작위 배치·저해상도/);
+  assert.match(source, /비차트 자동 제외/);
+  assert.match(source, /텍스트·표·빈 좌표계·사각형 및 설명 도형/);
   assert.match(source, /analyzeForegroundMasks/);
   assert.match(source, /detectChartPanels/);
   assert.match(source, /extractChartProfiles/);
@@ -639,6 +742,8 @@ test("shares standardized candidates and anonymous relevance labels centrally", 
   assert.match(sharedCore, /MAX_SHARED_CANDIDATE_PAGE_SIZE = 500/);
   assert.match(sharedCore, /encodeSharedCandidateCursor/);
   assert.match(sharedRoute, /createSharedTrainingCandidate/);
+  assert.match(sharedRoute, /authoritativeProfile/);
+  assert.match(sharedRoute, /descriptorFromProfile/);
   assert.match(sharedRoute, /nextCursor/);
   assert.match(sharedStore, /VTH_SHARED_IMAGES/);
   assert.match(sharedStore, /source_image_key/);
@@ -735,5 +840,27 @@ test("hosting metadata is ready for Sites ownership", async () => {
   );
   assert.ok(
     openapi.paths["/api/v1/shared-training-samples/{id}/source-image"],
+  );
+  assert.ok(
+    openapi.paths["/api/v1/shared-training-samples"].post.responses["422"],
+  );
+  assert.ok(
+    openapi.paths["/api/v1/shared-training-samples"].post.responses["413"],
+  );
+  assert.ok(
+    openapi.paths["/api/v1/shared-training-samples"].post.responses["503"],
+  );
+  assert.match(
+    openapi.paths["/api/v1/shared-training-samples"].post.description,
+    /source-derived profile.*canonical descriptor.*State/s,
+  );
+  assert.match(
+    openapi.paths["/api/v1/shared-training-samples"].post.description,
+    /differ from the input/,
+  );
+  assert.equal(
+    openapi.components.schemas.SharedTrainingInput.properties
+      .consentVersion.const,
+    "2026-07-28-v2",
   );
 });

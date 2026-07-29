@@ -15,6 +15,8 @@ import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { nonDistributionPng } from "./non-distribution-fixture.mjs";
+
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -266,6 +268,24 @@ async function verifyService(packageDirectory, validationDirectory) {
       search.inputHandling?.stored === false &&
         search.inputHandling?.usedForTraining === false,
       "Similarity query must remain transient.",
+    );
+    const nonDistributionResponse = await fetch(
+      `${baseUrl}/api/v1/similarity-search?topK=1`,
+      {
+        method: "POST",
+        headers: {
+          ...headers,
+          "content-type": "image/png",
+        },
+        body: nonDistributionPng(),
+      },
+    );
+    const nonDistribution = await nonDistributionResponse.json();
+    assert(
+      nonDistributionResponse.status === 422 &&
+        nonDistribution.error?.code ===
+          "distribution_waveform_not_found",
+      "Ubuntu API did not reject table and diagram-only content.",
     );
 
     const framelessBytes = await readFile(
@@ -593,7 +613,7 @@ async function main() {
       ),
     );
     assert(
-      manifest.version === "1.33.0" &&
+      manifest.version === "1.34.0" &&
         manifest.platform === "ubuntu-linux-x64" &&
         manifest.architecture === "x86_64" &&
         manifest.entrypoint === "start.sh" &&

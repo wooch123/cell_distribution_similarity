@@ -7,6 +7,12 @@ const MIME_EXTENSIONS = new Map([
   ["image/png", ".png"],
   ["image/jpeg", ".jpg"],
   ["image/webp", ".webp"],
+  ["image/svg+xml", ".svg"],
+]);
+const UPLOAD_IMAGE_MIME_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
 ]);
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 
@@ -80,6 +86,27 @@ function validateDescriptor(descriptor) {
   };
 }
 
+function renderStandardizedCurveSvg(profile) {
+  const points = profile
+    .map((value, index) => {
+      const x = 12 + (index / 255) * 488;
+      const y = 12 + (1 - Number(value)) * 232;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(" ");
+  return Buffer.from(
+    [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 256">',
+      '<rect width="512" height="256" fill="#fff"/>',
+      `<polyline points="${points}" fill="none" stroke="#101715" `,
+      'stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>',
+      "</svg>",
+    ].join(""),
+    "utf8",
+  );
+}
+
 function publicRecord(record) {
   const {
     imageFile: _imageFile,
@@ -90,10 +117,11 @@ function publicRecord(record) {
 }
 
 export class TrainingStore {
-  constructor(dataDirectory) {
+  constructor(dataDirectory, options = {}) {
     this.dataDirectory = path.resolve(dataDirectory);
     this.imagesDirectory = path.join(this.dataDirectory, "images");
     this.indexPath = path.join(this.dataDirectory, "training-index.json");
+    this.validateReadyImage = options.validateReadyImage;
     this.index = {
       schemaVersion: 1,
       updatedAt: new Date(0).toISOString(),
@@ -165,34 +193,74 @@ export class TrainingStore {
   }
 
   async upsertReady(payload) {
-    const profile = numberArray(payload?.profile, 256);
-    if (!profile) {
+    const submittedProfile = numberArray(payload?.profile, 256);
+    if (!submittedProfile) {
       throw new Error("정확히 256개 숫자로 된 profile이 필요합니다.");
     }
-    const descriptor = validateDescriptor(payload?.descriptor);
-    const image = decodeImageDataUrl(payload?.imageDataUrl);
-    const sourceImage = payload?.sourceImageDataUrl
-      ? decodeImageDataUrl(payload.sourceImageDataUrl)
-      : null;
+    const submittedDescriptor = validateDescriptor(payload?.descriptor);
+    // Retain request-shape compatibility, but never persist this
+    // caller-controlled standardized preview.
+    decodeImageDataUrl(payload?.imageDataUrl);
+    if (!payload?.sourceImageDataUrl) {
+      throw new Error(
+        "즉시 검색 가능한 학습 sample에는 sourceImageDataUrl이 필요합니다.",
+      );
+    }
+    const sourceImage = decodeImageDataUrl(payload.sourceImageDataUrl);
+    if (typeof this.validateReadyImage !== "function") {
+      throw Object.assign(
+        new Error("학습 원본 파형 검증기가 준비되지 않았습니다."),
+        {
+          status: 503,
+          code: "waveform_validator_unavailable",
+        },
+      );
+    }
+    const verification = await this.validateReadyImage({
+      bytes: sourceImage.bytes,
+      mimeType: sourceImage.mimeType,
+      profile: submittedProfile,
+      stateCount: submittedDescriptor.stateCount,
+    });
+    const profile = numberArray(
+      verification?.authoritativeProfile,
+      256,
+    );
+    if (!profile || !verification?.authoritativeDescriptor) {
+      throw Object.assign(
+        new Error("학습 원본의 authoritative Curve를 만들지 못했습니다."),
+        {
+          status: 503,
+          code: "waveform_validator_unavailable",
+        },
+      );
+    }
+    const descriptor = validateDescriptor(
+      verification.authoritativeDescriptor,
+    );
+    const image = {
+      mimeType: "image/svg+xml",
+      bytes: renderStandardizedCurveSvg(profile),
+    };
     const id = safeId(payload?.id);
     return this.#mutate(async () => {
       const imageFile = await this.#writeImage(id, image);
-      const sourceImageFile = sourceImage
-        ? await this.#writeImage(id, sourceImage, "source")
-        : null;
+      const sourceImageFile = await this.#writeImage(
+        id,
+        sourceImage,
+        "source",
+      );
       const learnedAt =
         payload?.metadata?.learnedAt ?? new Date().toISOString();
       const record = {
         id,
         label: String(payload?.label || id).slice(0, 120),
         image: `/api/v1/training-samples/${encodeURIComponent(id)}/image`,
-        sourceImage: sourceImageFile
-          ? `/api/v1/training-samples/${encodeURIComponent(id)}/source-image`
-          : undefined,
+        sourceImage: `/api/v1/training-samples/${encodeURIComponent(id)}/source-image`,
         imageFile,
         mimeType: image.mimeType,
         sourceImageFile,
-        sourceImageMimeType: sourceImage?.mimeType,
+        sourceImageMimeType: sourceImage.mimeType,
         profile,
         stateCount: descriptor.stateCount,
         family: "learned",
@@ -209,7 +277,11 @@ export class TrainingStore {
         learnedAt,
         storage: "api",
         status: "ready",
-        metadata: payload?.metadata ?? {},
+        metadata: {
+          ...(payload?.metadata ?? {}),
+          authoritativeSourceProfile: true,
+          profileSimilarity: verification.profileSimilarity,
+        },
       };
       await this.#replaceRecord(record);
       return publicRecord(record);
@@ -223,7 +295,7 @@ export class TrainingStore {
     label,
     metadata = {},
   }) {
-    if (!MIME_EXTENSIONS.has(mimeType)) {
+    if (!UPLOAD_IMAGE_MIME_TYPES.has(mimeType)) {
       throw new Error("PNG, JPEG 또는 WEBP 이미지가 필요합니다.");
     }
     if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > MAX_IMAGE_BYTES) {
