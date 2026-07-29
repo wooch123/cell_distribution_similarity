@@ -48,7 +48,6 @@ const nodeArchivePath = path.join(cacheDirectory, nodeArchiveName);
 const nodeArchiveUrl = `https://nodejs.org/dist/v${nodeVersion}/${nodeArchiveName}`;
 const nodeArchiveSha256 =
   "313fa40c0d7b18575821de8cb17483031fe07d95de5994f6f435f3b345f85c66";
-const pythonExecutable = path.join(projectRoot, ".venv", "bin", "python");
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -243,8 +242,7 @@ async function packageWindows() {
       path.join(stagingDirectory, "server", "openapi.json"),
     ),
   ]);
-  await run(process.execPath, [
-    path.join(projectRoot, "web", "node_modules", "esbuild", "bin", "esbuild"),
+  await run(path.join(projectRoot, "web", "node_modules", ".bin", "esbuild"), [
     path.join(projectRoot, "web", "lib", "vth-similarity-api-core.mjs"),
     "--bundle",
     "--platform=node",
@@ -252,34 +250,21 @@ async function packageWindows() {
     "--format=esm",
     `--outfile=${path.join(stagingDirectory, "server", "similarity-engine.mjs")}`,
   ]);
-  const runtimeTarPath = path.join(
+  const compressedRuntimePath = path.join(
     stagingDirectory,
     "runtime",
-    "node-runtime.tar",
+    "node-runtime.tar.xz",
   );
-  const compressedRuntimePath = `${runtimeTarPath}.xz`;
   await run("tar", [
-    "-cf",
-    runtimeTarPath,
+    "-cJf",
+    compressedRuntimePath,
     "-C",
     path.join(stagingDirectory, "runtime"),
     "node.exe",
   ]);
-  await run(pythonExecutable, [
-    "-c",
-    [
-      "import lzma, pathlib, sys",
-      "source = pathlib.Path(sys.argv[1])",
-      "target = pathlib.Path(sys.argv[2])",
-      "target.write_bytes(lzma.compress(source.read_bytes(), format=lzma.FORMAT_XZ, preset=9))",
-    ].join("; "),
-    runtimeTarPath,
-    compressedRuntimePath,
-  ]);
-  await Promise.all([
-    rm(runtimeTarPath, { force: true }),
-    rm(path.join(stagingDirectory, "runtime", "node.exe"), { force: true }),
-  ]);
+  await rm(path.join(stagingDirectory, "runtime", "node.exe"), {
+    force: true,
+  });
   // A hosted build can already contain the previous downloadable ZIP. Never
   // nest that ZIP inside the standalone package itself.
   await rm(path.join(stagingDirectory, "site", "client", "downloads"), {

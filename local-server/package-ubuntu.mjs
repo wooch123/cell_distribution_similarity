@@ -264,8 +264,7 @@ async function packageUbuntu() {
       path.join(stagingDirectory, "server", "openapi.json"),
     ),
   ]);
-  await run(process.execPath, [
-    path.join(projectRoot, "web", "node_modules", "esbuild", "bin", "esbuild"),
+  await run(path.join(projectRoot, "web", "node_modules", ".bin", "esbuild"), [
     path.join(projectRoot, "web", "lib", "vth-similarity-api-core.mjs"),
     "--bundle",
     "--platform=node",
