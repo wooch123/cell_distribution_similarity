@@ -1,5 +1,5 @@
-export const WINDOWS_PACKAGE_VERSION = "1.36.0";
-export const UBUNTU_PACKAGE_VERSION = "1.36.0";
+export const WINDOWS_PACKAGE_VERSION = "1.37.0";
+export const UBUNTU_PACKAGE_VERSION = "1.37.0";
 
 const DEFAULT_WINDOWS_MANIFEST_URL =
   `/downloads/windows-package-v${WINDOWS_PACKAGE_VERSION}.json`;

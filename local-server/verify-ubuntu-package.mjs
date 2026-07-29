@@ -13,13 +13,16 @@ import {
 import { createServer as createHttpServer } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   colorSeriesVerificationPng,
   verifyColorSeriesSearch,
 } from "./color-series-verification.mjs";
 import { nonDistributionPng } from "./non-distribution-fixture.mjs";
+
+const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
+const projectRoot = path.resolve(moduleDirectory, "..");
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -314,6 +317,43 @@ async function verifyService(packageDirectory, validationDirectory) {
     );
     verifyColorSeriesSearch(await colorSeriesResponse.json(), 2);
 
+    const repeatedGridSample = await readFile(
+      path.join(
+        projectRoot,
+        "web",
+        "tests",
+        "fixtures",
+        "qlc-read-disturb-20-chart-slide.png",
+      ),
+    );
+    const repeatedGridResponse = await fetch(
+      `${baseUrl}/api/v1/similarity-search?topK=1`,
+      {
+        method: "POST",
+        headers: {
+          ...headers,
+          "content-type": "image/png",
+        },
+        body: repeatedGridSample,
+      },
+    );
+    const repeatedGrid = await repeatedGridResponse.json();
+    assert(
+      repeatedGridResponse.status === 200 &&
+        repeatedGrid.panelCount === 20 &&
+        repeatedGrid.panelLayout?.rows === 4 &&
+        repeatedGrid.panelLayout?.columns === 5 &&
+        repeatedGrid.panels?.every(
+          (panel) =>
+            panel.bounds?.source?.x +
+              panel.bounds?.source?.width <=
+              1150 &&
+            panel.seriesCount === 1 &&
+            panel.query?.stateCount === 8,
+        ),
+      "Ubuntu search did not isolate the 4x5 VTH waveform grid.",
+    );
+
     const framelessBytes = await readFile(
       path.join(
         packageDirectory,
@@ -597,6 +637,12 @@ async function verifyPackagedRuntimeService(packageDirectory) {
 async function main() {
   const archivePath = path.resolve(process.argv[2] || "");
   await stat(archivePath);
+  const expectedArchiveSha256 = await sha256(archivePath);
+  assert(
+    (await readFile(`${archivePath}.sha256`, "utf8")) ===
+      `${expectedArchiveSha256} *${path.basename(archivePath)}\n`,
+    "Ubuntu release checksum sidecar is missing or invalid.",
+  );
   assert(
     archivePath.endsWith(".tar.gz"),
     "Ubuntu package must use the .tar.gz format.",
@@ -638,8 +684,17 @@ async function main() {
         "utf8",
       ),
     );
+    const bundledServerSource = await readFile(
+      path.join(packageDirectory, "site", "server", "index.js"),
+      "utf8",
+    );
     assert(
-      manifest.version === "1.36.0" &&
+      bundledServerSource.includes("v1.37.0") &&
+        !bundledServerSource.includes("v1.36.0"),
+      "Ubuntu package contains a stale hosted download release.",
+    );
+    assert(
+      manifest.version === "1.37.0" &&
         manifest.platform === "ubuntu-linux-x64" &&
         manifest.architecture === "x86_64" &&
         manifest.entrypoint === "start.sh" &&
@@ -677,6 +732,8 @@ async function main() {
         manifest.bundled?.similaritySearchApi === true &&
         manifest.bundled?.multiChartPanelSplitting === true &&
         manifest.bundled?.multiChartMaximumPanels === 30 &&
+        manifest.bundled?.borderSafeDocumentBackground === true &&
+        manifest.bundled?.repeatedWaveformGridRecovery === true &&
         manifest.bundled?.colorSeriesSeparation === true &&
         manifest.bundled?.similarityRanking ===
           "per-panel-per-series" &&
@@ -798,7 +855,7 @@ async function main() {
       JSON.stringify(
         {
           archivePath,
-          archiveSha256: await sha256(archivePath),
+          archiveSha256: expectedArchiveSha256,
           checkedFiles,
           service,
           packagedRuntimeService,

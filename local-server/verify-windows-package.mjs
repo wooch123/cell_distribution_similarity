@@ -9,13 +9,16 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   colorSeriesVerificationPng,
   verifyColorSeriesSearch,
 } from "./color-series-verification.mjs";
 import { nonDistributionPng } from "./non-distribution-fixture.mjs";
+
+const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
+const projectRoot = path.resolve(moduleDirectory, "..");
 
 function run(command, args) {
   return new Promise((resolve, reject) => {
@@ -284,6 +287,40 @@ async function verifyService(packageDirectory, validationDirectory) {
       "Packaged color-series search did not return 200.",
     );
     verifyColorSeriesSearch(await colorSeriesResponse.json(), 2);
+
+    const repeatedGridSample = await readFile(
+      path.join(
+        projectRoot,
+        "web",
+        "tests",
+        "fixtures",
+        "qlc-read-disturb-20-chart-slide.png",
+      ),
+    );
+    const repeatedGridResponse = await fetch(
+      `${baseUrl}/api/v1/similarity-search?topK=1`,
+      {
+        method: "POST",
+        headers: { "content-type": "image/png" },
+        body: repeatedGridSample,
+      },
+    );
+    const repeatedGrid = await repeatedGridResponse.json();
+    assert(
+      repeatedGridResponse.status === 200 &&
+        repeatedGrid.panelCount === 20 &&
+        repeatedGrid.panelLayout?.rows === 4 &&
+        repeatedGrid.panelLayout?.columns === 5 &&
+        repeatedGrid.panels?.every(
+          (panel) =>
+            panel.bounds?.source?.x +
+              panel.bounds?.source?.width <=
+              1150 &&
+            panel.seriesCount === 1 &&
+            panel.query?.stateCount === 8,
+        ),
+      "Packaged search did not isolate the 4x5 VTH waveform grid.",
+    );
 
     const bundledMultiChartSamplePath = path.join(
       packageDirectory,
@@ -564,6 +601,12 @@ async function verifyService(packageDirectory, validationDirectory) {
 async function main() {
   const zipPath = path.resolve(process.argv[2] || "");
   await stat(zipPath);
+  const expectedZipSha256 = await sha256(zipPath);
+  assert(
+    (await readFile(`${zipPath}.sha256`, "utf8")) ===
+      `${expectedZipSha256} *${path.basename(zipPath)}\n`,
+    "Windows release checksum sidecar is missing or invalid.",
+  );
   const temporaryDirectory = await mkdtemp(
     path.join(tmpdir(), "vth-windows-package-"),
   );
@@ -642,8 +685,17 @@ async function main() {
         "utf8",
       ),
     );
+    const bundledServerSource = await readFile(
+      path.join(packageDirectory, "site", "server", "index.js"),
+      "utf8",
+    );
     assert(
-      manifest.version === "1.36.0" &&
+      bundledServerSource.includes("v1.37.0") &&
+        !bundledServerSource.includes("v1.36.0"),
+      "Windows package contains a stale hosted download release.",
+    );
+    assert(
+      manifest.version === "1.37.0" &&
         manifest.platform === "windows-x64" &&
         manifest.network?.mode === "offline-loopback-only" &&
         manifest.network?.externalNetworkAllowed === false &&
@@ -651,6 +703,8 @@ async function main() {
         manifest.bundled?.model === true &&
         manifest.bundled?.multiChartPanelSplitting === true &&
         manifest.bundled?.multiChartMaximumPanels === 30 &&
+        manifest.bundled?.borderSafeDocumentBackground === true &&
+        manifest.bundled?.repeatedWaveformGridRecovery === true &&
         manifest.bundled?.colorSeriesSeparation === true &&
         manifest.bundled?.similarityRanking ===
           "per-panel-per-series" &&
@@ -704,7 +758,7 @@ async function main() {
       JSON.stringify(
         {
           zipPath,
-          zipSha256: await sha256(zipPath),
+          zipSha256: expectedZipSha256,
           checkedFiles,
           service,
         },

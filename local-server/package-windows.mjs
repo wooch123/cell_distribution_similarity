@@ -15,12 +15,13 @@ import { fileURLToPath } from "node:url";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(moduleDirectory, "..");
-const version = "1.36.0";
+const version = "1.37.0";
 const packageName = `vth-similarity-windows-x64-v${version}`;
 const artifactsDirectory = path.join(projectRoot, "artifacts", "windows");
 const cacheDirectory = path.join(artifactsDirectory, "cache");
 const stagingDirectory = path.join(artifactsDirectory, packageName);
 const zipPath = path.join(artifactsDirectory, `${packageName}.zip`);
+const zipChecksumPath = `${zipPath}.sha256`;
 const publicDownloadsDirectory = path.join(
   projectRoot,
   "web",
@@ -201,6 +202,7 @@ async function packageWindows() {
 
   await rm(stagingDirectory, { recursive: true, force: true });
   await rm(zipPath, { force: true });
+  await rm(zipChecksumPath, { force: true });
   await Promise.all([
     mkdir(path.join(stagingDirectory, "runtime"), { recursive: true }),
     mkdir(path.join(stagingDirectory, "server"), { recursive: true }),
@@ -332,6 +334,9 @@ Node.js v${nodeVersion} Windows x64 런타임이 압축된 상태로 포함되�
 - FHD 한 이미지에서 오밀조밀하게 배치된 차트를 최대 30개까지 분석합니다.
   30개를 초과하면 신뢰도가 높은 30개를 행 우선 순서로 반환하고 API 경고와
   truncated 상태를 표시합니다.
+- 얇은 회색 슬라이드 외곽선을 배경으로 오인하지 않으며, 반복 배치된
+  파형 격자는 누락된 셀 경계를 복원한 뒤 각 셀의 Curve를 다시 검증합니다.
+  설명문·수치 표·단조 추세선은 파형 후보에서 제외합니다.
 - 화면의 "랜덤 멀티 차트 분석"은 임의 좌표의 차트와 표·플로우차트·
   사진성 블록이 섞인 샘플 또는 경계 없는 Curve 전용 샘플 중 직전과
   다른 이미지를 골라 실행합니다.
@@ -444,6 +449,8 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
       similaritySearchApi: true,
       multiChartPanelSplitting: true,
       multiChartMaximumPanels: 30,
+      borderSafeDocumentBackground: true,
+      repeatedWaveformGridRecovery: true,
       colorSeriesSeparation: true,
       similarityRanking: "per-panel-per-series",
       multiChartSample: {
@@ -527,6 +534,11 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
   const generatedAt = new Date().toISOString();
   const zipBytes = await readFile(zipPath);
   const parts = [];
+  await writeFile(
+    zipChecksumPath,
+    `${zipSha256} *${path.basename(zipPath)}\n`,
+    "utf8",
+  );
   await cleanPreviousWindowsDownloads();
   for (let offset = 0, index = 0; offset < zipBytes.length; index += 1) {
     const bytes = zipBytes.subarray(offset, offset + publicChunkSize);
@@ -574,6 +586,7 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
       {
         stagingDirectory,
         zipPath,
+        zipChecksumPath,
         publicDownloadAction: "browser-assembled",
         publicPartCount: parts.length,
         zipBytes: zipStat.size,

@@ -3703,6 +3703,323 @@ function detectFramelessCurveCandidates(
   };
 }
 
+function medianNumber(values) {
+  if (!values.length) return 0;
+  const ordered = [...values].sort(
+    (left, right) => left - right,
+  );
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2
+    ? ordered[middle]
+    : (ordered[middle - 1] + ordered[middle]) / 2;
+}
+
+function clusterRepeatedCoordinates(
+  candidates,
+  coordinate,
+  tolerance,
+) {
+  const ordered = candidates
+    .map((candidate) => coordinate(candidate))
+    .sort((left, right) => left - right);
+  const clusters = [];
+  for (const value of ordered) {
+    const current = clusters.at(-1);
+    if (
+      current &&
+      value - current.center <= tolerance
+    ) {
+      current.values.push(value);
+      current.center =
+        current.values.reduce(
+          (sum, item) => sum + item,
+          0,
+        ) / current.values.length;
+      continue;
+    }
+    clusters.push({ values: [value], center: value });
+  }
+  return clusters;
+}
+
+function fitRepeatedCoordinateSequence(
+  clusters,
+  typicalSpan,
+) {
+  if (clusters.length < 2) return null;
+  const count = clusters.length;
+  const meanIndex = (count - 1) / 2;
+  const meanPosition =
+    clusters.reduce(
+      (sum, cluster) => sum + cluster.center,
+      0,
+    ) / count;
+  let numerator = 0;
+  let denominator = 0;
+  for (let index = 0; index < count; index += 1) {
+    const centeredIndex = index - meanIndex;
+    numerator +=
+      centeredIndex *
+      (clusters[index].center - meanPosition);
+    denominator += centeredIndex ** 2;
+  }
+  const step = numerator / Math.max(1e-9, denominator);
+  const origin = meanPosition - step * meanIndex;
+  const maximumResidual = clusters.reduce(
+    (maximum, cluster, index) =>
+      Math.max(
+        maximum,
+        Math.abs(cluster.center - (origin + step * index)),
+      ),
+    0,
+  );
+  if (
+    step < Math.max(6, typicalSpan * 1.05) ||
+    step > typicalSpan * 3.5 ||
+    maximumResidual > Math.max(6, typicalSpan * 0.16)
+  ) {
+    return null;
+  }
+  return {
+    origin,
+    step,
+    positions: Array.from(
+      { length: count },
+      (_, index) => origin + step * index,
+    ),
+    maximumResidual,
+  };
+}
+
+function isRepeatedGridAnchor(candidate, width, height) {
+  const evidence = candidate.curveEvidence;
+  const candidateAreaRatio =
+    area(candidate) / Math.max(1, width * height);
+  return (
+    evidence?.valid &&
+    !evidence.tableGridArtifact &&
+    candidateAreaRatio >=
+      COMPACT_MINIMUM_PANEL_AREA_RATIO &&
+    candidateAreaRatio <= 0.04 &&
+    evidence.horizontalCoverage >= 0.58 &&
+    evidence.continuousCoverage >= 0.42 &&
+    evidence.verticalVariation >= 0.07 &&
+    evidence.thinEnough !== false &&
+    (evidence.directionChangeCount >= 2 ||
+      evidence.localizedSinglePeak ||
+      (evidence.colorSeriesCount ?? 0) >= 1)
+  );
+}
+
+function isRepeatedGridCellEvidence(evidence) {
+  return (
+    evidence.valid &&
+    !evidence.tableGridArtifact &&
+    evidence.horizontalCoverage >= 0.58 &&
+    evidence.continuousCoverage >= 0.42 &&
+    evidence.verticalVariation >= 0.07 &&
+    evidence.thinEnough !== false &&
+    (evidence.directionChangeCount >= 1 ||
+      evidence.localizedSinglePeak ||
+      (evidence.colorSeriesCount ?? 0) >= 1)
+  );
+}
+
+function recoverRepeatedWaveformGridCandidates(
+  measuredCandidates,
+  curveEvidenceMask,
+  width,
+  height,
+) {
+  const anchors = measuredCandidates.filter((candidate) =>
+    isRepeatedGridAnchor(candidate, width, height),
+  );
+  const frameAnchors = anchors.filter(
+    (candidate) => candidate.axisMode === "rectangle",
+  );
+  if (anchors.length < 8 || frameAnchors.length < 3) {
+    return null;
+  }
+  const frameWidth = Math.round(
+    medianNumber(
+      frameAnchors.map(
+        (candidate) => candidate.right - candidate.left + 1,
+      ),
+    ),
+  );
+  const frameHeight = Math.round(
+    medianNumber(
+      frameAnchors.map(
+        (candidate) => candidate.bottom - candidate.top + 1,
+      ),
+    ),
+  );
+  if (frameWidth < 24 || frameHeight < 18) return null;
+
+  const columnClusters = clusterRepeatedCoordinates(
+    anchors,
+    (candidate) => candidate.left,
+    Math.max(6, frameWidth * 0.32),
+  );
+  const rowClusters = clusterRepeatedCoordinates(
+    anchors,
+    (candidate) => candidate.top,
+    Math.max(6, frameHeight * 0.32),
+  );
+  const expectedCellCount =
+    columnClusters.length * rowClusters.length;
+  if (
+    columnClusters.length < 2 ||
+    rowClusters.length < 2 ||
+    expectedCellCount < 6 ||
+    expectedCellCount > MAXIMUM_CHART_PANELS
+  ) {
+    return null;
+  }
+  const columnFit = fitRepeatedCoordinateSequence(
+    columnClusters,
+    frameWidth,
+  );
+  const rowFit = fitRepeatedCoordinateSequence(
+    rowClusters,
+    frameHeight,
+  );
+  if (!columnFit || !rowFit) return null;
+
+  const occupiedCells = new Set();
+  for (const anchor of anchors) {
+    let bestColumn = -1;
+    let bestColumnDistance = Number.POSITIVE_INFINITY;
+    for (
+      let column = 0;
+      column < columnFit.positions.length;
+      column += 1
+    ) {
+      const distance = Math.abs(
+        anchor.left - columnFit.positions[column],
+      );
+      if (distance < bestColumnDistance) {
+        bestColumn = column;
+        bestColumnDistance = distance;
+      }
+    }
+    let bestRow = -1;
+    let bestRowDistance = Number.POSITIVE_INFINITY;
+    for (
+      let row = 0;
+      row < rowFit.positions.length;
+      row += 1
+    ) {
+      const distance = Math.abs(
+        anchor.top - rowFit.positions[row],
+      );
+      if (distance < bestRowDistance) {
+        bestRow = row;
+        bestRowDistance = distance;
+      }
+    }
+    if (
+      bestColumnDistance <= frameWidth * 0.24 &&
+      bestRowDistance <= frameHeight * 0.24
+    ) {
+      occupiedCells.add(`${bestRow}:${bestColumn}`);
+    }
+  }
+  if (
+    occupiedCells.size <
+    Math.max(8, Math.ceil(expectedCellCount * 0.45))
+  ) {
+    return null;
+  }
+
+  const candidates = [];
+  for (
+    let row = 0;
+    row < rowFit.positions.length;
+    row += 1
+  ) {
+    for (
+      let column = 0;
+      column < columnFit.positions.length;
+      column += 1
+    ) {
+      const left = clamp(
+        Math.round(columnFit.positions[column]),
+        0,
+        width - 1,
+      );
+      const top = clamp(
+        Math.round(rowFit.positions[row]),
+        0,
+        height - 1,
+      );
+      const candidate = {
+        left,
+        top,
+        right: Math.min(width - 1, left + frameWidth - 1),
+        bottom: Math.min(
+          height - 1,
+          top + frameHeight - 1,
+        ),
+        axisMode: "rectangle",
+        detectionScale: "repeated-grid",
+        detectionReason: "repeated-waveform-grid",
+      };
+      const curveEvidence = measureChartCurveEvidence(
+        candidate,
+        curveEvidenceMask,
+        width,
+      );
+      if (!isRepeatedGridCellEvidence(curveEvidence)) {
+        continue;
+      }
+      candidates.push({
+        ...candidate,
+        confidence: clamp(
+          0.62 + curveEvidence.score * 0.34,
+          0,
+          0.98,
+        ),
+        curveEvidence,
+      });
+    }
+  }
+  if (
+    candidates.length <
+    Math.ceil(expectedCellCount * 0.85)
+  ) {
+    return null;
+  }
+  return {
+    candidates,
+    anchorCount: anchors.length,
+    occupiedCellCount: occupiedCells.size,
+    expectedCellCount,
+    rows: rowFit.positions.length,
+    columns: columnFit.positions.length,
+    frameWidth,
+    frameHeight,
+    columnStep: columnFit.step,
+    rowStep: rowFit.step,
+  };
+}
+
+function isCredibleCandidateOutsideRepeatedGrid(candidate) {
+  const evidence = candidate.curveEvidence;
+  return (
+    evidence.valid &&
+    !evidence.tableGridArtifact &&
+    evidence.horizontalCoverage >= 0.42 &&
+    evidence.verticalVariation >= 0.045 &&
+    evidence.thinEnough !== false &&
+    (evidence.colorSeriesCount >= 1 ||
+      evidence.segmentedWaveformTrace ||
+      evidence.localizedSinglePeak ||
+      (evidence.continuousCoverage >= 0.3 &&
+        evidence.directionChangeCount >= 1))
+  );
+}
+
 /**
  * Detect independent chart panels from a precomputed foreground mask.
  *
@@ -3988,6 +4305,19 @@ export function detectChartPanelsFromMask(
       curveEvidence,
     };
   });
+  const repeatedGridRecovery =
+    recoverRepeatedWaveformGridCandidates(
+      measuredCandidates,
+      curveEvidenceMask,
+      width,
+      height,
+    );
+  const candidatePool = repeatedGridRecovery
+    ? [
+        ...measuredCandidates,
+        ...repeatedGridRecovery.candidates,
+      ]
+    : measuredCandidates;
   const geometricRejectedNonChartCount = measuredCandidates.reduce(
     (count, candidate) =>
       count + (candidate.curveEvidence.valid ? 0 : 1),
@@ -4015,7 +4345,7 @@ export function detectChartPanelsFromMask(
             "frameless-curve-region"),
     ) &&
     getExtendedDeskewedDocument().tableGridArtifact;
-  const candidates = measuredCandidates.filter(
+  let candidates = candidatePool.filter(
     (candidate) => {
       const candidateAreaRatio =
         area(candidate) / Math.max(1, width * height);
@@ -4073,6 +4403,28 @@ export function detectChartPanelsFromMask(
       );
     },
   );
+  if (repeatedGridRecovery) {
+    const recoveredCandidates = candidates.filter(
+      (candidate) =>
+        candidate.detectionReason ===
+        "repeated-waveform-grid",
+    );
+    const independentCandidates = candidates.filter(
+      (candidate) =>
+        candidate.detectionReason !==
+          "repeated-waveform-grid" &&
+        !recoveredCandidates.some(
+          (recovered) =>
+            intersectionArea(recovered, candidate) >
+            Math.min(area(recovered), area(candidate)) * 0.08,
+        ) &&
+        isCredibleCandidateOutsideRepeatedGrid(candidate),
+    );
+    candidates = [
+      ...recoveredCandidates,
+      ...independentCandidates,
+    ];
+  }
   const framelessUsed = candidates.some(
     (candidate) =>
       candidate.detectionReason === "frameless-curve-region",
@@ -4088,7 +4440,14 @@ export function detectChartPanelsFromMask(
     );
     const ambiguousCandidateCount =
       validMeasuredCandidates.filter(
-        (candidate) => !candidates.includes(candidate),
+        (candidate) =>
+          !candidates.some(
+            (selected) =>
+              selected === candidate ||
+              intersectionArea(selected, candidate) >
+                Math.min(area(selected), area(candidate)) *
+                  0.5,
+          ),
       ).length;
     return {
       foregroundPixelCount,
@@ -4097,7 +4456,8 @@ export function detectChartPanelsFromMask(
       geometricCandidateCount: measuredCandidates.length,
       validCandidateCount: candidates.length,
       rejectedCandidateCount:
-        measuredCandidates.length - candidates.length,
+        geometricRejectedNonChartCount +
+        ambiguousCandidateCount,
       ambiguousCandidateCount,
       candidateSummaries: candidates
         .slice(0, MAXIMUM_CHART_PANELS)
@@ -4108,6 +4468,47 @@ export function detectChartPanelsFromMask(
           axisMode: candidate.axisMode,
           detectionReason: candidate.detectionReason,
         })),
+      measuredCandidateSummaries: candidatePool
+        .slice(0, 64)
+        .map((candidate) => ({
+          left: candidate.left,
+          top: candidate.top,
+          right: candidate.right,
+          bottom: candidate.bottom,
+          axisMode: candidate.axisMode,
+          detectionReason: candidate.detectionReason,
+          detectionScale: candidate.detectionScale,
+          curveValid: candidate.curveEvidence.valid,
+          curveScore: candidate.curveEvidence.score,
+          horizontalCoverage:
+            candidate.curveEvidence.horizontalCoverage,
+          continuousCoverage:
+            candidate.curveEvidence.continuousCoverage,
+          verticalVariation:
+            candidate.curveEvidence.verticalVariation,
+          colorSeriesCount:
+            candidate.curveEvidence.colorSeriesCount ?? 0,
+          tableGridArtifact:
+            candidate.curveEvidence.tableGridArtifact === true,
+        })),
+      repeatedGridRecovery: repeatedGridRecovery
+        ? {
+            applied: true,
+            anchorCount: repeatedGridRecovery.anchorCount,
+            occupiedCellCount:
+              repeatedGridRecovery.occupiedCellCount,
+            recoveredCellCount:
+              repeatedGridRecovery.candidates.length,
+            expectedCellCount:
+              repeatedGridRecovery.expectedCellCount,
+            rows: repeatedGridRecovery.rows,
+            columns: repeatedGridRecovery.columns,
+            frameWidth: repeatedGridRecovery.frameWidth,
+            frameHeight: repeatedGridRecovery.frameHeight,
+            columnStep: repeatedGridRecovery.columnStep,
+            rowStep: repeatedGridRecovery.rowStep,
+          }
+        : { applied: false },
       tableLatticeDominant: {
         axisAligned:
           axisAlignedDocumentLattice.tableGridArtifact,

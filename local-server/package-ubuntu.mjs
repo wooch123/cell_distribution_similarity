@@ -17,12 +17,13 @@ import { fileURLToPath } from "node:url";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(moduleDirectory, "..");
-const version = "1.36.0";
+const version = "1.37.0";
 const packageName = `vth-similarity-ubuntu-x64-v${version}`;
 const artifactsDirectory = path.join(projectRoot, "artifacts", "ubuntu");
 const cacheDirectory = path.join(artifactsDirectory, "cache");
 const stagingDirectory = path.join(artifactsDirectory, packageName);
 const archivePath = path.join(artifactsDirectory, `${packageName}.tar.gz`);
+const archiveChecksumPath = `${archivePath}.sha256`;
 const publicDownloadsDirectory = path.join(
   projectRoot,
   "web",
@@ -203,6 +204,7 @@ async function packageUbuntu() {
 
   await rm(stagingDirectory, { recursive: true, force: true });
   await rm(archivePath, { force: true });
+  await rm(archiveChecksumPath, { force: true });
   const extractionDirectory = path.join(
     artifactsDirectory,
     `.node-extract-${process.pid}`,
@@ -445,6 +447,8 @@ Linux x64 실행 파일과 검색 코퍼스, 모델, 웹 화면, 로컬 학습 A
 - PNG/JPEG 산포 이미지와 클립보드 이미지를 분석합니다.
 - 프레임, 열린 L축, 경계 없는 Curve 군집을 분리하고 FHD 이미지당 최대
   30개 차트를 독립적으로 검색합니다.
+- 얇은 회색 슬라이드 외곽선을 실제 배경과 구분하고, 반복 파형 격자의
+  누락된 셀 경계를 복원한 뒤 설명문·수치 표·단조 추세선을 제외합니다.
 - 한 차트 안에 여러 색상 시리즈가 있으면 색은 분리 과정에서만 사용하고,
   각 시리즈를 색·선 스타일 없는 Curve로 정규화해 독립적으로 검색합니다.
   API의 panel.series 배열에서 시리즈별 순위와 점수를 확인할 수 있습니다.
@@ -526,6 +530,8 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
       similaritySearchApi: true,
       multiChartPanelSplitting: true,
       multiChartMaximumPanels: 30,
+      borderSafeDocumentBackground: true,
+      repeatedWaveformGridRecovery: true,
       colorSeriesSeparation: true,
       similarityRanking: "per-panel-per-series",
       samples: sampleFiles.map((fileName) => ({
@@ -588,6 +594,11 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
   const generatedAt = new Date().toISOString();
   const archiveBytes = await readFile(archivePath);
   const parts = [];
+  await writeFile(
+    archiveChecksumPath,
+    `${archiveSha256} *${path.basename(archivePath)}\n`,
+    "utf8",
+  );
   await cleanPreviousUbuntuDownloads();
   for (
     let offset = 0, index = 0;
@@ -643,6 +654,7 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
       {
         stagingDirectory,
         archivePath,
+        archiveChecksumPath,
         publicDownloadAction: "browser-assembled",
         publicPartCount: parts.length,
         archiveBytes: archiveStat.size,

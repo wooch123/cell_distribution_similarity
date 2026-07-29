@@ -26,6 +26,104 @@ function medianValue(values) {
     : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
+/**
+ * A slide or screenshot can have a thin grey/black page border around an
+ * otherwise white canvas. Sampling only the perimeter then makes almost the
+ * entire document look like foreground. Compare that perimeter estimate with a
+ * bounded, quantized mode from the full image and prefer the mode only when it
+ * is overwhelmingly better supported. Non-document photos normally have no
+ * such dominant colour and therefore keep the established border estimate.
+ */
+function dominantDocumentBackground(
+  pixels,
+  width,
+  height,
+  channels,
+  borderBackground,
+) {
+  const pixelCount = width * height;
+  const stride = Math.max(
+    1,
+    Math.floor(Math.sqrt(pixelCount / 24_000)),
+  );
+  const bins = new Map();
+  let sampleCount = 0;
+  for (
+    let y = Math.floor(stride / 2);
+    y < height;
+    y += stride
+  ) {
+    for (
+      let x = Math.floor(stride / 2);
+      x < width;
+      x += stride
+    ) {
+      const offset = (y * width + x) * channels;
+      const red = pixels[offset];
+      const green = pixels[offset + 1];
+      const blue = pixels[offset + 2];
+      const key =
+        ((red >> 4) << 8) |
+        ((green >> 4) << 4) |
+        (blue >> 4);
+      const bin = bins.get(key) ?? {
+        count: 0,
+        red: 0,
+        green: 0,
+        blue: 0,
+      };
+      bin.count += 1;
+      bin.red += red;
+      bin.green += green;
+      bin.blue += blue;
+      bins.set(key, bin);
+      sampleCount += 1;
+    }
+  }
+  if (!sampleCount || !bins.size) {
+    return {
+      background: borderBackground,
+      source: "border",
+    };
+  }
+  const dominant = [...bins.values()].reduce(
+    (best, bin) =>
+      !best || bin.count > best.count ? bin : best,
+    null,
+  );
+  const borderKey =
+    ((Math.round(borderBackground[0]) >> 4) << 8) |
+    ((Math.round(borderBackground[1]) >> 4) << 4) |
+    (Math.round(borderBackground[2]) >> 4);
+  const borderSupport = bins.get(borderKey)?.count ?? 0;
+  const dominantBackground = [
+    dominant.red / dominant.count,
+    dominant.green / dominant.count,
+    dominant.blue / dominant.count,
+  ];
+  const separation = Math.sqrt(
+    (dominantBackground[0] - borderBackground[0]) ** 2 +
+      (dominantBackground[1] - borderBackground[1]) ** 2 +
+      (dominantBackground[2] - borderBackground[2]) ** 2,
+  );
+  const dominantRatio = dominant.count / sampleCount;
+  const overwhelminglySupported =
+    // A genuine document canvas occupies most of the page. Requiring a clear
+    // majority avoids replacing the useful perimeter estimate of a tightly
+    // cropped, shaded plot whose white corners are merely the largest bin.
+    dominantRatio >= 0.58 &&
+    dominant.count >= Math.max(24, borderSupport * 2.5);
+  return overwhelminglySupported && separation >= 24
+    ? {
+        background: dominantBackground,
+        source: "document-mode",
+      }
+    : {
+        background: borderBackground,
+        source: "border",
+      };
+}
+
 function otsuThreshold(values) {
   const histogram = new Uint32Array(256);
   for (const value of values) histogram[value] += 1;
@@ -117,11 +215,19 @@ export function buildForegroundMasks(
       borderB.push(pixels[offset + 2]);
     }
   }
-  const background = [
+  const borderBackground = [
     medianValue(borderR),
     medianValue(borderG),
     medianValue(borderB),
   ];
+  const backgroundEstimate = dominantDocumentBackground(
+    pixels,
+    width,
+    height,
+    channels,
+    borderBackground,
+  );
+  const background = backgroundEstimate.background;
   const distances = new Uint8Array(width * height);
   for (let index = 0; index < distances.length; index += 1) {
     const offset = index * channels;
@@ -241,6 +347,7 @@ export function buildForegroundMasks(
       )
       .map((mask) => suppressMaskNoise(mask, width, height)),
     background,
+    backgroundSource: backgroundEstimate.source,
     threshold,
   };
 }
