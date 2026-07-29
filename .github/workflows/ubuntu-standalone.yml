@@ -61,7 +61,7 @@ jobs:
           artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.38.0.tar.gz
 
       - name: Upload verified Windows package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: vth-similarity-windows-x64-v1.38.0
           if-no-files-found: error
@@ -71,7 +71,7 @@ jobs:
             artifacts/windows/vth-similarity-windows-x64-v1.38.0.zip.sha256
 
       - name: Upload verified Ubuntu package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: vth-similarity-ubuntu-x64-v1.38.0
           if-no-files-found: error
