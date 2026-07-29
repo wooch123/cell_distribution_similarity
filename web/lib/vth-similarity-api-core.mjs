@@ -875,6 +875,94 @@ function resultForApi(result, origin) {
   };
 }
 
+function credibleStructureDescriptor(analysis) {
+  const primaryDescriptor = analysis?.descriptor;
+  const primaryProfile = analysis?.profile;
+  if (
+    !primaryDescriptor ||
+    !Array.isArray(primaryProfile) ||
+    primaryDescriptor.regularized !== true
+  ) {
+    return primaryDescriptor;
+  }
+  const supportedStateCounts = new Set([2, 4, 8, 16]);
+  const primaryObserved = Number(
+    primaryDescriptor.observedStateCount,
+  );
+  const candidates = (analysis.alternatives ?? [])
+    .map((alternative) => {
+      const descriptor = alternative?.descriptor;
+      const peakLocations = descriptor?.peakLocations;
+      const stateCount = Number(descriptor?.stateCount);
+      const observedStateCount = Number(
+        descriptor?.observedStateCount,
+      );
+      if (
+        !supportedStateCounts.has(stateCount) ||
+        stateCount < primaryDescriptor.stateCount ||
+        stateCount > primaryDescriptor.stateCount * 2 ||
+        observedStateCount < stateCount - 1 ||
+        observedStateCount <= primaryObserved ||
+        !Array.isArray(peakLocations) ||
+        peakLocations.length !== stateCount ||
+        !Array.isArray(alternative.profile)
+      ) {
+        return null;
+      }
+      const orderedLocations = [...peakLocations].sort(
+        (left, right) => left - right,
+      );
+      const peakSpan =
+        orderedLocations.at(-1) - orderedLocations[0];
+      const spacings = orderedLocations
+        .slice(1)
+        .map(
+          (location, index) =>
+            location - orderedLocations[index],
+        )
+        .sort((left, right) => left - right);
+      const medianSpacing =
+        spacings[Math.floor(spacings.length / 2)] ?? 0;
+      const spacingRegular =
+        medianSpacing > 0 &&
+        spacings[0] >= medianSpacing * 0.28 &&
+        spacings.at(-1) <= medianSpacing * 2;
+      const meaningfulValleyCount = (
+        descriptor.valleyDepths ?? []
+      ).reduce(
+        (count, depth) => count + Number(depth >= 0.02),
+        0,
+      );
+      const curveSimilarity = alignedCurveSimilarity(
+        primaryProfile,
+        alternative.profile,
+      );
+      if (
+        peakSpan < 0.72 ||
+        !spacingRegular ||
+        meaningfulValleyCount <
+          Math.ceil((stateCount - 1) * 0.55) ||
+        curveSimilarity < 0.82
+      ) {
+        return null;
+      }
+      return {
+        descriptor,
+        curveSimilarity,
+      };
+    })
+    .filter(Boolean)
+    .sort(
+      (left, right) =>
+        right.descriptor.observedStateCount -
+          left.descriptor.observedStateCount ||
+        right.descriptor.stateCount -
+          left.descriptor.stateCount ||
+        right.curveSimilarity - left.curveSimilarity,
+    );
+  return candidates[0]?.descriptor ?? primaryDescriptor;
+}
+
 function queryForApi(
   analysis,
   mimeType,
@@ -883,15 +971,18 @@ function queryForApi(
   processedWidth,
   processedHeight,
 ) {
+  const structureDescriptor =
+    credibleStructureDescriptor(analysis);
   return {
     mimeType: contentTypeOnly(mimeType),
     sourceWidth,
     sourceHeight,
     processedWidth,
     processedHeight,
-    stateCount: analysis.descriptor.stateCount,
-    observedStateCount: analysis.descriptor.observedStateCount,
-    regularized: Boolean(analysis.descriptor.regularized),
+    stateCount: structureDescriptor.stateCount,
+    observedStateCount:
+      structureDescriptor.observedStateCount,
+    regularized: Boolean(structureDescriptor.regularized),
     axesDetected: analysis.axesDetected,
     axisMode: analysis.axisMode,
     curveHypothesisCount: 1 + analysis.alternatives.length,

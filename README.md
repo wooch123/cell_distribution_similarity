@@ -74,7 +74,7 @@ descriptor, 파일명·메타데이터를 제거하고 JPEG로 다시 만든 원
 
 ## Windows 무설치판과 Ubuntu 외부 Web 서버판
 
-`artifacts/windows/vth-similarity-windows-x64-v1.37.0.zip`은 공식
+`artifacts/windows/vth-similarity-windows-x64-v1.38.0.zip`은 공식
 Windows x64 Node 런타임, 웹 빌드, 로컬 학습 API를 함께 담습니다. 다른
 Windows PC에서 압축을 푼 뒤 `start.bat`을 실행하면 설치 없이
 `http://127.0.0.1:4173`에서 동작합니다. 코퍼스, 모델, 웹 화면, 런타임이
@@ -106,6 +106,13 @@ FHD 한 이미지에서 오밀조밀하게 배치된 차트를 최대 30개까�
 추가 회귀는 160×90 이미지의 4개 차트와 240×135 이미지의 12개 차트를
 각각 분리하며, 조밀한 표 형태 격자 위의 유효 파형은 색상/검정 Curve 모두
 유지하고 같은 크기의 실제 색상 표는 계속 제외하는지 확인합니다.
+v1.38.0은 행·열 정렬을 전제로 하지 않는 전역 공간 탐색을 추가해 차트의
+위치, 크기, 간격을 사전에 알 수 없는 현업 슬라이드도 처리합니다. 다중
+스케일 후보와 원본 ROI 재분석, 저해상도 색상 State 복구를 결합하며,
+1920×1080 안에 48×35부터 315×205까지 임의로 놓인 실제 QLC 차트 28개와
+텍스트·표·도형·단조 추세선을 섞은 회귀에서 28개만 모두 분리하는지
+검증합니다. 가까운 차트와 단일 차트의 여러 색상 시리즈도 각각 패널과
+시리즈 단위로 구분합니다.
 
 Ubuntu x64는 여러 사용자가 접속하는 외부 Web 서버용 독립 배포본입니다.
 운영 페이지 상단에서 Windows의 `WINDOWS X64 · FULL OFFLINE` 버튼과
@@ -124,9 +131,9 @@ Node.js나 npm을 설치하지 않고 `.tar.gz`를 풀어 `./start.sh`를 실행
 `data/` 학습 저장소와 추천 후보를 공유하지만 외부 공용 서버로 원본이나
 학습 데이터를 전송하지 않습니다.
 
-v1.37.0 웹 배포는
-`/downloads/windows-package-v1.37.0.json`과
-`/downloads/ubuntu-package-v1.37.0.json`을 고정 매니페스트 경로로
+v1.38.0 웹 배포는
+`/downloads/windows-package-v1.38.0.json`과
+`/downloads/ubuntu-package-v1.38.0.json`을 고정 매니페스트 경로로
 사용합니다. 두 매니페스트 모두 schema-v1 `browser-assembled` 계약과
 SHA-256 조각 목록을 제공하며 브라우저는 각 조각과 완성 파일을 검증한 뒤
 저장합니다. Windows 결과물은 ZIP이고 Ubuntu는

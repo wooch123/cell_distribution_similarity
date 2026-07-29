@@ -1,5 +1,6 @@
 import {
   buildForegroundMasks,
+  detectPlotBounds,
   deskewForegroundMasks,
   estimateDeskewAngle,
   rotateBinaryMask,
@@ -23,6 +24,14 @@ const MAXIMUM_SHARED_FRAME_HORIZONTAL_PAIR_CHECKS = 4_096;
 const MAXIMUM_SHARED_FRAME_LINE_RELATION_CHECKS = 200_000;
 const MAXIMUM_RECTANGLE_HORIZONTAL_PAIR_CHECKS = 4_096;
 const MAXIMUM_RECTANGLE_LINE_RELATION_CHECKS = 250_000;
+const LINE_BAND_SPATIAL_DIVISIONS = 4;
+const LINE_BAND_SPAN_BUCKETS = 4;
+const MAXIMUM_LINE_BANDS_PER_SPATIAL_SPAN_BUCKET = 16;
+const MAXIMUM_L_AXIS_LINE_RELATION_CHECKS = 100_000;
+const MAXIMUM_L_AXIS_CANDIDATES_PER_TILE = 32;
+const MAXIMUM_FRAMELESS_COMPONENTS_PER_TILE = 64;
+const MAXIMUM_FRAMELESS_MEASUREMENTS_PER_SOURCE = 192;
+const PRE_NMS_SPATIAL_DIVISIONS = 4;
 const MINIMUM_DENSE_SEPARATION_CANDIDATES = 6;
 export const MAXIMUM_CHART_PANELS = 30;
 
@@ -169,7 +178,7 @@ export function repairLowResolutionLineMask(
   };
 }
 
-function extractLineBands(
+export function extractLineBands(
   mask,
   width,
   height,
@@ -191,9 +200,123 @@ function extractLineBands(
         2,
         Math.round(secondaryLength * 0.006),
       );
-  const raw = [];
+  const maximumThickness = Math.max(
+    7,
+    primaryLength * 0.025,
+  );
+  const spatialBucketCount =
+    LINE_BAND_SPATIAL_DIVISIONS *
+    LINE_BAND_SPATIAL_DIVISIONS;
+  const retainedBuckets = Array.from(
+    {
+      length:
+        spatialBucketCount * LINE_BAND_SPAN_BUCKETS,
+    },
+    () => [],
+  );
+  const bandQuality = (band) =>
+    band.coverage * 2 +
+    Math.min(
+      1,
+      (band.end - band.start + 1) /
+        Math.max(safeMinimumSpan, secondaryLength * 0.2),
+    ) -
+    Math.min(0.3, (band.thickness - 1) * 0.04);
+  const retainFinalizedBand = (activeBand) => {
+    const band = {
+      coordinate: Math.round(
+        activeBand.coordinateSum / activeBand.count,
+      ),
+      start: Math.round(
+        activeBand.startSum / activeBand.count,
+      ),
+      end: Math.round(
+        activeBand.endSum / activeBand.count,
+      ),
+      thickness:
+        activeBand.maximumCoordinate -
+        activeBand.minimumCoordinate +
+        1,
+      coverage:
+        activeBand.coverageSum / activeBand.count,
+    };
+    const span = band.end - band.start + 1;
+    if (
+      span < safeMinimumSpan ||
+      // A broad filled block is normally a legend swatch or label, not an
+      // axis. Real plot lines remain thin even after anti-aliasing.
+      band.thickness > maximumThickness
+    ) {
+      return;
+    }
+    const primaryBucket = clamp(
+      Math.floor(
+        (band.coordinate * LINE_BAND_SPATIAL_DIVISIONS) /
+          Math.max(1, primaryLength),
+      ),
+      0,
+      LINE_BAND_SPATIAL_DIVISIONS - 1,
+    );
+    const midpoint = (band.start + band.end) / 2;
+    const secondaryBucket = clamp(
+      Math.floor(
+        (midpoint * LINE_BAND_SPATIAL_DIVISIONS) /
+          Math.max(1, secondaryLength),
+      ),
+      0,
+      LINE_BAND_SPATIAL_DIVISIONS - 1,
+    );
+    const spanBucket = clamp(
+      Math.floor(
+        Math.log2(
+          Math.max(1, span / safeMinimumSpan),
+        ),
+      ),
+      0,
+      LINE_BAND_SPAN_BUCKETS - 1,
+    );
+    const bucketIndex =
+      (primaryBucket * LINE_BAND_SPATIAL_DIVISIONS +
+        secondaryBucket) *
+        LINE_BAND_SPAN_BUCKETS +
+      spanBucket;
+    const bucket = retainedBuckets[bucketIndex];
+    bucket.push(band);
+    bucket.sort(
+      (left, right) =>
+        bandQuality(right) - bandQuality(left) ||
+        right.coverage - left.coverage ||
+        right.end - right.start - (left.end - left.start) ||
+        left.coordinate - right.coordinate ||
+        left.start - right.start,
+    );
+    if (
+      bucket.length >
+      MAXIMUM_LINE_BANDS_PER_SPATIAL_SPAN_BUCKET
+    ) {
+      bucket.length =
+        MAXIMUM_LINE_BANDS_PER_SPATIAL_SPAN_BUCKET;
+    }
+  };
 
-  for (let primary = 0; primary < primaryLength; primary += 1) {
+  // Only bands seen in the preceding three primary coordinates can accept a
+  // new segment. Streaming that active window avoids both the unbounded raw
+  // segment array and the previous scan over every historical band.
+  let activeBands = [];
+  for (
+    let primary = 0;
+    primary < primaryLength;
+    primary += 1
+  ) {
+    const stillActive = [];
+    for (const band of activeBands) {
+      if (primary - band.lastCoordinate > 3) {
+        retainFinalizedBand(band);
+      } else {
+        stillActive.push(band);
+      }
+    }
+    activeBands = stillActive;
     const runs = scanRuns(
       secondaryLength,
       (secondary) =>
@@ -204,86 +327,63 @@ function extractLineBands(
       safeMinimumSpan,
     );
     for (const run of runs) {
-      raw.push({
-        coordinate: primary,
-        start: run.start,
-        end: run.end,
-        coverage: run.coverage,
-      });
-    }
-  }
-
-  const bands = [];
-  for (const segment of raw) {
-    let best = null;
-    let bestOverlap = 0;
-    for (const band of bands) {
-      if (
-        segment.coordinate - band.lastCoordinate > 3 ||
-        segment.coordinate < band.lastCoordinate
-      ) {
+      let best = null;
+      let bestOverlap = 0;
+      for (const band of activeBands) {
+        const runSpan = run.end - run.start + 1;
+        const bandSpan = band.end - band.start + 1;
+        const spanSimilarity =
+          Math.min(runSpan, bandSpan) /
+          Math.max(1, Math.max(runSpan, bandSpan));
+        if (spanSimilarity < 0.08) continue;
+        const overlap = intervalOverlapRatio(
+          run.start,
+          run.end,
+          band.start,
+          band.end,
+        );
+        if (overlap > 0.72 && overlap > bestOverlap) {
+          best = band;
+          bestOverlap = overlap;
+        }
+      }
+      if (!best) {
+        activeBands.push({
+          count: 1,
+          coordinateSum: primary,
+          startSum: run.start,
+          endSum: run.end,
+          coverageSum: run.coverage,
+          minimumCoordinate: primary,
+          maximumCoordinate: primary,
+          start: run.start,
+          end: run.end,
+          lastCoordinate: primary,
+        });
         continue;
       }
-      const overlap = intervalOverlapRatio(
-        segment.start,
-        segment.end,
-        band.start,
-        band.end,
-      );
-      if (overlap > 0.72 && overlap > bestOverlap) {
-        best = band;
-        bestOverlap = overlap;
-      }
+      best.count += 1;
+      best.coordinateSum += primary;
+      best.startSum += run.start;
+      best.endSum += run.end;
+      best.coverageSum += run.coverage;
+      best.maximumCoordinate = primary;
+      best.start = Math.round(best.startSum / best.count);
+      best.end = Math.round(best.endSum / best.count);
+      best.lastCoordinate = primary;
     }
-    if (!best) {
-      bands.push({
-        coordinates: [segment.coordinate],
-        starts: [segment.start],
-        ends: [segment.end],
-        coverages: [segment.coverage],
-        start: segment.start,
-        end: segment.end,
-        lastCoordinate: segment.coordinate,
-      });
-      continue;
-    }
-    best.coordinates.push(segment.coordinate);
-    best.starts.push(segment.start);
-    best.ends.push(segment.end);
-    best.coverages.push(segment.coverage);
-    best.start = Math.round(
-      best.starts.reduce((sum, value) => sum + value, 0) /
-        best.starts.length,
-    );
-    best.end = Math.round(
-      best.ends.reduce((sum, value) => sum + value, 0) /
-        best.ends.length,
-    );
-    best.lastCoordinate = segment.coordinate;
+  }
+  for (const band of activeBands) {
+    retainFinalizedBand(band);
   }
 
-  return bands
-    .map((band) => ({
-      coordinate: Math.round(
-        band.coordinates.reduce((sum, value) => sum + value, 0) /
-          band.coordinates.length,
-      ),
-      start: band.start,
-      end: band.end,
-      thickness:
-        Math.max(...band.coordinates) -
-        Math.min(...band.coordinates) +
-        1,
-      coverage:
-        band.coverages.reduce((sum, value) => sum + value, 0) /
-        band.coverages.length,
-    }))
-    .filter(
-      (band) =>
-        band.end - band.start + 1 >= safeMinimumSpan &&
-        // A broad filled block is normally a legend swatch or label, not an
-        // axis. Real plot lines remain thin even after anti-aliasing.
-        band.thickness <= Math.max(7, primaryLength * 0.025),
+  return retainedBuckets
+    .flat()
+    .sort(
+      (left, right) =>
+        left.coordinate - right.coordinate ||
+        left.start - right.start ||
+        left.end - right.end,
     );
 }
 
@@ -564,6 +664,250 @@ function detectRectangleCandidates(
   return candidates;
 }
 
+/**
+ * Recover a closed frame without enumerating every horizontal-line pair.
+ *
+ * A document containing tables, labels and many independent charts can
+ * produce enough unrelated horizontal bands to exhaust the ordinary bounded
+ * pair search before it reaches a physically tiny frame near the bottom of
+ * the slide. A real frame exposes a much cheaper local invariant: the top
+ * stroke ends where two vertical strokes begin, and those vertical strokes
+ * end at the same bottom stroke. Join those endpoints directly so every image
+ * location receives the same opportunity independent of preceding content.
+ */
+function detectEndpointAnchoredRectangleCandidates(
+  mask,
+  width,
+  height,
+  horizontalLines,
+  verticalLines,
+  minimumWidth,
+  minimumHeight,
+) {
+  const tolerance = Math.max(
+    3,
+    Math.round(Math.min(width, height) * 0.006),
+  );
+  const verticalsByCoordinate = new Map();
+  for (const line of verticalLines) {
+    const bucket =
+      verticalsByCoordinate.get(line.coordinate) ?? [];
+    // A line extractor can emit a few overlapping hypotheses at one
+    // coordinate. Retaining the strongest four bounds the endpoint join on
+    // adversarial documents without biasing it toward any page location.
+    bucket.push(line);
+    bucket.sort(
+      (left, right) =>
+        right.coverage - left.coverage ||
+        right.end - right.start - (left.end - left.start),
+    );
+    if (bucket.length > 4) bucket.length = 4;
+    verticalsByCoordinate.set(line.coordinate, bucket);
+  }
+  const horizontalsByCoordinate = new Map();
+  for (const line of horizontalLines) {
+    const bucket =
+      horizontalsByCoordinate.get(line.coordinate) ?? [];
+    bucket.push(line);
+    bucket.sort(
+      (left, right) =>
+        right.coverage - left.coverage ||
+        right.end - right.start - (left.end - left.start),
+    );
+    if (bucket.length > 4) bucket.length = 4;
+    horizontalsByCoordinate.set(line.coordinate, bucket);
+  }
+  const nearbyLines = (buckets, coordinate) => {
+    const result = [];
+    for (
+      let localCoordinate = coordinate - tolerance;
+      localCoordinate <= coordinate + tolerance;
+      localCoordinate += 1
+    ) {
+      const bucket = buckets.get(localCoordinate);
+      if (bucket) result.push(...bucket);
+    }
+    return result;
+  };
+  const candidates = [];
+  const candidateKeys = new Set();
+  for (const topLine of horizontalLines) {
+    const top = topLine.coordinate;
+    const leftVerticals = nearbyLines(
+      verticalsByCoordinate,
+      topLine.start,
+    )
+      .filter(
+        (line) =>
+          Math.abs(line.start - top) <= tolerance &&
+          line.end - top + 1 >= minimumHeight,
+      )
+      .sort(
+        (left, right) =>
+          Math.abs(left.coordinate - topLine.start) -
+            Math.abs(right.coordinate - topLine.start) ||
+          Math.abs(left.start - top) -
+            Math.abs(right.start - top) ||
+          right.coverage - left.coverage,
+      )
+      .slice(0, 4);
+    const rightVerticals = nearbyLines(
+      verticalsByCoordinate,
+      topLine.end,
+    )
+      .filter(
+        (line) =>
+          Math.abs(line.start - top) <= tolerance &&
+          line.end - top + 1 >= minimumHeight,
+      )
+      .sort(
+        (left, right) =>
+          Math.abs(left.coordinate - topLine.end) -
+            Math.abs(right.coordinate - topLine.end) ||
+          Math.abs(left.start - top) -
+            Math.abs(right.start - top) ||
+          right.coverage - left.coverage,
+      )
+      .slice(0, 4);
+    for (const leftLine of leftVerticals) {
+      for (const rightLine of rightVerticals) {
+        const left = leftLine.coordinate;
+        const right = rightLine.coordinate;
+        if (
+          right - left + 1 < minimumWidth ||
+          Math.abs(leftLine.end - rightLine.end) > tolerance
+        ) {
+          continue;
+        }
+        const expectedBottom = Math.round(
+          (leftLine.end + rightLine.end) / 2,
+        );
+        const bottomLine = nearbyLines(
+          horizontalsByCoordinate,
+          expectedBottom,
+        )
+          .filter(
+            (line) =>
+              line.coordinate > top &&
+              line.coordinate - top + 1 >= minimumHeight &&
+              lineFitsInterval(
+                line,
+                left,
+                right,
+                tolerance,
+              ),
+          )
+          .sort(
+            (first, second) =>
+              Math.abs(first.coordinate - expectedBottom) -
+                Math.abs(second.coordinate - expectedBottom) ||
+              Math.abs(first.start - left) +
+                Math.abs(first.end - right) -
+                (Math.abs(second.start - left) +
+                  Math.abs(second.end - right)) ||
+              second.coverage - first.coverage,
+          )[0];
+        if (
+          !bottomLine ||
+          !lineFitsInterval(
+            topLine,
+            left,
+            right,
+            tolerance,
+          )
+        ) {
+          continue;
+        }
+        const bottom = bottomLine.coordinate;
+        // This endpoint pass exists only for physically tiny frames that can
+        // be starved by the document-level pair budget. Larger plots already
+        // use the stricter rectangle search; admitting their internal grid
+        // rectangles here would split one distribution into State-sized
+        // panels.
+        if (
+          right - left + 1 > 52 ||
+          bottom - top + 1 > 40
+        ) {
+          continue;
+        }
+        const supports = [
+          edgeSupport(
+            mask,
+            width,
+            height,
+            "horizontal",
+            top,
+            left,
+            right,
+          ),
+          edgeSupport(
+            mask,
+            width,
+            height,
+            "horizontal",
+            bottom,
+            left,
+            right,
+          ),
+          edgeSupport(
+            mask,
+            width,
+            height,
+            "vertical",
+            left,
+            top,
+            bottom,
+          ),
+          edgeSupport(
+            mask,
+            width,
+            height,
+            "vertical",
+            right,
+            top,
+            bottom,
+          ),
+        ];
+        if (Math.min(...supports) < 0.58) continue;
+        const cornerCount = [
+          [left, top],
+          [right, top],
+          [left, bottom],
+          [right, bottom],
+        ].filter(([x, y]) =>
+          cornerActive(mask, width, height, x, y, tolerance),
+        ).length;
+        if (cornerCount < 3) continue;
+        const bounds = { left, top, right, bottom };
+        const inkRatio = interiorInkRatio(mask, width, bounds);
+        if (inkRatio < 0.0012) continue;
+        const key = `${left}:${top}:${right}:${bottom}`;
+        if (candidateKeys.has(key)) continue;
+        candidateKeys.add(key);
+        candidates.push({
+          ...bounds,
+          confidence: clamp(
+            0.5 +
+              supports.reduce(
+                (sum, value) => sum + value,
+                0,
+              ) *
+                0.09 +
+              cornerCount * 0.025 +
+              Math.min(0.08, inkRatio * 3),
+            0,
+            0.99,
+          ),
+          axisMode: "rectangle",
+          detectionReason: "closed-plot-frame",
+          endpointAnchored: true,
+        });
+      }
+    }
+  }
+  return candidates;
+}
+
 function detectLAxisCandidates(
   mask,
   width,
@@ -573,13 +917,96 @@ function detectLAxisCandidates(
   minimumWidth,
   minimumHeight,
 ) {
-  const candidates = [];
   const tolerance = Math.max(
     4,
     Math.round(Math.min(width, height) * 0.018),
   );
+  const verticalsByCoordinate = new Map();
+  for (const vertical of verticalLines) {
+    const bucket =
+      verticalsByCoordinate.get(vertical.coordinate) ?? [];
+    bucket.push(vertical);
+    verticalsByCoordinate.set(vertical.coordinate, bucket);
+  }
+  // Visit page regions round-robin. If a malformed document reaches the hard
+  // relation budget, a dense title/table at the top-left cannot consume the
+  // opportunity of every later chart.
+  const horizontalTiles = Array.from(
+    {
+      length:
+        LINE_BAND_SPATIAL_DIVISIONS *
+        LINE_BAND_SPATIAL_DIVISIONS,
+    },
+    () => [],
+  );
   for (const horizontal of horizontalLines) {
-    for (const vertical of verticalLines) {
+    const row = clamp(
+      Math.floor(
+        (horizontal.coordinate *
+          LINE_BAND_SPATIAL_DIVISIONS) /
+          Math.max(1, height),
+      ),
+      0,
+      LINE_BAND_SPATIAL_DIVISIONS - 1,
+    );
+    const midpoint =
+      (horizontal.start + horizontal.end) / 2;
+    const column = clamp(
+      Math.floor(
+        (midpoint * LINE_BAND_SPATIAL_DIVISIONS) /
+          Math.max(1, width),
+      ),
+      0,
+      LINE_BAND_SPATIAL_DIVISIONS - 1,
+    );
+    horizontalTiles[
+      row * LINE_BAND_SPATIAL_DIVISIONS + column
+    ].push(horizontal);
+  }
+  const fairHorizontalLines = [];
+  const maximumTileLength = Math.max(
+    0,
+    ...horizontalTiles.map((tile) => tile.length),
+  );
+  for (
+    let itemIndex = 0;
+    itemIndex < maximumTileLength;
+    itemIndex += 1
+  ) {
+    for (const tile of horizontalTiles) {
+      if (tile[itemIndex]) {
+        fairHorizontalLines.push(tile[itemIndex]);
+      }
+    }
+  }
+  const retainedCandidateTiles = Array.from(
+    { length: horizontalTiles.length },
+    () => [],
+  );
+  const candidateKeys = new Set();
+  let relationCheckCount = 0;
+  let relationBudgetExhausted = false;
+  for (const horizontal of fairHorizontalLines) {
+    if (relationBudgetExhausted) break;
+    const nearbyVerticals = [];
+    for (
+      let coordinate = horizontal.start - tolerance;
+      coordinate <= horizontal.start + tolerance;
+      coordinate += 1
+    ) {
+      const bucket =
+        verticalsByCoordinate.get(coordinate);
+      if (bucket) nearbyVerticals.push(...bucket);
+    }
+    for (const vertical of nearbyVerticals) {
+      relationCheckCount += 1;
+      if (
+        relationCheckCount >
+        MAXIMUM_L_AXIS_LINE_RELATION_CHECKS
+      ) {
+        relationBudgetExhausted = true;
+        break;
+      }
       const left = vertical.coordinate;
       const bottom = horizontal.coordinate;
       const top = vertical.start;
@@ -633,7 +1060,7 @@ function detectLAxisCandidates(
       const bounds = { left, top, right, bottom };
       const inkRatio = interiorInkRatio(mask, width, bounds);
       if (inkRatio < 0.0012) continue;
-      candidates.push({
+      const candidate = {
         ...bounds,
         confidence: clamp(
           0.4 +
@@ -645,10 +1072,56 @@ function detectLAxisCandidates(
         ),
         axisMode: "l-axis",
         detectionReason: "open-l-axis",
-      });
+      };
+      const key = `${left}:${top}:${right}:${bottom}`;
+      if (candidateKeys.has(key)) continue;
+      candidateKeys.add(key);
+      const centerX = (left + right) / 2;
+      const centerY = (top + bottom) / 2;
+      const row = clamp(
+        Math.floor(
+          (centerY * LINE_BAND_SPATIAL_DIVISIONS) /
+            Math.max(1, height),
+        ),
+        0,
+        LINE_BAND_SPATIAL_DIVISIONS - 1,
+      );
+      const column = clamp(
+        Math.floor(
+          (centerX * LINE_BAND_SPATIAL_DIVISIONS) /
+            Math.max(1, width),
+        ),
+        0,
+        LINE_BAND_SPATIAL_DIVISIONS - 1,
+      );
+      const tile =
+        retainedCandidateTiles[
+          row * LINE_BAND_SPATIAL_DIVISIONS + column
+        ];
+      tile.push(candidate);
+      tile.sort(
+        (first, second) =>
+          second.confidence - first.confidence ||
+          area(second) - area(first) ||
+          first.top - second.top ||
+          first.left - second.left,
+      );
+      if (
+        tile.length >
+        MAXIMUM_L_AXIS_CANDIDATES_PER_TILE
+      ) {
+        tile.length =
+          MAXIMUM_L_AXIS_CANDIDATES_PER_TILE;
+      }
     }
   }
-  return candidates;
+  return retainedCandidateTiles
+    .flat()
+    .sort(
+      (first, second) =>
+        first.top - second.top ||
+        first.left - second.left,
+    );
 }
 
 /**
@@ -1836,6 +2309,17 @@ export function measureChartCurveEvidence(
   };
 }
 
+function isAngularApexArtifact(evidence) {
+  return (
+    evidence.directionChangeCount <= 1 &&
+    evidence.singlePeakMonotonicity >= 0.97 &&
+    evidence.traceSmoothness < 0.91 &&
+    evidence.leftArmLinearDeviation < 0.026 &&
+    evidence.rightArmLinearDeviation < 0.026 &&
+    !evidence.lowResolutionRoundedApexLoss
+  );
+}
+
 /**
  * A union of two or more overlapping colored traces can look vertically dense
  * or fragmented to the single-path waveform gate. Measure each chromatic mask
@@ -2357,6 +2841,38 @@ function analyzeAxisAlignedDocumentLattice(
   };
 }
 
+function candidateHasLocalTableLattice(
+  candidate,
+  broadMask,
+  width,
+  height,
+) {
+  const localWidth = candidate.right - candidate.left + 1;
+  const localHeight = candidate.bottom - candidate.top + 1;
+  if (
+    !broadMask ||
+    localWidth < 48 ||
+    localHeight < 36 ||
+    localWidth * localHeight > width * height * 0.7
+  ) {
+    return false;
+  }
+  const localMask = new Uint8Array(localWidth * localHeight);
+  for (let localY = 0; localY < localHeight; localY += 1) {
+    const sourceStart =
+      (candidate.top + localY) * width + candidate.left;
+    localMask.set(
+      broadMask.subarray(sourceStart, sourceStart + localWidth),
+      localY * localWidth,
+    );
+  }
+  return analyzeAxisAlignedDocumentLattice(
+    localMask,
+    localWidth,
+    localHeight,
+  ).tableGridArtifact;
+}
+
 function analyzeExtendedDeskewedDocument(
   broadMask,
   curveEvidenceMask,
@@ -2449,6 +2965,147 @@ function analyzeExtendedDeskewedDocument(
   };
 }
 
+function recoverDeskewedPhysicalFrame(
+  broadMask,
+  salientMask,
+  curveEvidenceMask,
+  spatialCandidates,
+  width,
+  height,
+) {
+  if (
+    !broadMask ||
+    !salientMask ||
+    !curveEvidenceMask ||
+    spatialCandidates.length < 2
+  ) {
+    return null;
+  }
+  const deskewed = deskewForegroundMasks(
+    broadMask,
+    salientMask,
+    width,
+    height,
+    curveEvidenceMask,
+  );
+  if (!deskewed.applied) return null;
+  const deskewedBounds = detectPlotBounds(
+    deskewed.salientMask,
+    width,
+    height,
+  );
+  if (
+    !deskewedBounds.axesDetected ||
+    !["rectangle", "l-axis"].includes(
+      deskewedBounds.axisMode,
+    ) ||
+    area(deskewedBounds) < width * height * 0.28
+  ) {
+    return null;
+  }
+  const deskewedWholeEvidence = measureChartCurveEvidence(
+    {
+      left: 0,
+      top: 0,
+      right: width - 1,
+      bottom: height - 1,
+      axisMode: "content",
+    },
+    deskewed.broadMask,
+    width,
+  );
+  if (
+    !deskewedWholeEvidence.valid ||
+    deskewedWholeEvidence.tableGridArtifact
+  ) {
+    return null;
+  }
+  const radians = (-deskewed.angle * Math.PI) / 180;
+  const cosine = Math.cos(radians);
+  const sine = Math.sin(radians);
+  const centerX = (width - 1) / 2;
+  const centerY = (height - 1) / 2;
+  const inverseRotate = (x, y) => {
+    const localX = x - centerX;
+    const localY = y - centerY;
+    return {
+      x: cosine * localX - sine * localY + centerX,
+      y: sine * localX + cosine * localY + centerY,
+    };
+  };
+  const sourceCorners = [
+    [deskewedBounds.left, deskewedBounds.top],
+    [deskewedBounds.right, deskewedBounds.top],
+    [deskewedBounds.left, deskewedBounds.bottom],
+    [deskewedBounds.right, deskewedBounds.bottom],
+  ].map(([x, y]) => inverseRotate(x, y));
+  const sourceBounds = {
+    left: clamp(
+      Math.floor(
+        Math.min(...sourceCorners.map(({ x }) => x)),
+      ),
+      0,
+      width - 1,
+    ),
+    top: clamp(
+      Math.floor(
+        Math.min(...sourceCorners.map(({ y }) => y)),
+      ),
+      0,
+      height - 1,
+    ),
+    right: clamp(
+      Math.ceil(
+        Math.max(...sourceCorners.map(({ x }) => x)),
+      ),
+      0,
+      width - 1,
+    ),
+    bottom: clamp(
+      Math.ceil(
+        Math.max(...sourceCorners.map(({ y }) => y)),
+      ),
+      0,
+      height - 1,
+    ),
+    axisMode: deskewedBounds.axisMode,
+  };
+  const insideCandidates = spatialCandidates.filter(
+    (candidate) =>
+      intersectionArea(sourceBounds, candidate) /
+        Math.max(1, area(candidate)) >=
+      0.55,
+  );
+  if (insideCandidates.length < 2) return null;
+  const outsideCandidates = spatialCandidates.filter(
+    (candidate) =>
+      intersectionArea(sourceBounds, candidate) /
+        Math.max(1, area(candidate)) <
+      0.35,
+  );
+  return {
+    candidate: {
+      ...sourceBounds,
+      confidence: clamp(
+        0.72 + deskewedWholeEvidence.score * 0.24,
+        0,
+        0.97,
+      ),
+      detectionScale: "deskewed-physical",
+      detectionReason: "deskewed-salient-frame",
+      curveEvidence: {
+        ...deskewedWholeEvidence,
+        valid: true,
+        deskewedPhysicalFrame: true,
+        deskewAngle: deskewed.angle,
+      },
+    },
+    insideCandidateCount: insideCandidates.length,
+    outsideCandidateCount: outsideCandidates.length,
+    angle: deskewed.angle,
+  };
+}
+
 function looksLikePlotFrameInsideCard(outer, inner) {
   if (
     outer.axisMode !== "rectangle" ||
@@ -2485,32 +3142,63 @@ function clearSeparationGutter(
   mask,
   width,
   height,
+  options = {},
 ) {
   const minimumGutter = Math.max(
     1,
     Math.round(Math.min(width, height) * 0.001),
   );
   const measureRegion = (left, top, right, bottom) => {
-    if (right < left || bottom < top) return 1;
+    if (right < left || bottom < top) {
+      return {
+        density: 1,
+        activeColumnCoverage: 1,
+        activeRowCoverage: 1,
+      };
+    }
     const regionWidth = right - left + 1;
     const regionHeight = bottom - top + 1;
     const step = Math.max(
       1,
-      Math.ceil(
-        Math.sqrt(
-          (regionWidth * regionHeight) / 4_000,
-        ),
-      ),
+      regionWidth <= 64 || regionHeight <= 64
+        ? 1
+        : Math.ceil(
+            Math.sqrt(
+              (regionWidth * regionHeight) / 4_000,
+            ),
+          ),
     );
     let active = 0;
     let pixels = 0;
+    const activeColumns = new Uint8Array(
+      Math.ceil(regionWidth / step),
+    );
+    const activeRows = new Uint8Array(
+      Math.ceil(regionHeight / step),
+    );
+    let sampledY = 0;
     for (let y = top; y <= bottom; y += step) {
+      let sampledX = 0;
       for (let x = left; x <= right; x += step) {
-        active += mask[y * width + x] ? 1 : 0;
+        if (mask[y * width + x]) {
+          active += 1;
+          activeColumns[sampledX] = 1;
+          activeRows[sampledY] = 1;
+        }
         pixels += 1;
+        sampledX += 1;
       }
+      sampledY += 1;
     }
-    return active / Math.max(1, pixels);
+    return {
+      density: active / Math.max(1, pixels),
+      activeColumnCoverage:
+        activeColumns.reduce((sum, value) => sum + value, 0) /
+        Math.max(1, activeColumns.length),
+      activeRowCoverage:
+        activeRows.reduce((sum, value) => sum + value, 0) /
+        Math.max(1, activeRows.length),
+    };
   };
   const verticalOverlap = overlapLength(
     first.top,
@@ -2533,13 +3221,39 @@ function clearSeparationGutter(
       ) *
         0.35
   ) {
+    const separation = measureRegion(
+      first.right + 1,
+      Math.max(first.top, second.top),
+      second.left - 1,
+      Math.min(first.bottom, second.bottom),
+    );
+    const typicalHeight = Math.max(
+      first.bottom - first.top + 1,
+      second.bottom - second.top + 1,
+    );
+    const extendedSeparation = measureRegion(
+      first.right + 1,
+      Math.max(
+        0,
+        Math.min(first.top, second.top) -
+          Math.round(typicalHeight * 0.2),
+      ),
+      second.left - 1,
+      Math.min(
+        height - 1,
+        Math.max(first.bottom, second.bottom) +
+          Math.round(typicalHeight * 0.8),
+      ),
+    );
+    // A thin Curve can contribute only one or two pixels per column, making
+    // its area density look like a blank gutter. Column continuity preserves
+    // those State-to-State bridges while a true inter-chart gutter remains
+    // empty even when it is only a few pixels wide.
     return (
-      measureRegion(
-        first.right + 1,
-        Math.max(first.top, second.top),
-        second.left - 1,
-        Math.min(first.bottom, second.bottom),
-      ) <= 0.025
+      separation.density <= 0.025 &&
+      separation.activeColumnCoverage <= 0.2 &&
+      (options.localOnly === true ||
+        extendedSeparation.activeColumnCoverage <= 0.65)
     );
   }
   if (
@@ -2557,6 +3271,7 @@ function clearSeparationGutter(
       mask,
       width,
       height,
+      options,
     );
   }
   if (
@@ -2568,13 +3283,15 @@ function clearSeparationGutter(
       ) *
         0.35
   ) {
+    const separation = measureRegion(
+      Math.max(first.left, second.left),
+      first.bottom + 1,
+      Math.min(first.right, second.right),
+      second.top - 1,
+    );
     return (
-      measureRegion(
-        Math.max(first.left, second.left),
-        first.bottom + 1,
-        Math.min(first.right, second.right),
-        second.top - 1,
-      ) <= 0.025
+      separation.density <= 0.025 &&
+      separation.activeRowCoverage <= 0.2
     );
   }
   if (
@@ -2592,9 +3309,295 @@ function clearSeparationGutter(
       mask,
       width,
       height,
+      options,
     );
   }
   return false;
+}
+
+function findClearVerticalCurveCorridor(
+  first,
+  second,
+  mask,
+  width,
+  height,
+) {
+  if (!mask) return null;
+  const firstCenter = (first.left + first.right) / 2;
+  const secondCenter = (second.left + second.right) / 2;
+  if (Math.abs(firstCenter - secondCenter) < 2) return null;
+  const leftCandidate =
+    firstCenter < secondCenter ? first : second;
+  const rightCandidate =
+    leftCandidate === first ? second : first;
+  const verticalOverlap = overlapLength(
+    leftCandidate.top,
+    leftCandidate.bottom,
+    rightCandidate.top,
+    rightCandidate.bottom,
+  );
+  if (
+    verticalOverlap <
+    Math.min(
+      leftCandidate.bottom - leftCandidate.top + 1,
+      rightCandidate.bottom - rightCandidate.top + 1,
+    ) *
+      0.35
+  ) {
+    return null;
+  }
+  const typicalWidth = Math.min(
+    leftCandidate.right - leftCandidate.left + 1,
+    rightCandidate.right - rightCandidate.left + 1,
+  );
+  const typicalHeight = Math.max(
+    leftCandidate.bottom - leftCandidate.top + 1,
+    rightCandidate.bottom - rightCandidate.top + 1,
+  );
+  const boundaryCenter =
+    (leftCandidate.right + rightCandidate.left) / 2;
+  const searchRadius = clamp(
+    Math.round(typicalWidth * 0.08),
+    10,
+    36,
+  );
+  const searchLeft = clamp(
+    Math.floor(boundaryCenter - searchRadius),
+    0,
+    width - 1,
+  );
+  const searchRight = clamp(
+    Math.ceil(boundaryCenter + searchRadius),
+    searchLeft,
+    width - 1,
+  );
+  const searchTop = clamp(
+    Math.min(leftCandidate.top, rightCandidate.top) -
+      Math.round(typicalHeight * 0.2),
+    0,
+    height - 1,
+  );
+  const searchBottom = clamp(
+    Math.max(leftCandidate.bottom, rightCandidate.bottom) +
+      Math.round(typicalHeight * 0.8),
+    searchTop,
+    height - 1,
+  );
+  const activeColumns = new Uint8Array(
+    searchRight - searchLeft + 1,
+  );
+  for (let x = searchLeft; x <= searchRight; x += 1) {
+    for (let y = searchTop; y <= searchBottom; y += 1) {
+      if (mask[y * width + x]) {
+        activeColumns[x - searchLeft] = 1;
+        break;
+      }
+    }
+  }
+  const corridors = [];
+  for (let index = 0; index < activeColumns.length; index += 1) {
+    if (activeColumns[index]) continue;
+    const start = index;
+    while (
+      index + 1 < activeColumns.length &&
+      !activeColumns[index + 1]
+    ) {
+      index += 1;
+    }
+    const end = index;
+    if (end - start + 1 < 2) continue;
+    const hasLeftSupport = activeColumns
+      .subarray(Math.max(0, start - 8), start)
+      .some(Boolean);
+    const hasRightSupport = activeColumns
+      .subarray(
+        end + 1,
+        Math.min(activeColumns.length, end + 9),
+      )
+      .some(Boolean);
+    if (!hasLeftSupport || !hasRightSupport) continue;
+    const left = searchLeft + start;
+    const right = searchLeft + end;
+    let globallyBlank = true;
+    for (let x = left; x <= right && globallyBlank; x += 1) {
+      for (let y = 0; y < height; y += 1) {
+        if (mask[y * width + x]) {
+          globallyBlank = false;
+          break;
+        }
+      }
+    }
+    // A deep log-scale valley can leave a temporary hole inside the local
+    // candidate band while continuing farther down the same columns. Only a
+    // genuinely blank document corridor may separate physical charts.
+    if (!globallyBlank) continue;
+    corridors.push({
+      left,
+      right,
+      distance: Math.abs((left + right) / 2 - boundaryCenter),
+    });
+  }
+  return (
+    corridors.sort(
+      (left, right) =>
+        left.distance - right.distance ||
+        right.right -
+          right.left -
+          (left.right - left.left),
+    )[0] ?? null
+  );
+}
+
+function clipCandidatesAtClearVerticalCorridors(
+  candidates,
+  curveEvidenceMask,
+  width,
+  height,
+) {
+  const clipped = candidates.map((candidate) => ({
+    ...candidate,
+  }));
+  for (let firstIndex = 0; firstIndex < clipped.length; firstIndex += 1) {
+    for (
+      let secondIndex = firstIndex + 1;
+      secondIndex < clipped.length;
+      secondIndex += 1
+    ) {
+      const first = clipped[firstIndex];
+      const second = clipped[secondIndex];
+      const corridor = findClearVerticalCurveCorridor(
+        first,
+        second,
+        curveEvidenceMask,
+        width,
+        height,
+      );
+      if (!corridor) continue;
+      const firstCenter = (first.left + first.right) / 2;
+      const secondCenter = (second.left + second.right) / 2;
+      const leftCandidate =
+        firstCenter < secondCenter ? first : second;
+      const rightCandidate =
+        leftCandidate === first ? second : first;
+      if (
+        corridor.left - leftCandidate.left < 4 ||
+        rightCandidate.right - corridor.right < 4
+      ) {
+        continue;
+      }
+      leftCandidate.right = Math.min(
+        leftCandidate.right,
+        corridor.left - 1,
+      );
+      rightCandidate.left = Math.max(
+        rightCandidate.left,
+        corridor.right + 1,
+      );
+    }
+  }
+  return clipped;
+}
+
+function clipSpatialCandidateAtInternalEdgeGutter(
+  candidate,
+  curveEvidenceMask,
+  width,
+  height,
+) {
+  if (
+    candidate.axisMode !== "content" ||
+    !curveEvidenceMask
+  ) {
+    return candidate;
+  }
+  const candidateWidth =
+    candidate.right - candidate.left + 1;
+  const candidateHeight =
+    candidate.bottom - candidate.top + 1;
+  if (candidateWidth < 32 || candidateHeight < 16) {
+    return candidate;
+  }
+  const searchTop = clamp(
+    candidate.top - Math.round(candidateHeight * 0.2),
+    0,
+    height - 1,
+  );
+  const searchBottom = clamp(
+    candidate.bottom + Math.round(candidateHeight * 0.8),
+    searchTop,
+    height - 1,
+  );
+  const activeColumns = new Uint8Array(candidateWidth);
+  for (let localX = 0; localX < candidateWidth; localX += 1) {
+    const x = candidate.left + localX;
+    for (let y = searchTop; y <= searchBottom; y += 1) {
+      if (curveEvidenceMask[y * width + x]) {
+        activeColumns[localX] = 1;
+        break;
+      }
+    }
+  }
+  const edgeLimit = clamp(
+    Math.round(candidateWidth * 0.08),
+    12,
+    36,
+  );
+  const corridors = [];
+  for (let index = 0; index < activeColumns.length; index += 1) {
+    if (activeColumns[index]) continue;
+    const start = index;
+    while (
+      index + 1 < activeColumns.length &&
+      !activeColumns[index + 1]
+    ) {
+      index += 1;
+    }
+    const end = index;
+    if (end - start + 1 < 2) continue;
+    const hasLeftSupport = activeColumns
+      .subarray(Math.max(0, start - 8), start)
+      .some(Boolean);
+    const hasRightSupport = activeColumns
+      .subarray(
+        end + 1,
+        Math.min(activeColumns.length, end + 9),
+      )
+      .some(Boolean);
+    if (!hasLeftSupport || !hasRightSupport) continue;
+    if (
+      start <= edgeLimit ||
+      activeColumns.length - end - 1 <= edgeLimit
+    ) {
+      corridors.push({ start, end });
+    }
+  }
+  if (!corridors.length) return candidate;
+  const corridor = corridors.sort(
+    (left, right) =>
+      Math.min(
+        left.start,
+        activeColumns.length - left.end - 1,
+      ) -
+      Math.min(
+        right.start,
+        activeColumns.length - right.end - 1,
+      ),
+  )[0];
+  const leftSpan = corridor.start;
+  const rightSpan =
+    activeColumns.length - corridor.end - 1;
+  if (leftSpan <= rightSpan) {
+    return {
+      ...candidate,
+      left: candidate.left + corridor.end + 1,
+      internalGutterClipped: true,
+    };
+  }
+  return {
+    ...candidate,
+    right: candidate.left + corridor.start - 1,
+    internalGutterClipped: true,
+  };
 }
 
 function removeCompositeContainers(
@@ -2711,6 +3714,7 @@ function removeCompositeContainers(
             separationEvidenceMask ?? curveEvidenceMask,
             width,
             height,
+            { localOnly: true },
           )
         ) {
           continue;
@@ -2753,6 +3757,148 @@ function removeCompositeContainers(
   );
 }
 
+export function fairlyBoundPreNmsCandidates(
+  candidates,
+  width,
+  height,
+  maximumCandidateCount = 512,
+) {
+  const safeMaximumCandidateCount = Math.max(
+    1,
+    Math.round(maximumCandidateCount),
+  );
+  const tileCount =
+    PRE_NMS_SPATIAL_DIVISIONS *
+    PRE_NMS_SPATIAL_DIVISIONS;
+  const candidateTiles = Array.from(
+    { length: tileCount },
+    () => [],
+  );
+  const rankCandidates = (left, right) =>
+    Number(Boolean(right.curveEvidence)) -
+      Number(Boolean(left.curveEvidence)) ||
+    (right.detectionReason === "shared-frame-cell") -
+      (left.detectionReason === "shared-frame-cell") ||
+    (right.detectionScale === "separation") -
+      (left.detectionScale === "separation") ||
+    (right.detectionScale === "strict") -
+      (left.detectionScale === "strict") ||
+    (right.edgeEvidence ?? 0) -
+      (left.edgeEvidence ?? 0) ||
+    (right.confidence ?? 0) -
+      (left.confidence ?? 0) ||
+    left.top - right.top ||
+    left.left - right.left ||
+    left.bottom - right.bottom ||
+    left.right - right.right;
+
+  for (const candidate of candidates) {
+    const centerX = (candidate.left + candidate.right) / 2;
+    const centerY = (candidate.top + candidate.bottom) / 2;
+    const column = clamp(
+      Math.floor(
+        (centerX * PRE_NMS_SPATIAL_DIVISIONS) /
+          Math.max(1, width),
+      ),
+      0,
+      PRE_NMS_SPATIAL_DIVISIONS - 1,
+    );
+    const row = clamp(
+      Math.floor(
+        (centerY * PRE_NMS_SPATIAL_DIVISIONS) /
+          Math.max(1, height),
+      ),
+      0,
+      PRE_NMS_SPATIAL_DIVISIONS - 1,
+    );
+    candidateTiles[
+      row * PRE_NMS_SPATIAL_DIVISIONS + column
+    ].push(candidate);
+  }
+  if (candidates.length <= safeMaximumCandidateCount) {
+    return {
+      candidates: [...candidates],
+      diagnostics: {
+        rawCandidateCount: candidates.length,
+        boundedCandidateCount: candidates.length,
+        measurementBudget: safeMaximumCandidateCount,
+        measurementBudgetHit: false,
+        droppedCandidateCount: 0,
+        tiles: candidateTiles.map((tile, tileIndex) => ({
+          row: Math.floor(
+            tileIndex / PRE_NMS_SPATIAL_DIVISIONS,
+          ),
+          column:
+            tileIndex % PRE_NMS_SPATIAL_DIVISIONS,
+          generatedCount: tile.length,
+          retainedCount: tile.length,
+          droppedCount: 0,
+        })),
+      },
+    };
+  }
+  for (const tile of candidateTiles) {
+    tile.sort(rankCandidates);
+  }
+
+  const boundedCandidates = [];
+  const retainedTileCounts = new Uint16Array(tileCount);
+  const maximumTileLength = Math.max(
+    0,
+    ...candidateTiles.map((tile) => tile.length),
+  );
+  for (
+    let rankIndex = 0;
+    rankIndex < maximumTileLength &&
+    boundedCandidates.length < safeMaximumCandidateCount;
+    rankIndex += 1
+  ) {
+    for (
+      let tileIndex = 0;
+      tileIndex < candidateTiles.length &&
+      boundedCandidates.length < safeMaximumCandidateCount;
+      tileIndex += 1
+    ) {
+      const candidate = candidateTiles[tileIndex][rankIndex];
+      if (!candidate) continue;
+      boundedCandidates.push(candidate);
+      retainedTileCounts[tileIndex] += 1;
+    }
+  }
+
+  return {
+    candidates: boundedCandidates,
+    diagnostics: {
+      rawCandidateCount: candidates.length,
+      boundedCandidateCount: boundedCandidates.length,
+      measurementBudget: safeMaximumCandidateCount,
+      measurementBudgetHit:
+        candidates.length > boundedCandidates.length,
+      droppedCandidateCount: Math.max(
+        0,
+        candidates.length - boundedCandidates.length,
+      ),
+      tiles: candidateTiles.map((tile, tileIndex) => {
+        const retainedCount =
+          retainedTileCounts[tileIndex];
+        return {
+          row: Math.floor(
+            tileIndex / PRE_NMS_SPATIAL_DIVISIONS,
+          ),
+          column:
+            tileIndex % PRE_NMS_SPATIAL_DIVISIONS,
+          generatedCount: tile.length,
+          retainedCount,
+          droppedCount: Math.max(
+            0,
+            tile.length - retainedCount,
+          ),
+        };
+      }),
+    },
+  };
+}
+
 function removeDuplicateAndGridCandidates(
   candidates,
   edgeEvidenceMask,
@@ -2783,8 +3929,10 @@ function removeDuplicateAndGridCandidates(
       uniqueCandidates.set(key, candidate);
     }
   }
-  const withEdgeEvidence = removeCompositeContainers(
-    [...uniqueCandidates.values()].map((candidate) => ({
+  const maximumPreNmsMeasurementCount = 512;
+  const candidatesWithEdgeEvidence = [
+    ...uniqueCandidates.values(),
+  ].map((candidate) => ({
       ...candidate,
       edgeEvidence: candidateEdgeEvidence(
         candidate,
@@ -2792,7 +3940,65 @@ function removeDuplicateAndGridCandidates(
         width,
         height,
       ),
-    })),
+    }));
+  const preNmsSelection = fairlyBoundPreNmsCandidates(
+    candidatesWithEdgeEvidence,
+    width,
+    height,
+    maximumPreNmsMeasurementCount,
+  );
+  const boundedCandidates = preNmsSelection.candidates;
+  const withEdgeEvidence = removeCompositeContainers(
+    boundedCandidates.map((candidate) => {
+      const measuredEvidence =
+        candidate.curveEvidence ??
+        measureChartCurveEvidence(
+          candidate,
+          curveEvidenceMask,
+          width,
+        );
+      const microFrameSignal = measureMicroFrameSignal(
+        candidate,
+        curveEvidenceMask,
+        separationEvidenceMask,
+        width,
+      );
+      const curveEvidence =
+        !measuredEvidence.valid &&
+        microFrameSignal?.valid
+          ? {
+              ...measuredEvidence,
+              valid: true,
+              score: Math.max(
+                measuredEvidence.score,
+                microFrameSignal.score,
+              ),
+              horizontalCoverage: Math.max(
+                measuredEvidence.horizontalCoverage,
+                0.4,
+              ),
+              continuousCoverage: Math.max(
+                measuredEvidence.continuousCoverage,
+                0.25,
+              ),
+              verticalVariation: Math.max(
+                measuredEvidence.verticalVariation,
+                0.12,
+              ),
+              microFrameSignalRescue: true,
+              microFrameCurvePixelCount:
+                microFrameSignal.curvePixelCount,
+              microFrameBroadResidualPixelCount:
+                microFrameSignal.broadResidualPixelCount,
+            }
+          : measuredEvidence;
+      return {
+        ...candidate,
+        // Validate before overlap suppression. Broken geometry must not
+        // discard a lower-priority region whose Curve is more complete.
+        curveEvidence,
+      };
+    }),
     curveEvidenceMask,
     separationEvidenceMask,
     width,
@@ -2810,6 +4016,28 @@ function removeDuplicateAndGridCandidates(
           intersectionOverUnion(rectangle, candidate) >= 0.68,
       ),
   );
+  const curveCompleteness = (candidate) => {
+    const evidence = candidate.curveEvidence;
+    if (
+      !evidence?.valid ||
+      evidence.tableGridArtifact ||
+      evidence.closedLoopArtifact ||
+      evidence.closedTwoBranchArtifact ||
+      (candidate.detectionReason ===
+        "frameless-curve-region" &&
+        evidence.continuousCoverage < 0.3 &&
+        !evidence.segmentedWaveformTrace)
+    ) {
+      return 0;
+    }
+    return (
+      1 +
+      evidence.score * 0.35 +
+      evidence.horizontalCoverage * 0.3 +
+      evidence.continuousCoverage * 0.2 +
+      Math.min(1, evidence.verticalVariation * 2) * 0.15
+    );
+  };
   const ranked = [...withoutRectangleDerivedLAxes].sort(
     (left, right) => {
       // Exact-gutter candidates must win over a tolerant full-row/full-slide
@@ -2829,12 +4057,16 @@ function removeDuplicateAndGridCandidates(
         (rightSeparation ? 2 : 0) +
         (right.detectionScale === "strict" ? 1 : 0);
       return (
+        Number(curveCompleteness(right) > 0) -
+          Number(curveCompleteness(left) > 0) ||
         rightPriority - leftPriority ||
         (leftSeparation && rightSeparation
           ? area(left) - area(right)
           : area(right) - area(left)) ||
         (right.axisMode === "rectangle") -
           (left.axisMode === "rectangle") ||
+        curveCompleteness(right) -
+          curveCompleteness(left) ||
         right.confidence - left.confidence ||
         left.top - right.top ||
         left.left - right.left
@@ -2863,9 +4095,77 @@ function removeDuplicateAndGridCandidates(
     );
     if (duplicateIndex >= 0) {
       const existing = kept[duplicateIndex];
+      const candidateCompleteness =
+        curveCompleteness(candidate);
+      const existingCompleteness =
+        curveCompleteness(existing);
+      const candidateHasCurve = candidateCompleteness > 0;
+      const existingHasCurve = existingCompleteness > 0;
+      if (
+        candidateHasCurve &&
+        !existingHasCurve
+      ) {
+        kept[duplicateIndex] = candidate;
+        continue;
+      }
       const nested =
         contains(existing, candidate) || contains(candidate, existing);
       const candidateIsInner = contains(existing, candidate);
+      const smallerNestedCandidate =
+        area(candidate) <= area(existing)
+          ? candidate
+          : existing;
+      const largerNestedCandidate =
+        smallerNestedCandidate === candidate
+          ? existing
+          : candidate;
+      const nestedAreaRatio =
+        area(smallerNestedCandidate) /
+        Math.max(1, area(largerNestedCandidate));
+      const nestedWidthRatio =
+        (smallerNestedCandidate.right -
+          smallerNestedCandidate.left +
+          1) /
+        Math.max(
+          1,
+          largerNestedCandidate.right -
+            largerNestedCandidate.left +
+            1,
+        );
+      const nestedHeightRatio =
+        (smallerNestedCandidate.bottom -
+          smallerNestedCandidate.top +
+          1) /
+        Math.max(
+          1,
+          largerNestedCandidate.bottom -
+            largerNestedCandidate.top +
+            1,
+        );
+      const comparableNestedPlots =
+        nested &&
+        candidate.axisMode === "rectangle" &&
+        existing.axisMode === "rectangle" &&
+        candidateHasCurve &&
+        existingHasCurve &&
+        nestedAreaRatio >= 0.22 &&
+        nestedWidthRatio >= 0.45 &&
+        nestedHeightRatio >= 0.4;
+      // Detection scale and area are useful tie-breakers, but they must not
+      // make a broad card/frame discard a materially more complete Curve.
+      // Keep this replacement local to substantial nested plots so a tiny
+      // legend sparkline cannot displace the surrounding distribution.
+      if (
+        comparableNestedPlots &&
+        candidateCompleteness >=
+          existingCompleteness + 0.08
+      ) {
+        if (candidateIsInner) {
+          suppressionEnvelopes.push(existing);
+        }
+        kept[duplicateIndex] = candidate;
+        continue;
+      }
       const substantiallyMoreSalient =
         candidate.edgeEvidence >= existing.edgeEvidence + 0.22 &&
         candidate.edgeEvidence >= 0.62;
@@ -2888,17 +4188,55 @@ function removeDuplicateAndGridCandidates(
     // The public contract deliberately returns non-overlapping panels. Inset
     // charts are ambiguous without semantic OCR, so the stronger outer plot is
     // retained instead of emitting two crops containing the same pixels.
-    if (
-      kept.some(
-        (existing) =>
-          intersectionArea(existing, candidate) >
-          Math.min(area(existing), area(candidate)) * 0.02,
-      )
-    ) {
+    const overlappingIndex = kept.findIndex((existing) => {
+      const intersection = intersectionArea(
+        existing,
+        candidate,
+      );
+      const smallerArea = Math.min(
+        area(existing),
+        area(candidate),
+      );
+      const largerArea = Math.max(
+        area(existing),
+        area(candidate),
+      );
+      const marginalMicroFrameContact =
+        (existing.curveEvidence?.microFrameSignalRescue ===
+          true ||
+          candidate.curveEvidence?.microFrameSignalRescue ===
+            true) &&
+        largerArea >= smallerArea * 10 &&
+        intersection <= smallerArea * 0.08;
+      // A legend/label-sized rectangle can share one antialiased edge row
+      // with a real plot. Keep the large hypothesis until colour-series
+      // validation runs; the tiny micro-frame must not delete it here.
+      return (
+        intersection > smallerArea * 0.02 &&
+        !marginalMicroFrameContact
+      );
+    });
+    if (overlappingIndex >= 0) {
+      const existing = kept[overlappingIndex];
+      const candidateHasCurve =
+        curveCompleteness(candidate) > 0;
+      const existingHasCurve =
+        curveCompleteness(existing) > 0;
+      if (
+        candidateHasCurve &&
+        !existingHasCurve
+      ) {
+        kept[overlappingIndex] = candidate;
+      }
       continue;
     }
     kept.push(candidate);
   }
+  kept.preNmsDiagnostics = {
+    ...preNmsSelection.diagnostics,
+    rawCandidateCount: candidates.length,
+    uniqueCandidateCount: uniqueCandidates.size,
+  };
   return kept;
 }
 
@@ -3102,6 +4440,17 @@ function detectGeometricCandidatesAtScale(
     maximumLineScanGap,
   );
   return [
+    ...(detectionScale === "micro"
+      ? detectEndpointAnchoredRectangleCandidates(
+          mask,
+          width,
+          height,
+          horizontalLines,
+          verticalLines,
+          minimumWidth,
+          minimumHeight,
+        )
+      : []),
     ...detectRectangleCandidates(
       mask,
       width,
@@ -3145,6 +4494,2010 @@ function mergeCurveColorMasks(curveColorMasks, width, height) {
     : null;
 }
 
+/**
+ * Remove only long, perfectly straight runs before spatial Curve grouping.
+ *
+ * A plot frame, guide or table rule can connect otherwise independent
+ * waveform components into one document-sized island. Conversely, removing
+ * every row/column with above-average ink would also erase broad peak apices
+ * in tiny screenshots. Long contiguous runs give us the useful middle ground:
+ * axes and rules disappear, while curved/antialiased State traces survive.
+ */
+function suppressStraightRunsForSpatialRecovery(
+  mask,
+  width,
+  height,
+) {
+  const suppressed = mask.slice();
+  const remove = new Uint8Array(mask.length);
+  const minimumHorizontalRun = clamp(
+    Math.round(width * 0.018),
+    16,
+    48,
+  );
+  const minimumVerticalRun = clamp(
+    Math.round(height * 0.025),
+    14,
+    40,
+  );
+  let removedPixelCount = 0;
+
+  const markRun = (start, end, indexAt) => {
+    if (end < start) return;
+    for (let position = start; position <= end; position += 1) {
+      remove[indexAt(position)] = 1;
+    }
+  };
+  for (let y = 0; y < height; y += 1) {
+    let start = -1;
+    for (let x = 0; x <= width; x += 1) {
+      const active =
+        x < width && mask[y * width + x];
+      if (active && start < 0) {
+        start = x;
+      } else if (!active && start >= 0) {
+        if (x - start >= minimumHorizontalRun) {
+          markRun(start, x - 1, (localX) => y * width + localX);
+        }
+        start = -1;
+      }
+    }
+  }
+  for (let x = 0; x < width; x += 1) {
+    let start = -1;
+    for (let y = 0; y <= height; y += 1) {
+      const active =
+        y < height && mask[y * width + x];
+      if (active && start < 0) {
+        start = y;
+      } else if (!active && start >= 0) {
+        if (y - start >= minimumVerticalRun) {
+          markRun(start, y - 1, (localY) => localY * width + x);
+        }
+        start = -1;
+      }
+    }
+  }
+  for (let index = 0; index < suppressed.length; index += 1) {
+    if (!remove[index]) continue;
+    suppressed[index] = 0;
+    removedPixelCount += 1;
+  }
+  return {
+    mask: suppressed,
+    removedPixelCount,
+    minimumHorizontalRun,
+    minimumVerticalRun,
+  };
+}
+
+function dilateBinaryMaskAnisotropic(
+  mask,
+  width,
+  height,
+  radiusX,
+  radiusY,
+) {
+  const horizontal = new Uint8Array(mask.length);
+  const output = new Uint8Array(mask.length);
+  for (let y = 0; y < height; y += 1) {
+    let active = 0;
+    for (
+      let seedX = 0;
+      seedX <= Math.min(width - 1, radiusX);
+      seedX += 1
+    ) {
+      if (mask[y * width + seedX]) {
+        active += 1;
+      }
+    }
+    for (let x = 0; x < width; x += 1) {
+      if (active > 0) horizontal[y * width + x] = 1;
+      const entering = x + radiusX + 1;
+      const leaving = x - radiusX;
+      if (
+        entering < width &&
+        mask[y * width + entering]
+      ) {
+        active += 1;
+      }
+      if (
+        leaving >= 0 &&
+        mask[y * width + leaving]
+      ) {
+        active -= 1;
+      }
+    }
+  }
+  for (let x = 0; x < width; x += 1) {
+    let active = 0;
+    for (
+      let seedY = 0;
+      seedY <= Math.min(height - 1, radiusY);
+      seedY += 1
+    ) {
+      if (horizontal[seedY * width + x]) {
+        active += 1;
+      }
+    }
+    for (let y = 0; y < height; y += 1) {
+      if (active > 0) output[y * width + x] = 1;
+      const entering = y + radiusY + 1;
+      const leaving = y - radiusY;
+      if (
+        entering < height &&
+        horizontal[entering * width + x]
+      ) {
+        active += 1;
+      }
+      if (
+        leaving >= 0 &&
+        horizontal[leaving * width + x]
+      ) {
+        active -= 1;
+      }
+    }
+  }
+  return output;
+}
+
+function spatialWaveformRegionsAtScale(
+  sourceMask,
+  groupingMask,
+  width,
+  height,
+  radiusX,
+  radiusY,
+  maximumPerTile = 32,
+) {
+  const connectedMask = dilateBinaryMaskAnisotropic(
+    groupingMask,
+    width,
+    height,
+    radiusX,
+    radiusY,
+  );
+  const visited = new Uint8Array(connectedMask.length);
+  const queue = new Int32Array(connectedMask.length);
+  const tileColumns = 4;
+  const tileRows = 4;
+  const tiles = Array.from(
+    { length: tileColumns * tileRows },
+    (_value, tileIndex) => ({
+      tileIndex,
+      row: Math.floor(tileIndex / tileColumns),
+      column: tileIndex % tileColumns,
+      generatedCount: 0,
+      retained: [],
+    }),
+  );
+  const columnStamp = new Uint32Array(width);
+  const columnMinimumY = new Int32Array(width);
+  const columnMaximumY = new Int32Array(width);
+  let componentStamp = 0;
+  let generatedCount = 0;
+  const minimumPixelCount = Math.max(
+    8,
+    Math.round(width * height * 0.000006),
+  );
+  const minimumWidth = Math.max(
+    12,
+    Math.round(width * 0.008),
+  );
+  const minimumHeight = Math.max(
+    6,
+    Math.round(height * 0.007),
+  );
+  const comparePriority = (leftRegion, rightRegion) =>
+    rightRegion.cheapWaveformPriority -
+      leftRegion.cheapWaveformPriority ||
+    rightRegion.cheapDirectionChangeCount -
+      leftRegion.cheapDirectionChangeCount ||
+    rightRegion.cheapHorizontalCoverage -
+      leftRegion.cheapHorizontalCoverage ||
+    rightRegion.sourcePixelCount -
+      leftRegion.sourcePixelCount ||
+    area(rightRegion) - area(leftRegion) ||
+    leftRegion.top - rightRegion.top ||
+    leftRegion.left - rightRegion.left;
+
+  for (
+    let start = 0;
+    start < connectedMask.length;
+    start += 1
+  ) {
+    if (!connectedMask[start] || visited[start]) continue;
+    componentStamp += 1;
+    let head = 0;
+    let tail = 1;
+    queue[0] = start;
+    visited[start] = 1;
+    let left = width;
+    let top = height;
+    let right = -1;
+    let bottom = -1;
+    let sourcePixelCount = 0;
+    while (head < tail) {
+      const index = queue[head];
+      head += 1;
+      const x = index % width;
+      const y = Math.floor(index / width);
+      if (sourceMask[index]) {
+        left = Math.min(left, x);
+        top = Math.min(top, y);
+        right = Math.max(right, x);
+        bottom = Math.max(bottom, y);
+        sourcePixelCount += 1;
+        if (columnStamp[x] !== componentStamp) {
+          columnStamp[x] = componentStamp;
+          columnMinimumY[x] = y;
+          columnMaximumY[x] = y;
+        } else {
+          columnMinimumY[x] = Math.min(
+            columnMinimumY[x],
+            y,
+          );
+          columnMaximumY[x] = Math.max(
+            columnMaximumY[x],
+            y,
+          );
+        }
+      }
+      const visit = (neighbor) => {
+        if (
+          neighbor < 0 ||
+          neighbor >= connectedMask.length ||
+          visited[neighbor] ||
+          !connectedMask[neighbor]
+        ) {
+          return;
+        }
+        visited[neighbor] = 1;
+        queue[tail] = neighbor;
+        tail += 1;
+      };
+      if (x > 0) visit(index - 1);
+      if (x + 1 < width) visit(index + 1);
+      if (y > 0) visit(index - width);
+      if (y + 1 < height) visit(index + width);
+    }
+    if (
+      sourcePixelCount < minimumPixelCount ||
+      right - left + 1 < minimumWidth ||
+      bottom - top + 1 < minimumHeight
+    ) {
+      continue;
+    }
+    const regionWidth = right - left + 1;
+    const regionHeight = bottom - top + 1;
+    const density =
+      sourcePixelCount / Math.max(1, regionWidth * regionHeight);
+    if (
+      regionWidth / regionHeight < 0.52 ||
+      regionWidth / regionHeight > 14 ||
+      density > 0.32
+    ) {
+      continue;
+    }
+    let occupiedColumnCount = 0;
+    let thinColumnCount = 0;
+    let separatedBranchColumnCount = 0;
+    let trajectoryMinimumY = Number.POSITIVE_INFINITY;
+    let trajectoryMaximumY = Number.NEGATIVE_INFINITY;
+    let previousTrajectoryY = null;
+    let previousDirection = 0;
+    let directionChangeCount = 0;
+    const separatedBranchThreshold = Math.max(
+      3,
+      regionHeight * 0.28,
+    );
+    const thinColumnThreshold = Math.max(
+      2,
+      regionHeight * 0.18,
+    );
+    for (let x = left; x <= right; x += 1) {
+      if (columnStamp[x] !== componentStamp) continue;
+      occupiedColumnCount += 1;
+      const columnSpan =
+        columnMaximumY[x] - columnMinimumY[x];
+      if (columnSpan <= thinColumnThreshold) {
+        thinColumnCount += 1;
+      }
+      if (columnSpan >= separatedBranchThreshold) {
+        separatedBranchColumnCount += 1;
+      }
+      const trajectoryY =
+        (columnMinimumY[x] + columnMaximumY[x]) / 2;
+      trajectoryMinimumY = Math.min(
+        trajectoryMinimumY,
+        trajectoryY,
+      );
+      trajectoryMaximumY = Math.max(
+        trajectoryMaximumY,
+        trajectoryY,
+      );
+      if (previousTrajectoryY !== null) {
+        const delta = trajectoryY - previousTrajectoryY;
+        const direction =
+          Math.abs(delta) < 0.35 ? 0 : Math.sign(delta);
+        if (
+          direction &&
+          previousDirection &&
+          direction !== previousDirection
+        ) {
+          directionChangeCount += 1;
+        }
+        if (direction) previousDirection = direction;
+      }
+      previousTrajectoryY = trajectoryY;
+    }
+    const horizontalCoverage =
+      occupiedColumnCount / Math.max(1, regionWidth);
+    const thinColumnRatio =
+      thinColumnCount / Math.max(1, occupiedColumnCount);
+    const separatedBranchRatio =
+      separatedBranchColumnCount /
+      Math.max(1, occupiedColumnCount);
+    const trajectoryVariation =
+      (trajectoryMaximumY - trajectoryMinimumY) /
+      Math.max(1, regionHeight);
+    const cheapWaveformPriority =
+      horizontalCoverage * 0.34 +
+      clamp(trajectoryVariation / 0.32, 0, 1) * 0.34 +
+      clamp(directionChangeCount / 5, 0, 1) * 0.34 +
+      thinColumnRatio * 0.12 -
+      separatedBranchRatio * 0.58;
+    const region = {
+      left,
+      top,
+      right,
+      bottom,
+      sourcePixelCount,
+      density,
+      radiusX,
+      radiusY,
+      cheapWaveformPriority,
+      cheapHorizontalCoverage: horizontalCoverage,
+      cheapTrajectoryVariation: trajectoryVariation,
+      cheapDirectionChangeCount: directionChangeCount,
+      cheapSeparatedBranchRatio: separatedBranchRatio,
+    };
+    generatedCount += 1;
+    const centerX = (left + right) / 2;
+    const centerY = (top + bottom) / 2;
+    const tileX = clamp(
+      Math.floor((centerX / Math.max(1, width)) * tileColumns),
+      0,
+      tileColumns - 1,
+    );
+    const tileY = clamp(
+      Math.floor((centerY / Math.max(1, height)) * tileRows),
+      0,
+      tileRows - 1,
+    );
+    const tile = tiles[tileY * tileColumns + tileX];
+    region.spatialTileIndex = tile.tileIndex;
+    tile.generatedCount += 1;
+    tile.retained.push(region);
+    tile.retained.sort(comparePriority);
+    if (tile.retained.length > maximumPerTile) {
+      tile.retained.length = maximumPerTile;
+    }
+  }
+  const regions = tiles.flatMap((tile) => tile.retained);
+  return {
+    regions,
+    generatedCount,
+    retainedCount: regions.length,
+    droppedCount: generatedCount - regions.length,
+    budgetHit: generatedCount > regions.length,
+    tiles: tiles.map(
+      ({
+        tileIndex,
+        row,
+        column,
+        generatedCount: tileGeneratedCount,
+        retained,
+      }) => ({
+        tileIndex,
+        row,
+        column,
+        generatedCount: tileGeneratedCount,
+        retainedCount: retained.length,
+        droppedCount:
+          tileGeneratedCount - retained.length,
+        budgetHit:
+          tileGeneratedCount > retained.length,
+      }),
+    ),
+  };
+}
+
+function isStrongSpatialWaveformEvidence(evidence) {
+  if (
+    !evidence.valid ||
+    evidence.tableGridArtifact ||
+    evidence.closedLoopArtifact ||
+    evidence.closedTwoBranchArtifact ||
+    evidence.simpleTwoBranchOutlineArtifact ||
+    evidence.clippedClosedOutlineArtifact ||
+    evidence.thinEnough === false ||
+    evidence.horizontalCoverage < 0.3 ||
+    evidence.verticalVariation < 0.055 ||
+    evidence.score < 0.46
+  ) {
+    return false;
+  }
+  const coherent =
+    evidence.continuousCoverage >= 0.28 ||
+    evidence.segmentedWaveformTrace ||
+    evidence.clippedPlateauWaveform ||
+    evidence.boundaryClippedShallowWaveform ||
+    evidence.boundaryClippedValleyWaveform;
+  const shaped =
+    evidence.localizedSinglePeak ||
+    evidence.directionChangeCount >= 1 ||
+    evidence.segmentedWaveformTrace;
+  return coherent && shaped;
+}
+
+function fairlyBoundSpatialRegions(
+  regions,
+  width,
+  height,
+  maximumCount = 192,
+  maximumPerTile = 32,
+) {
+  const tileColumns = 4;
+  const tileRows = 4;
+  const tiles = Array.from(
+    { length: tileColumns * tileRows },
+    (_value, tileIndex) => ({
+      tileIndex,
+      row: Math.floor(tileIndex / tileColumns),
+      column: tileIndex % tileColumns,
+      generatedCount: 0,
+      uniqueCount: 0,
+      proposals: [],
+      retainedCount: 0,
+    }),
+  );
+  const unique = new Set();
+  for (const region of regions) {
+    const centerX = (region.left + region.right) / 2;
+    const centerY = (region.top + region.bottom) / 2;
+    const tileX = clamp(
+      Math.floor((centerX / Math.max(1, width)) * tileColumns),
+      0,
+      tileColumns - 1,
+    );
+    const tileY = clamp(
+      Math.floor((centerY / Math.max(1, height)) * tileRows),
+      0,
+      tileRows - 1,
+    );
+    const tile = tiles[tileY * tileColumns + tileX];
+    tile.generatedCount += 1;
+    const key = [
+      region.left,
+      region.top,
+      region.right,
+      region.bottom,
+    ].join(":");
+    if (unique.has(key)) continue;
+    unique.add(key);
+    tile.uniqueCount += 1;
+    tile.proposals.push(region);
+  }
+  for (const tile of tiles) {
+    tile.proposals.sort(
+      (left, right) =>
+        (right.cheapWaveformPriority ?? 0) -
+          (left.cheapWaveformPriority ?? 0) ||
+        (right.cheapDirectionChangeCount ?? 0) -
+          (left.cheapDirectionChangeCount ?? 0) ||
+        (right.cheapHorizontalCoverage ?? 0) -
+          (left.cheapHorizontalCoverage ?? 0) ||
+        right.sourcePixelCount - left.sourcePixelCount ||
+        area(right) - area(left) ||
+        left.top - right.top ||
+        left.left - right.left,
+    );
+    if (tile.proposals.length > maximumPerTile) {
+      tile.proposals.length = maximumPerTile;
+    }
+  }
+  const retained = [];
+  for (
+    let rank = 0;
+    retained.length < maximumCount;
+    rank += 1
+  ) {
+    let added = false;
+    for (const tile of tiles) {
+      if (rank >= tile.proposals.length) continue;
+      retained.push(tile.proposals[rank]);
+      tile.retainedCount += 1;
+      added = true;
+      if (retained.length >= maximumCount) break;
+    }
+    if (!added) break;
+  }
+  const generatedCount = regions.length;
+  const uniqueCount = unique.size;
+  const retainedCount = retained.length;
+  return {
+    regions: retained,
+    generatedCount,
+    uniqueCount,
+    retainedCount,
+    droppedCount: generatedCount - retainedCount,
+    duplicateDroppedCount: generatedCount - uniqueCount,
+    budgetHit: generatedCount > retainedCount,
+    tiles: tiles.map(
+      ({
+        tileIndex,
+        row,
+        column,
+        generatedCount: tileGeneratedCount,
+        uniqueCount: tileUniqueCount,
+        retainedCount: tileRetainedCount,
+      }) => ({
+        tileIndex,
+        row,
+        column,
+        generatedCount: tileGeneratedCount,
+        uniqueCount: tileUniqueCount,
+        retainedCount: tileRetainedCount,
+        droppedCount:
+          tileGeneratedCount - tileRetainedCount,
+        duplicateDroppedCount:
+          tileGeneratedCount - tileUniqueCount,
+        budgetHit:
+          tileGeneratedCount > tileRetainedCount,
+      }),
+    ),
+  };
+}
+
+function roundRobinProposalPasses(
+  proposalPasses,
+  maximumCount,
+) {
+  const retained = [];
+  for (
+    let rank = 0;
+    retained.length < maximumCount;
+    rank += 1
+  ) {
+    let added = false;
+    for (const pass of proposalPasses) {
+      if (rank >= pass.proposals.length) continue;
+      retained.push(pass.proposals[rank]);
+      added = true;
+      if (retained.length >= maximumCount) break;
+    }
+    if (!added) break;
+  }
+  return retained;
+}
+
+function isSafeSpatialRecoveryCandidate(candidate) {
+  const evidence = candidate.curveEvidence;
+  if (
+    !evidence?.valid ||
+    evidence.tableGridArtifact ||
+    evidence.closedLoopArtifact ||
+    evidence.closedTwoBranchArtifact ||
+    evidence.simpleTwoBranchOutlineArtifact ||
+    evidence.clippedClosedOutlineArtifact
+  ) {
+    return false;
+  }
+  if (
+    candidate.spatialFrameRecovered &&
+    candidate.spatialFrameSupport >= 0.62
+  ) {
+    return true;
+  }
+  if (candidate.spatialChromaticTopology?.valid) {
+    return true;
+  }
+  // Without a physical frame, require a complete multi-turn waveform. A
+  // single Gaussian component is already handled by the connected frameless
+  // detector; accepting it here would split the States of one chart into
+  // separate panels.
+  return (
+    evidence.score >= 0.62 &&
+    evidence.horizontalCoverage >= 0.58 &&
+    (evidence.continuousCoverage >= 0.42 ||
+      evidence.segmentedWaveformTrace) &&
+    evidence.verticalVariation >= 0.08 &&
+    ((evidence.directionChangeCount ?? 0) >= 2 ||
+      (evidence.segmentedWaveformTrace &&
+        evidence.curvedSegmentCount >= 3))
+  );
+}
+
+function expandSpatialWaveformToFrame(
+  candidate,
+  horizontalLines,
+  verticalLines,
+  frameSupportMask,
+  frameSearchMask,
+  curveEvidenceMask,
+  width,
+  height,
+  measurementBudget,
+) {
+  const candidateWidth = candidate.right - candidate.left + 1;
+  const candidateHeight = candidate.bottom - candidate.top + 1;
+  const horizontalTolerance = Math.max(
+    4,
+    candidateWidth * 0.16,
+  );
+  const verticalTolerance = Math.max(
+    4,
+    candidateHeight * 0.2,
+  );
+  const maximumFrameHeight = Math.min(
+    height,
+    Math.max(
+      candidateHeight * 4.2,
+      candidateWidth * 1.35,
+    ),
+  );
+  const horizontalCandidates = horizontalLines.filter(
+    (line) =>
+      line.end >= candidate.right - horizontalTolerance &&
+      line.start <= candidate.left + horizontalTolerance &&
+      line.coordinate >=
+        candidate.top - maximumFrameHeight * 0.45 &&
+      line.coordinate <=
+        candidate.bottom + maximumFrameHeight,
+  );
+  const topFrameLines = horizontalCandidates
+    .filter(
+      (line) =>
+        line.coordinate <=
+        candidate.top + verticalTolerance,
+    )
+    .sort(
+      (left, right) =>
+        Math.abs(left.coordinate - candidate.top) -
+        Math.abs(right.coordinate - candidate.top),
+    )
+    .slice(0, 12);
+  const bottomFrameLines = horizontalCandidates
+    .filter(
+      (line) =>
+        line.coordinate >=
+        candidate.bottom - verticalTolerance,
+    )
+    .sort(
+      (left, right) =>
+        Math.abs(left.coordinate - candidate.bottom) -
+        Math.abs(right.coordinate - candidate.bottom),
+    )
+    .slice(0, 12);
+  const leftFrameLines = verticalLines
+    .filter(
+      (line) =>
+        line.coordinate >=
+          candidate.left - horizontalTolerance &&
+        line.coordinate <=
+          candidate.left + horizontalTolerance &&
+        line.start <= candidate.top + verticalTolerance &&
+        line.end >= candidate.bottom - verticalTolerance,
+    )
+    .sort(
+      (left, right) =>
+        Math.abs(left.coordinate - candidate.left) -
+        Math.abs(right.coordinate - candidate.left),
+    )
+    .slice(0, 12);
+  const hypotheses = [];
+  let measuredHypothesisCount = 0;
+  const supportedEdge = (
+    orientation,
+    coordinate,
+    start,
+    end,
+  ) => {
+    const primary = edgeSupport(
+      frameSupportMask,
+      width,
+      height,
+      orientation,
+      coordinate,
+      start,
+      end,
+    );
+    if (frameSupportMask === frameSearchMask) return primary;
+    return Math.max(
+      primary,
+      edgeSupport(
+        frameSearchMask,
+        width,
+        height,
+        orientation,
+        coordinate,
+        start,
+        end,
+      ) * 0.94,
+    );
+  };
+  const validate = (bounds, axisMode) => {
+    if (measuredHypothesisCount >= 6) {
+      return;
+    }
+    const frameWidth = bounds.right - bounds.left + 1;
+    const frameHeight = bounds.bottom - bounds.top + 1;
+    if (
+      bounds.left > candidate.left + horizontalTolerance ||
+      bounds.right < candidate.right - horizontalTolerance ||
+      bounds.top > candidate.top + verticalTolerance ||
+      bounds.bottom < candidate.bottom - verticalTolerance ||
+      frameWidth / frameHeight < 0.62 ||
+      frameWidth / frameHeight > 8 ||
+      area(bounds) > area(candidate) * 5.5
+    ) {
+      return;
+    }
+    const supports =
+      axisMode === "rectangle"
+        ? [
+            supportedEdge(
+              "horizontal",
+              bounds.top,
+              bounds.left,
+              bounds.right,
+            ),
+            supportedEdge(
+              "horizontal",
+              bounds.bottom,
+              bounds.left,
+              bounds.right,
+            ),
+            supportedEdge(
+              "vertical",
+              bounds.left,
+              bounds.top,
+              bounds.bottom,
+            ),
+            supportedEdge(
+              "vertical",
+              bounds.right,
+              bounds.top,
+              bounds.bottom,
+            ),
+          ]
+        : [
+            supportedEdge(
+              "horizontal",
+              bounds.bottom,
+              bounds.left,
+              bounds.right,
+            ),
+            supportedEdge(
+              "vertical",
+              bounds.left,
+              bounds.top,
+              bounds.bottom,
+            ),
+          ];
+    const minimumSupport = Math.min(...supports);
+    const meanSupport =
+      supports.reduce((sum, value) => sum + value, 0) /
+      supports.length;
+    if (
+      minimumSupport <
+        (axisMode === "rectangle" ? 0.42 : 0.52) ||
+      meanSupport < 0.62
+    ) {
+      return;
+    }
+    if (
+      measurementBudget &&
+      measurementBudget.remaining <= 0
+    ) {
+      measurementBudget.denied =
+        (measurementBudget.denied ?? 0) + 1;
+      return;
+    }
+    measuredHypothesisCount += 1;
+    if (measurementBudget) {
+      measurementBudget.remaining -= 1;
+      measurementBudget.used += 1;
+    }
+    const curveEvidence = measureChartCurveEvidence(
+      {
+        ...bounds,
+        axisMode,
+      },
+      curveEvidenceMask,
+      width,
+    );
+    if (
+      !curveEvidence.valid ||
+      curveEvidence.tableGridArtifact
+    ) {
+      return;
+    }
+    const clippedWaveformRatio =
+      (Math.max(0, bounds.left - candidate.left) +
+        Math.max(0, candidate.right - bounds.right)) /
+        Math.max(1, candidateWidth) +
+      (Math.max(0, bounds.top - candidate.top) +
+        Math.max(0, candidate.bottom - bounds.bottom)) /
+        Math.max(1, candidateHeight);
+    hypotheses.push({
+      ...bounds,
+      axisMode,
+      curveEvidence,
+      frameSupport: meanSupport,
+      frameMinimumSupport: minimumSupport,
+      frameHypothesisMeasurements: measuredHypothesisCount,
+      score:
+        meanSupport * 0.62 +
+        curveEvidence.score * 0.28 -
+        clippedWaveformRatio * 0.9 -
+        (area(bounds) / Math.max(1, area(candidate)) - 1) *
+          0.006 +
+        (axisMode === "rectangle" ? 0.05 : 0),
+    });
+  };
+
+  for (const top of topFrameLines) {
+    for (const bottom of bottomFrameLines) {
+      if (
+        bottom.coordinate <
+          candidate.bottom - verticalTolerance ||
+        bottom.coordinate <= top.coordinate ||
+        bottom.coordinate - top.coordinate >
+          maximumFrameHeight
+      ) {
+        continue;
+      }
+      const left = Math.round(
+        (top.start + bottom.start) / 2,
+      );
+      const right = Math.round(
+        (top.end + bottom.end) / 2,
+      );
+      validate(
+        {
+          left: clamp(left, 0, width - 1),
+          top: clamp(top.coordinate, 0, height - 1),
+          right: clamp(right, left, width - 1),
+          bottom: clamp(
+            bottom.coordinate,
+            top.coordinate,
+            height - 1,
+          ),
+        },
+        "rectangle",
+      );
+    }
+  }
+
+  // Open-axis plots have no top/right frame. The bottom band and a vertical
+  // line terminating at its left endpoint still recover the full panel crop.
+  for (const bottom of bottomFrameLines) {
+    if (
+      bottom.coordinate <
+        candidate.bottom - verticalTolerance ||
+      bottom.coordinate >
+        candidate.bottom + maximumFrameHeight
+    ) {
+      continue;
+    }
+    for (const vertical of leftFrameLines) {
+      if (
+        Math.abs(vertical.coordinate - bottom.start) >
+          Math.max(5, candidateWidth * 0.1) ||
+        vertical.start > candidate.top + verticalTolerance ||
+        vertical.end <
+          bottom.coordinate - verticalTolerance
+      ) {
+        continue;
+      }
+      validate(
+        {
+          left: clamp(vertical.coordinate, 0, width - 1),
+          top: clamp(vertical.start, 0, height - 1),
+          right: clamp(
+            bottom.end,
+            vertical.coordinate,
+            width - 1,
+          ),
+          bottom: clamp(
+            Math.max(bottom.coordinate, vertical.end),
+            vertical.start,
+            height - 1,
+          ),
+        },
+        "l-axis",
+      );
+    }
+  }
+  if (!hypotheses.length) return null;
+  return hypotheses.sort(
+    (left, right) =>
+      right.score - left.score ||
+      area(left) - area(right),
+  )[0];
+}
+
+/**
+ * Recover waveform regions without assuming shared rows, columns or sizes.
+ *
+ * The detector evaluates two topology scales on both the neutral Curve
+ * residual and the chromatic union. Anisotropic horizontal dilation reconnects
+ * State segments and short low-resolution breaks; the much smaller vertical
+ * radius avoids joining charts that merely happen to be close on a slide.
+ * Every proposal is remeasured on the original Curve mask, so tables, prose,
+ * closed shapes and monotonic trend plots still pass through the established
+ * waveform gates.
+ */
+function recoverArbitraryWaveformCandidates(
+  curveEvidenceMask,
+  curveColorMasks,
+  frameSearchMask,
+  frameSupportMask,
+  width,
+  height,
+) {
+  if (!curveEvidenceMask) {
+    return {
+      candidates: [],
+      proposalCount: 0,
+      generatedProposalCount: 0,
+      retainedPassProposalCount: 0,
+      boundedProposalCount: 0,
+      passDroppedProposalCount: 0,
+      globalDroppedProposalCount: 0,
+      droppedProposalCount: 0,
+      evaluatedCount: 0,
+      evidenceAcceptedCount: 0,
+      deniedProposalEvaluationCount: 0,
+      curveMeasurementCount: 0,
+      curveMeasurementBudget: 0,
+      deniedResidualMeasurementCount: 0,
+      deniedOriginalMeasurementCount: 0,
+      deniedCurveMeasurementCount: 0,
+      frameMeasurementCount: 0,
+      deniedFrameMeasurementCount: 0,
+      attempted: false,
+      applied: false,
+      removedStraightPixelCount: 0,
+      scales: [],
+      proposalPasses: [],
+    };
+  }
+  const residual = suppressStraightRunsForSpatialRecovery(
+    curveEvidenceMask,
+    width,
+    height,
+  );
+  const colorUnion = mergeCurveColorMasks(
+    curveColorMasks,
+    width,
+    height,
+  );
+  const sources = [
+    {
+      name: "salience-residual",
+      mask: residual.mask,
+    },
+    ...(colorUnion
+      ? [{ name: "chromatic-union", mask: colorUnion }]
+      : []),
+  ];
+  const scales = [
+    {
+      radiusX: 1,
+      radiusY: 1,
+    },
+    {
+      radiusX: clamp(Math.round(width * 0.0015), 1, 4),
+      radiusY: clamp(Math.round(height * 0.001), 1, 2),
+    },
+    {
+      radiusX: clamp(Math.round(width * 0.004), 3, 10),
+      radiusY: clamp(Math.round(height * 0.0025), 1, 4),
+    },
+  ].filter(
+    (scale, index, values) =>
+      values.findIndex(
+        (candidate) =>
+          candidate.radiusX === scale.radiusX &&
+          candidate.radiusY === scale.radiusY,
+      ) === index,
+  );
+  const proposalPasses = [];
+  let generatedProposalCount = 0;
+  const minimumFrameLineWidth = Math.max(
+    14,
+    Math.round(width * 0.008),
+  );
+  const minimumFrameLineHeight = Math.max(
+    12,
+    Math.round(height * 0.008),
+  );
+  const horizontalFrameLines = extractLineBands(
+    frameSearchMask,
+    width,
+    height,
+    "horizontal",
+    minimumFrameLineWidth,
+    2,
+  );
+  const verticalFrameLines = extractLineBands(
+    frameSearchMask,
+    width,
+    height,
+    "vertical",
+    minimumFrameLineHeight,
+    2,
+  );
+  for (const source of sources) {
+    for (const scale of scales) {
+      const spatialRegions = spatialWaveformRegionsAtScale(
+        source.mask,
+        source.mask,
+        width,
+        height,
+        scale.radiusX,
+        scale.radiusY,
+      );
+      generatedProposalCount +=
+        spatialRegions.generatedCount;
+      const boundedRegions = fairlyBoundSpatialRegions(
+        spatialRegions.regions,
+        width,
+        height,
+      );
+      const tiles = spatialRegions.tiles.map(
+        (spatialTile) => {
+          const boundedTile =
+            boundedRegions.tiles[spatialTile.tileIndex];
+          const retainedCount =
+            boundedTile?.retainedCount ?? 0;
+          return {
+            tileIndex: spatialTile.tileIndex,
+            row: spatialTile.row,
+            column: spatialTile.column,
+            generatedCount:
+              spatialTile.generatedCount,
+            uniqueCount: spatialTile.generatedCount,
+            onlineRetainedCount:
+              spatialTile.retainedCount,
+            retainedCount,
+            droppedCount:
+              spatialTile.generatedCount - retainedCount,
+            onlineDroppedCount:
+              spatialTile.droppedCount,
+            passDroppedCount:
+              spatialTile.retainedCount - retainedCount,
+            duplicateDroppedCount: 0,
+            budgetHit:
+              spatialTile.generatedCount > retainedCount,
+          };
+        },
+      );
+      proposalPasses.push({
+        source: source.name,
+        radiusX: scale.radiusX,
+        radiusY: scale.radiusY,
+        generatedCount: spatialRegions.generatedCount,
+        uniqueCount: spatialRegions.generatedCount,
+        onlineRetainedCount:
+          spatialRegions.retainedCount,
+        retainedCount: boundedRegions.retainedCount,
+        droppedCount:
+          spatialRegions.generatedCount -
+          boundedRegions.retainedCount,
+        onlineDroppedCount: spatialRegions.droppedCount,
+        passDroppedCount:
+          spatialRegions.retainedCount -
+          boundedRegions.retainedCount,
+        duplicateDroppedCount: 0,
+        budgetHit:
+          spatialRegions.generatedCount >
+          boundedRegions.retainedCount,
+        tiles,
+        proposals: boundedRegions.regions.map((region) => ({
+          ...region,
+          spatialPassIndex: proposalPasses.length,
+          source: source.name,
+          evidenceMask: source.mask,
+        })),
+      });
+    }
+  }
+
+  const maximumProposalCount = 384;
+  // Every retained proposal always receives one residual-mask measurement
+  // and, when that passes, one original-mask measurement. Budget both stages
+  // independently so a run of strong early proposals cannot starve later
+  // spatial tiles while preserving a deterministic upper bound.
+  const maximumCurveMeasurementCount =
+    maximumProposalCount * 2;
+  const retainedPassProposalCount = proposalPasses.reduce(
+    (sum, pass) => sum + pass.proposals.length,
+    0,
+  );
+  const boundedProposals = roundRobinProposalPasses(
+    proposalPasses,
+    maximumProposalCount,
+  );
+  for (const pass of proposalPasses) {
+    pass.globallyRetainedCount = 0;
+    for (const tile of pass.tiles) {
+      tile.globallyRetainedCount = 0;
+    }
+  }
+  for (const proposal of boundedProposals) {
+    const pass =
+      proposalPasses[proposal.spatialPassIndex];
+    if (!pass) continue;
+    pass.globallyRetainedCount += 1;
+    const tile =
+      pass.tiles[proposal.spatialTileIndex];
+    if (tile) tile.globallyRetainedCount += 1;
+  }
+  for (const pass of proposalPasses) {
+    pass.globalDroppedCount =
+      pass.retainedCount - pass.globallyRetainedCount;
+    pass.globalBudgetHit = pass.globalDroppedCount > 0;
+    for (const tile of pass.tiles) {
+      tile.globalDroppedCount =
+        tile.retainedCount -
+        tile.globallyRetainedCount;
+      tile.globalBudgetHit =
+        tile.globalDroppedCount > 0;
+    }
+  }
+  const passDroppedProposalCount =
+    generatedProposalCount - retainedPassProposalCount;
+  const globalDroppedProposalCount =
+    retainedPassProposalCount - boundedProposals.length;
+  const droppedProposalCount =
+    generatedProposalCount - boundedProposals.length;
+  const frameMeasurementBudget = {
+    remaining: 1024,
+    used: 0,
+    denied: 0,
+  };
+  let curveMeasurementCount = 0;
+  let evaluationAttemptCount = 0;
+  let interruptedOriginalMeasurementCount = 0;
+  const evaluated = [];
+  for (const proposal of boundedProposals) {
+    if (
+      curveMeasurementCount >=
+      maximumCurveMeasurementCount
+    ) {
+      break;
+    }
+    evaluationAttemptCount += 1;
+    const proposalWidth =
+      proposal.right - proposal.left + 1;
+    const proposalHeight =
+      proposal.bottom - proposal.top + 1;
+    const horizontalPadding = clamp(
+      Math.round(proposalWidth * 0.035),
+      3,
+      Math.max(3, Math.round(width * 0.01)),
+    );
+    const verticalPadding = clamp(
+      Math.round(proposalHeight * 0.16),
+      4,
+      Math.max(4, Math.round(height * 0.035)),
+    );
+    const bottomPadding = clamp(
+      Math.round(proposalHeight * 0.48),
+      6,
+      Math.max(6, Math.round(height * 0.06)),
+    );
+    const candidate = {
+      left: Math.max(0, proposal.left - horizontalPadding),
+      top: Math.max(0, proposal.top - verticalPadding),
+      right: Math.min(
+        width - 1,
+        proposal.right + horizontalPadding,
+      ),
+      bottom: Math.min(
+        height - 1,
+        proposal.bottom + bottomPadding,
+      ),
+      axisMode: "content",
+    };
+    curveMeasurementCount += 1;
+    const residualEvidence = measureChartCurveEvidence(
+      candidate,
+      proposal.evidenceMask,
+      width,
+    );
+    if (!isStrongSpatialWaveformEvidence(residualEvidence)) {
+      continue;
+    }
+    if (
+      curveMeasurementCount >=
+      maximumCurveMeasurementCount
+    ) {
+      interruptedOriginalMeasurementCount += 1;
+      break;
+    }
+    curveMeasurementCount += 1;
+    const originalEvidence = measureChartCurveEvidence(
+      candidate,
+      curveEvidenceMask,
+      width,
+    );
+    const originalValid =
+      isStrongSpatialWaveformEvidence(originalEvidence);
+    // Original-mask validation is normally authoritative. A plot frame can
+    // still dominate a tiny low-resolution crop, so permit the line-suppressed
+    // evidence only when it is exceptionally coherent and the original mask
+    // contains no table/closed-shape signal.
+    const residualRescue =
+      !originalEvidence.tableGridArtifact &&
+      !originalEvidence.closedLoopArtifact &&
+      !originalEvidence.closedTwoBranchArtifact &&
+      residualEvidence.score >= 0.62 &&
+      residualEvidence.horizontalCoverage >= 0.48 &&
+      (residualEvidence.continuousCoverage >= 0.42 ||
+        residualEvidence.segmentedWaveformTrace);
+    if (!originalValid && !residualRescue) continue;
+    const curveEvidence = originalValid
+      ? originalEvidence
+      : {
+          ...originalEvidence,
+          valid: true,
+          score: Math.max(
+            originalEvidence.score,
+            residualEvidence.score,
+          ),
+          spatialResidualRescue: true,
+        };
+    const frame = expandSpatialWaveformToFrame(
+      candidate,
+      horizontalFrameLines,
+      verticalFrameLines,
+      frameSupportMask,
+      frameSearchMask,
+      curveEvidenceMask,
+      width,
+      height,
+      frameMeasurementBudget,
+    );
+    const selectedCurveEvidence =
+      frame?.curveEvidence ?? curveEvidence;
+    const selectedBounds = frame ?? candidate;
+    const spatialChromaticTopology =
+      measureTinyChromaticWaveformSignature(
+        selectedBounds,
+        curveColorMasks,
+        width,
+        height,
+        { ignoreRelativeAreaLimit: true },
+      );
+    evaluated.push({
+      ...selectedBounds,
+      confidence: clamp(
+        0.54 +
+          Math.max(
+            selectedCurveEvidence.score,
+            residualEvidence.score,
+          ) *
+            0.38 +
+          (proposal.source === "chromatic-union"
+            ? 0.025
+            : 0),
+        0,
+        0.97,
+      ),
+      detectionScale: "spatial",
+      detectionReason: "arbitrary-waveform-region",
+      curveEvidence: selectedCurveEvidence,
+      spatialEvidence: residualEvidence,
+      curveSource: proposal.source,
+      groupingRadiusX: proposal.radiusX,
+      groupingRadiusY: proposal.radiusY,
+      spatialFrameRecovered: Boolean(frame),
+      spatialFrameSupport: frame?.frameSupport ?? 0,
+      spatialChromaticTopology,
+    });
+  }
+
+  // Prefer the tightest valid region. A larger dilation pass is only a rescue
+  // for fragmented States and must never merge two already recovered charts.
+  const candidates = [];
+  for (const candidate of evaluated
+    .filter(isSafeSpatialRecoveryCandidate)
+    .sort(
+    (left, right) =>
+      Number(right.spatialFrameRecovered) -
+        Number(left.spatialFrameRecovered) ||
+      right.spatialFrameSupport -
+        left.spatialFrameSupport ||
+      (right.curveEvidence?.directionChangeCount ?? 0) -
+        (left.curveEvidence?.directionChangeCount ?? 0) ||
+      (right.curveEvidence?.horizontalCoverage ?? 0) -
+        (left.curveEvidence?.horizontalCoverage ?? 0) ||
+      right.confidence - left.confidence,
+  )) {
+    if (candidates.length >= MAXIMUM_CHART_PANELS * 4) {
+      break;
+    }
+    if (
+      candidates.some(
+        (existing) =>
+          intersectionOverUnion(existing, candidate) >= 0.56 ||
+          contains(candidate, existing, 3) ||
+          contains(existing, candidate, 3),
+      )
+    ) {
+      continue;
+    }
+    candidates.push(candidate);
+  }
+  const deniedProposalEvaluationCount =
+    boundedProposals.length - evaluationAttemptCount;
+  // An unevaluated proposal was definitely denied its first (residual)
+  // measurement. Its conditional original-mask measurement is unknowable
+  // without that first result, so count only measurement calls that were
+  // certainly denied plus an original measurement interrupted after a
+  // successful residual measurement.
+  const deniedResidualMeasurementCount =
+    deniedProposalEvaluationCount;
+  const deniedOriginalMeasurementCount =
+    interruptedOriginalMeasurementCount;
+  const deniedCurveMeasurementCount =
+    deniedResidualMeasurementCount +
+    deniedOriginalMeasurementCount;
+  return {
+    candidates,
+    proposalCount: generatedProposalCount,
+    generatedProposalCount,
+    retainedPassProposalCount,
+    boundedProposalCount: boundedProposals.length,
+    passDroppedProposalCount,
+    globalDroppedProposalCount,
+    droppedProposalCount,
+    evaluatedCount: evaluationAttemptCount,
+    evidenceAcceptedCount: evaluated.length,
+    deniedProposalEvaluationCount,
+    curveMeasurementCount,
+    curveMeasurementBudget:
+      maximumCurveMeasurementCount,
+    deniedResidualMeasurementCount,
+    deniedOriginalMeasurementCount,
+    deniedCurveMeasurementCount,
+    frameMeasurementCount: frameMeasurementBudget.used,
+    deniedFrameMeasurementCount:
+      frameMeasurementBudget.denied,
+    attempted: generatedProposalCount > 0,
+    applied: evaluationAttemptCount > 0,
+    proposalBudgetHit:
+      droppedProposalCount > 0,
+    curveMeasurementBudgetHit:
+      deniedCurveMeasurementCount > 0,
+    frameMeasurementBudgetHit:
+      frameMeasurementBudget.denied > 0,
+    removedStraightPixelCount: residual.removedPixelCount,
+    scales,
+    proposalPasses: proposalPasses.map(
+      ({
+        source,
+        radiusX,
+        radiusY,
+        generatedCount,
+        uniqueCount,
+        onlineRetainedCount,
+        retainedCount,
+        globallyRetainedCount,
+        droppedCount,
+        onlineDroppedCount,
+        passDroppedCount,
+        globalDroppedCount,
+        duplicateDroppedCount,
+        budgetHit,
+        globalBudgetHit,
+        tiles,
+      }) => ({
+        source,
+        radiusX,
+        radiusY,
+        generatedCount,
+        uniqueCount,
+        onlineRetainedCount,
+        retainedCount,
+        globallyRetainedCount,
+        droppedCount,
+        onlineDroppedCount,
+        passDroppedCount,
+        globalDroppedCount,
+        duplicateDroppedCount,
+        budgetHit,
+        globalBudgetHit,
+        tiles,
+      }),
+    ),
+  };
+}
+
+function measureLocallyUpscaledCurveEvidence(
+  candidate,
+  curveEvidenceMask,
+  curveColorUnionMask,
+  broadEvidenceMask,
+  width,
+  height,
+) {
+  const candidateWidth = candidate.right - candidate.left + 1;
+  const candidateHeight = candidate.bottom - candidate.top + 1;
+  const candidateAreaRatio =
+    area(candidate) / Math.max(1, width * height);
+  if (
+    candidateAreaRatio >= COMPACT_MINIMUM_PANEL_AREA_RATIO ||
+    candidateWidth < 28 ||
+    candidateHeight < 22 ||
+    candidateWidth > 150 ||
+    candidateHeight > 110
+  ) {
+    return null;
+  }
+  const scale = clamp(
+    Math.ceil(
+      Math.max(
+        2,
+        180 / Math.max(1, candidateWidth),
+        120 / Math.max(1, candidateHeight),
+      ),
+    ),
+    2,
+    5,
+  );
+  const scaledWidth = candidateWidth * scale;
+  const scaledHeight = candidateHeight * scale;
+  const upscaleSourceMask = (sourceMask) => {
+    if (!sourceMask) return null;
+    const scaledMask = new Uint8Array(
+      scaledWidth * scaledHeight,
+    );
+    let active = 0;
+    for (
+      let sourceY = 0;
+      sourceY < candidateHeight;
+      sourceY += 1
+    ) {
+      for (
+        let sourceX = 0;
+        sourceX < candidateWidth;
+        sourceX += 1
+      ) {
+        if (
+          !sourceMask[
+            (candidate.top + sourceY) * width +
+              candidate.left +
+              sourceX
+          ]
+        ) {
+          continue;
+        }
+        active += 1;
+        const targetLeft = sourceX * scale;
+        const targetTop = sourceY * scale;
+        for (
+          let offsetY = 0;
+          offsetY < scale;
+          offsetY += 1
+        ) {
+          scaledMask.fill(
+            1,
+            (targetTop + offsetY) * scaledWidth +
+              targetLeft,
+            (targetTop + offsetY) * scaledWidth +
+              targetLeft +
+              scale,
+          );
+        }
+      }
+    }
+    return active >= 8 ? scaledMask : null;
+  };
+  const scaledMask = upscaleSourceMask(curveEvidenceMask);
+  const scaledColorMask = upscaleSourceMask(
+    curveColorUnionMask,
+  );
+  const scaledBroadMask = upscaleSourceMask(
+    broadEvidenceMask,
+  );
+  if (!scaledMask && !scaledBroadMask) return null;
+  const localCandidate = {
+    left: 0,
+    top: 0,
+    right: scaledWidth - 1,
+    bottom: scaledHeight - 1,
+    axisMode: candidate.axisMode,
+  };
+  const contentCandidate = {
+    ...localCandidate,
+    axisMode: "content",
+  };
+  const sourceEvidence = scaledMask
+    ? measureChartCurveEvidence(
+        localCandidate,
+        scaledMask,
+        scaledWidth,
+      )
+    : null;
+  const residualEvidence = scaledMask
+    ? measureChartCurveEvidence(
+        contentCandidate,
+        suppressStraightRunsForSpatialRecovery(
+          scaledMask,
+          scaledWidth,
+          scaledHeight,
+        ).mask,
+        scaledWidth,
+      )
+    : null;
+  const broadResidualEvidence = scaledBroadMask
+    ? measureChartCurveEvidence(
+        contentCandidate,
+        suppressStraightRunsForSpatialRecovery(
+          scaledBroadMask,
+          scaledWidth,
+          scaledHeight,
+        ).mask,
+        scaledWidth,
+      )
+    : null;
+  const colorEvidence = scaledColorMask
+    ? measureChartCurveEvidence(
+        contentCandidate,
+        scaledColorMask,
+        scaledWidth,
+      )
+    : null;
+  const evidence = [
+    sourceEvidence,
+    residualEvidence,
+    broadResidualEvidence,
+    colorEvidence,
+  ]
+    .filter(Boolean)
+    .sort(
+      (left, right) =>
+        Number(right.valid) - Number(left.valid) ||
+        right.score - left.score,
+    )[0];
+  if (
+    !evidence.valid ||
+    evidence.tableGridArtifact ||
+    evidence.closedLoopArtifact ||
+    evidence.closedTwoBranchArtifact ||
+    evidence.simpleTwoBranchOutlineArtifact ||
+    evidence.clippedClosedOutlineArtifact
+  ) {
+    return null;
+  }
+  return {
+    ...evidence,
+    localUpscaleApplied: true,
+    localUpscaleScale: scale,
+    localSourceWidth: candidateWidth,
+    localSourceHeight: candidateHeight,
+  };
+}
+
+function measureTinyChromaticWaveformSignature(
+  candidate,
+  curveColorMasks,
+  width,
+  height,
+  options = {},
+) {
+  if (
+    !Array.isArray(curveColorMasks) ||
+    curveColorMasks.length < 4
+  ) {
+    return null;
+  }
+  const candidateWidth = candidate.right - candidate.left + 1;
+  const candidateHeight = candidate.bottom - candidate.top + 1;
+  const isTinyPixelRoi =
+    candidateWidth <= 80 && candidateHeight <= 60;
+  if (
+    (!options.ignoreRelativeAreaLimit &&
+      !isTinyPixelRoi &&
+      area(candidate) / Math.max(1, width * height) >=
+        COMPACT_MINIMUM_PANEL_AREA_RATIO) ||
+    candidateWidth < 28 ||
+    candidateHeight < 22 ||
+    candidateWidth > 150 ||
+    candidateHeight > 110
+  ) {
+    return null;
+  }
+  const activeColumns = new Uint8Array(candidateWidth);
+  let unionPixelCount = 0;
+  let unionTop = candidateHeight;
+  let unionBottom = -1;
+  const colorSummaries = [];
+  for (const colorMask of curveColorMasks) {
+    if (!colorMask || colorMask.length < width * height) continue;
+    let pixelCount = 0;
+    let left = candidateWidth;
+    let right = -1;
+    let top = candidateHeight;
+    let bottom = -1;
+    const trajectory = [];
+    for (
+      let localX = 0;
+      localX < candidateWidth;
+      localX += 1
+    ) {
+      let columnTop = candidateHeight;
+      let columnBottom = -1;
+      for (
+        let localY = 0;
+        localY < candidateHeight;
+        localY += 1
+      ) {
+        if (
+          !colorMask[
+            (candidate.top + localY) * width +
+              candidate.left +
+              localX
+          ]
+        ) {
+          continue;
+        }
+        pixelCount += 1;
+        left = Math.min(left, localX);
+        right = Math.max(right, localX);
+        top = Math.min(top, localY);
+        bottom = Math.max(bottom, localY);
+        columnTop = Math.min(columnTop, localY);
+        columnBottom = Math.max(columnBottom, localY);
+        activeColumns[localX] = 1;
+      }
+      if (columnBottom >= columnTop) {
+        trajectory.push({
+          x: localX,
+          y: (columnTop + columnBottom) / 2,
+        });
+      }
+    }
+    if (pixelCount < 4) continue;
+    const spanWidth = right - left + 1;
+    const spanHeight = bottom - top + 1;
+    const meanInkPerColumn =
+      pixelCount / Math.max(1, trajectory.length);
+    let trajectoryMinimum = Number.POSITIVE_INFINITY;
+    let trajectoryMaximum = Number.NEGATIVE_INFINITY;
+    let previousDirection = 0;
+    let directionChangeCount = 0;
+    let longestObservedRun = 0;
+    let currentObservedRun = 0;
+    for (
+      let index = 0;
+      index < trajectory.length;
+      index += 1
+    ) {
+      const point = trajectory[index];
+      trajectoryMinimum = Math.min(
+        trajectoryMinimum,
+        point.y,
+      );
+      trajectoryMaximum = Math.max(
+        trajectoryMaximum,
+        point.y,
+      );
+      const previous = trajectory[index - 1];
+      if (!previous || point.x - previous.x <= 2) {
+        currentObservedRun += 1;
+      } else {
+        currentObservedRun = 1;
+        previousDirection = 0;
+      }
+      longestObservedRun = Math.max(
+        longestObservedRun,
+        currentObservedRun,
+      );
+      if (!previous || point.x - previous.x > 2) continue;
+      const delta = point.y - previous.y;
+      const direction =
+        delta > 0.35 ? 1 : delta < -0.35 ? -1 : 0;
+      if (!direction) continue;
+      if (
+        previousDirection &&
+        direction !== previousDirection
+      ) {
+        directionChangeCount += 1;
+      }
+      previousDirection = direction;
+    }
+    const trajectoryRange =
+      trajectory.length > 0
+        ? trajectoryMaximum - trajectoryMinimum
+        : 0;
+    const trajectoryContinuity =
+      longestObservedRun / Math.max(1, spanWidth);
+    const waveformTrajectory =
+      trajectory.length >= 4 &&
+      trajectoryContinuity >= 0.52 &&
+      trajectoryRange >=
+        Math.max(2.5, candidateHeight * 0.07) &&
+      directionChangeCount >= 1;
+    if (
+      spanWidth < Math.max(3, candidateWidth * 0.055) ||
+      spanHeight < Math.max(3, candidateHeight * 0.12) ||
+      meanInkPerColumn >
+        Math.max(7.5, candidateHeight * 0.26)
+    ) {
+      continue;
+    }
+    colorSummaries.push({
+      pixelCount,
+      spanWidth,
+      spanHeight,
+      waveformTrajectory,
+      directionChangeCount,
+      trajectoryRange,
+    });
+    unionPixelCount += pixelCount;
+    unionTop = Math.min(unionTop, top);
+    unionBottom = Math.max(unionBottom, bottom);
+  }
+  const activeColumnCount = activeColumns.reduce(
+    (sum, value) => sum + value,
+    0,
+  );
+  const horizontalCoverage =
+    activeColumnCount / Math.max(1, candidateWidth);
+  const verticalVariation =
+    unionBottom >= unionTop
+      ? (unionBottom - unionTop + 1) /
+        Math.max(1, candidateHeight)
+      : 0;
+  const density =
+    unionPixelCount /
+    Math.max(1, candidateWidth * candidateHeight);
+  const trajectoryColorCount = colorSummaries.reduce(
+    (count, summary) =>
+      count + Number(summary.waveformTrajectory),
+    0,
+  );
+  const trajectoryTurnCount = colorSummaries.reduce(
+    (count, summary) =>
+      count + summary.directionChangeCount,
+    0,
+  );
+  const valid =
+    colorSummaries.length >= 4 &&
+    trajectoryColorCount >= 3 &&
+    trajectoryColorCount >=
+      Math.ceil(colorSummaries.length * 0.5) &&
+    trajectoryTurnCount >= 3 &&
+    horizontalCoverage >= 0.48 &&
+    verticalVariation >= 0.24 &&
+    density >= 0.025 &&
+    density <= 0.32;
+  return {
+    valid,
+    colorCount: colorSummaries.length,
+    trajectoryColorCount,
+    trajectoryTurnCount,
+    horizontalCoverage,
+    verticalVariation,
+    density,
+    score: clamp(
+      colorSummaries.length / 8 * 0.35 +
+        horizontalCoverage * 0.35 +
+        Math.min(1, verticalVariation * 1.8) * 0.3,
+      0,
+      1,
+    ),
+  };
+}
+
+function measureMicroFrameSignal(
+  candidate,
+  curveEvidenceMask,
+  broadMask,
+  width,
+) {
+  const candidateWidth = candidate.right - candidate.left + 1;
+  const candidateHeight = candidate.bottom - candidate.top + 1;
+  if (
+    candidate.axisMode !== "rectangle" ||
+    candidateWidth < 28 ||
+    candidateHeight < 22 ||
+    candidateWidth > 52 ||
+    candidateHeight > 40
+  ) {
+    return null;
+  }
+  let curvePixelCount = 0;
+  const rowCounts = new Uint16Array(candidateHeight);
+  const columnCounts = new Uint16Array(candidateWidth);
+  for (
+    let localY = 0;
+    localY < candidateHeight;
+    localY += 1
+  ) {
+    for (
+      let localX = 0;
+      localX < candidateWidth;
+      localX += 1
+    ) {
+      const index =
+        (candidate.top + localY) * width +
+        candidate.left +
+        localX;
+      if (curveEvidenceMask?.[index]) {
+        curvePixelCount += 1;
+      }
+      if (!broadMask?.[index]) continue;
+      rowCounts[localY] += 1;
+      columnCounts[localX] += 1;
+    }
+  }
+  let broadResidualPixelCount = 0;
+  for (
+    let localY = 0;
+    localY < candidateHeight;
+    localY += 1
+  ) {
+    if (
+      rowCounts[localY] / Math.max(1, candidateWidth) >=
+      0.72
+    ) {
+      continue;
+    }
+    for (
+      let localX = 0;
+      localX < candidateWidth;
+      localX += 1
+    ) {
+      if (
+        columnCounts[localX] /
+          Math.max(1, candidateHeight) >=
+          0.72 ||
+        !broadMask[
+          (candidate.top + localY) * width +
+            candidate.left +
+            localX
+        ]
+      ) {
+        continue;
+      }
+      broadResidualPixelCount += 1;
+    }
+  }
+  // A table cell can contain hundreds of foreground pixels while almost all
+  // of them belong to its frame/grid. A real micro chart keeps a material
+  // residual trajectory after full-span rows and columns are removed.
+  const valid =
+    broadResidualPixelCount >= 8 &&
+    (curvePixelCount < 8 ||
+      broadResidualPixelCount >= curvePixelCount * 0.3);
+  return {
+    valid,
+    curvePixelCount,
+    broadResidualPixelCount,
+    score: clamp(
+      0.52 +
+        Math.min(0.18, curvePixelCount / 120) +
+        Math.min(0.12, broadResidualPixelCount / 100),
+      0,
+      0.78,
+    ),
+  };
+}
+
+function measureFramelessCurveComponent(
+  component,
+  mask,
+  width,
+  height,
+  source,
+) {
+  const {
+    left,
+    top,
+    right,
+    bottom,
+    componentWidth,
+    componentHeight,
+  } = component;
+  // Measure with vertical breathing room so the log-scale tails are not
+  // removed by the normal interior inset. Keep horizontal padding narrow:
+  // two unrelated PPT charts can have only a few blank pixels between them.
+  const horizontalPadding = clamp(
+    Math.round(componentWidth * 0.02),
+    3,
+    8,
+  );
+  const verticalPadding = clamp(
+    Math.round(componentHeight * 0.12),
+    4,
+    Math.max(4, Math.round(height * 0.025)),
+  );
+  const measurementBounds = {
+    left: Math.max(0, left - horizontalPadding),
+    top: Math.max(0, top - verticalPadding),
+    right: Math.min(width - 1, right + horizontalPadding),
+    bottom: Math.min(height - 1, bottom + verticalPadding),
+    axisMode: "content",
+  };
+  const curveEvidence = measureChartCurveEvidence(
+    measurementBounds,
+    mask,
+    width,
+  );
+  const roundedPeak =
+    !curveEvidence.localizedSinglePeak ||
+    curveEvidence.logScaleParabolicPeak ||
+    (curveEvidence.singlePeakMonotonicity >= 0.82 &&
+      curveEvidence.traceSmoothness >= 0.92 &&
+      curveEvidence.roundedApexScore >= 0.1);
+  // A V-shaped connector/chevron can be a perfectly continuous one-turn
+  // trace, but both of its arms are almost exact straight lines. Real VTH
+  // distributions retain measurable curvature around the peak (including
+  // the low-resolution rounded-apex rescue). Keep this veto local to the
+  // frameless component path so physical framed charts are unaffected.
+  const straightChevronArtifact =
+    isAngularApexArtifact(curveEvidence);
+  const splitSteepPeak =
+    curveEvidence.segmentedWaveformTrace &&
+    curveEvidence.curvedSegmentCount === 2 &&
+    curveEvidence.curvedSegmentCoverage >= 0.55 &&
+    curveEvidence.verticalVariation >= 0.4 &&
+    curveEvidence.linearDeviation >= 0.04 &&
+    curveEvidence.traceSmoothness >= 0.85 &&
+    curveEvidence.roundedApexScore >= 0.2;
+  const standardPeakShape =
+    curveEvidence.verticalVariation >= 0.08 &&
+    curveEvidence.peakPosition >= 0.06 &&
+    curveEvidence.peakPosition <= 0.94 &&
+    curveEvidence.peakProminence >= 0.055 &&
+    roundedPeak;
+  const validShape =
+    curveEvidence.valid &&
+    curveEvidence.horizontalCoverage >= 0.35 &&
+    (curveEvidence.continuousCoverage >= 0.3 ||
+      curveEvidence.segmentedWaveformTrace) &&
+    curveEvidence.score >= 0.48 &&
+    !straightChevronArtifact &&
+    (standardPeakShape || splitSteepPeak);
+  if (!validShape) return null;
+  return {
+    left,
+    top,
+    right,
+    bottom,
+    confidence: clamp(
+      0.45 +
+        curveEvidence.score * 0.46 +
+        (source === "color" ? 0.04 : 0),
+      0,
+      0.96,
+    ),
+    axisMode: "content",
+    detectionScale: "content",
+    detectionReason: "frameless-curve-region",
+    curveEvidence,
+    curveSource: source,
+  };
+}
+
 function extractFramelessCurveCandidates(
   mask,
   width,
@@ -3160,8 +6513,16 @@ function extractFramelessCurveCandidates(
     18,
     Math.round(width * height * 0.000018),
   );
-  const candidates = [];
+  const componentTiles = Array.from(
+    {
+      length:
+        LINE_BAND_SPATIAL_DIVISIONS *
+        LINE_BAND_SPATIAL_DIVISIONS,
+    },
+    () => [],
+  );
   let rejectedComponentCount = 0;
+  let eligibleComponentCount = 0;
   let componentId = 0;
 
   for (let start = 0; start < mask.length; start += 1) {
@@ -3245,83 +6606,122 @@ function extractFramelessCurveCandidates(
       continue;
     }
 
-    // Measure with vertical breathing room so the log-scale tails are not
-    // removed by the normal interior inset. Keep horizontal padding narrow:
-    // two unrelated PPT charts can have only a few blank pixels between them.
-    const horizontalPadding = clamp(
-      Math.round(componentWidth * 0.02),
-      3,
-      8,
-    );
-    const verticalPadding = clamp(
-      Math.round(componentHeight * 0.12),
-      4,
-      Math.max(4, Math.round(height * 0.025)),
-    );
-    const measurementBounds = {
-      left: Math.max(0, left - horizontalPadding),
-      top: Math.max(0, top - verticalPadding),
-      right: Math.min(width - 1, right + horizontalPadding),
-      bottom: Math.min(height - 1, bottom + verticalPadding),
-      axisMode: "content",
-    };
-    const curveEvidence = measureChartCurveEvidence(
-      measurementBounds,
-      mask,
-      width,
-    );
-    const roundedPeak =
-      !curveEvidence.localizedSinglePeak ||
-      curveEvidence.logScaleParabolicPeak ||
-      (curveEvidence.singlePeakMonotonicity >= 0.82 &&
-        curveEvidence.traceSmoothness >= 0.92 &&
-        curveEvidence.roundedApexScore >= 0.1);
-    const splitSteepPeak =
-      curveEvidence.segmentedWaveformTrace &&
-      curveEvidence.curvedSegmentCount === 2 &&
-      curveEvidence.curvedSegmentCoverage >= 0.55 &&
-      curveEvidence.verticalVariation >= 0.4 &&
-      curveEvidence.linearDeviation >= 0.04 &&
-      curveEvidence.traceSmoothness >= 0.85 &&
-      curveEvidence.roundedApexScore >= 0.2;
-    const standardPeakShape =
-      curveEvidence.verticalVariation >= 0.08 &&
-      curveEvidence.peakPosition >= 0.06 &&
-      curveEvidence.peakPosition <= 0.94 &&
-      curveEvidence.peakProminence >= 0.055 &&
-      roundedPeak;
-    const validShape =
-      curveEvidence.valid &&
-      curveEvidence.horizontalCoverage >= 0.35 &&
-      (curveEvidence.continuousCoverage >= 0.3 ||
-        curveEvidence.segmentedWaveformTrace) &&
-      curveEvidence.score >= 0.48 &&
-      (standardPeakShape || splitSteepPeak);
-    if (!validShape) {
-      rejectedComponentCount += 1;
-      continue;
-    }
-    candidates.push({
+    eligibleComponentCount += 1;
+    const component = {
       left,
       top,
       right,
       bottom,
-      confidence: clamp(
-        0.45 +
-          curveEvidence.score * 0.46 +
-          (source === "color" ? 0.04 : 0),
-        0,
-        0.96,
+      componentWidth,
+      componentHeight,
+      pixelCount,
+      columnContinuity,
+      averageInkPerColumn,
+      density,
+      cheapWaveformScore:
+        columnContinuity * 1.8 +
+        Math.min(
+          0.45,
+          (componentWidth / componentHeight) * 0.09,
+        ) -
+        Math.min(
+          0.5,
+          averageInkPerColumn /
+            Math.max(9, componentHeight * 0.22) *
+            0.5,
+        ) -
+        density * 0.8,
+    };
+    const centerX = (left + right) / 2;
+    const centerY = (top + bottom) / 2;
+    const row = clamp(
+      Math.floor(
+        (centerY * LINE_BAND_SPATIAL_DIVISIONS) /
+          Math.max(1, height),
       ),
-      axisMode: "content",
-      detectionScale: "content",
-      detectionReason: "frameless-curve-region",
-      curveEvidence,
-      curveSource: source,
-    });
+      0,
+      LINE_BAND_SPATIAL_DIVISIONS - 1,
+    );
+    const column = clamp(
+      Math.floor(
+        (centerX * LINE_BAND_SPATIAL_DIVISIONS) /
+          Math.max(1, width),
+      ),
+      0,
+      LINE_BAND_SPATIAL_DIVISIONS - 1,
+    );
+    const tile =
+      componentTiles[
+        row * LINE_BAND_SPATIAL_DIVISIONS + column
+      ];
+    tile.push(component);
+    tile.sort(
+      (first, second) =>
+        second.cheapWaveformScore -
+          first.cheapWaveformScore ||
+        second.columnContinuity -
+          first.columnContinuity ||
+        first.density - second.density ||
+        first.top - second.top ||
+        first.left - second.left,
+    );
+    if (
+      tile.length >
+      MAXIMUM_FRAMELESS_COMPONENTS_PER_TILE
+    ) {
+      tile.length =
+        MAXIMUM_FRAMELESS_COMPONENTS_PER_TILE;
+    }
   }
 
-  return { candidates, rejectedComponentCount };
+  const fairComponents = [];
+  const maximumTileLength = Math.max(
+    0,
+    ...componentTiles.map((tile) => tile.length),
+  );
+  for (
+    let itemIndex = 0;
+    itemIndex < maximumTileLength;
+    itemIndex += 1
+  ) {
+    for (const tile of componentTiles) {
+      if (tile[itemIndex]) {
+        fairComponents.push(tile[itemIndex]);
+      }
+    }
+  }
+  const measuredComponents = fairComponents.slice(
+    0,
+    MAXIMUM_FRAMELESS_MEASUREMENTS_PER_SOURCE,
+  );
+  const candidates = [];
+  for (const component of measuredComponents) {
+    const candidate = measureFramelessCurveComponent(
+      component,
+      mask,
+      width,
+      height,
+      source,
+    );
+    if (candidate) {
+      candidates.push(candidate);
+    } else {
+      rejectedComponentCount += 1;
+    }
+  }
+  const droppedComponentCount = Math.max(
+    0,
+    eligibleComponentCount - measuredComponents.length,
+  );
+  rejectedComponentCount += droppedComponentCount;
+  return {
+    candidates,
+    rejectedComponentCount,
+    eligibleComponentCount,
+    measuredComponentCount: measuredComponents.length,
+    droppedComponentCount,
+    measurementBudgetHit: droppedComponentCount > 0,
+  };
 }
 
 function detectFramelessCurveCandidates(
@@ -4020,6 +7420,405 @@ function isCredibleCandidateOutsideRepeatedGrid(candidate) {
   );
 }
 
+function reconcileArbitraryWaveformCandidates(
+  candidates,
+  width,
+  height,
+  separationEvidenceMask,
+) {
+  let established = candidates.filter(
+    (candidate) =>
+      candidate.detectionReason !==
+      "arbitrary-waveform-region",
+  );
+  const recovered = candidates
+    .filter(
+      (candidate) =>
+        candidate.detectionReason ===
+        "arbitrary-waveform-region",
+    )
+    .sort(
+      (left, right) =>
+        right.confidence - left.confidence ||
+        area(left) - area(right),
+    );
+  established = established.filter((existing) => {
+    if (existing.axisMode !== "l-axis") return true;
+    const physicalChildren = recovered.filter(
+      (candidate) =>
+        candidate.spatialFrameRecovered === true &&
+        candidate.spatialFrameSupport >= 0.8 &&
+        area(candidate) <= area(existing) * 0.8 &&
+        intersectionArea(existing, candidate) >=
+          area(candidate) * 0.45,
+    );
+    if (physicalChildren.length < 2) return true;
+    const independentlySeparated = physicalChildren.every(
+      (candidate, candidateIndex) =>
+        physicalChildren.every(
+          (other, otherIndex) =>
+            candidateIndex === otherIndex ||
+            (intersectionArea(candidate, other) === 0 &&
+              clearSeparationGutter(
+                candidate,
+                other,
+                separationEvidenceMask,
+                width,
+                height,
+                { localOnly: true },
+              )),
+        ),
+    );
+    // A broad open-axis hypothesis can bridge two nearby physical plot
+    // frames. Split only when every child has strong four-side frame support
+    // and a real blank gutter; unframed State pieces cannot trigger this.
+    return !independentlySeparated;
+  });
+  if (
+    established.length === 0 &&
+    recovered.length === 1 &&
+    recovered[0].axisMode === "content" &&
+    !recovered[0].spatialFrameRecovered &&
+    area(recovered[0]) >= width * height * 0.25
+  ) {
+    // A single broad frameless region is normally the primary graph occupying
+    // the input, not an independently cropped PPT panel. Let the verified
+    // whole-image fallback preserve its full context. Spatial recovery remains
+    // active for every smaller/off-centre chart and for physical frames.
+    return [];
+  }
+  for (const candidate of recovered) {
+    const overlappingIndexes = [];
+    for (
+      let index = 0;
+      index < established.length;
+      index += 1
+    ) {
+      const existing = established[index];
+      if (
+        intersectionArea(existing, candidate) >
+        Math.min(area(existing), area(candidate)) * 0.08
+      ) {
+        overlappingIndexes.push(index);
+      }
+    }
+    if (!overlappingIndexes.length) {
+      established.push(candidate);
+      continue;
+    }
+    if (overlappingIndexes.length > 1) {
+      // A broad spatial component covering multiple independently validated
+      // frames/axes is a dilation bridge, not evidence that those physical
+      // panels should be deleted or merged. Spatial recovery may complete one
+      // partial candidate, but it must never override several established
+      // chart hypotheses at once.
+      continue;
+    }
+    const existingIndex = overlappingIndexes[0];
+    const existing = established[existingIndex];
+    const physicalFrameCorroboration =
+      existing.axisMode === "rectangle" &&
+      candidate.spatialFrameRecovered === true &&
+      candidate.spatialFrameSupport >= 0.85 &&
+      intersectionArea(existing, candidate) >=
+        Math.min(area(existing), area(candidate)) * 0.65 &&
+      area(candidate) <= area(existing) * 2.5 &&
+      area(existing) <= area(candidate) * 2.5;
+    if (physicalFrameCorroboration) {
+      // Preserve the tighter geometric crop, while carrying forward the
+      // independent spatial proof that this local frame encloses a waveform.
+      // This is especially useful for low-resolution plots whose legitimate
+      // grid lines look locally table-like.
+      established[existingIndex] = {
+        ...existing,
+        spatialFrameRecovered: true,
+        spatialFrameSupport: Math.max(
+          existing.spatialFrameSupport ?? 0,
+          candidate.spatialFrameSupport,
+        ),
+        spatialChromaticTopology:
+          candidate.spatialChromaticTopology,
+      };
+      continue;
+    }
+    const existingWidth = existing.right - existing.left + 1;
+    const candidateWidth = candidate.right - candidate.left + 1;
+    const existingHeight = existing.bottom - existing.top + 1;
+    const combinedHeight =
+      Math.max(existing.bottom, candidate.bottom) -
+      Math.min(existing.top, candidate.top) +
+      1;
+    const existingCoverage =
+      existing.curveEvidence?.horizontalCoverage ?? 0;
+    const candidateCoverage =
+      candidate.curveEvidence?.horizontalCoverage ?? 0;
+    const existingAbsoluteTraceSpan =
+      existingWidth * existingCoverage;
+    const candidateAbsoluteTraceSpan =
+      candidateWidth * candidateCoverage;
+    const partialLAxis =
+      existing.axisMode === "l-axis" &&
+      candidateWidth >= existingWidth * 0.8 &&
+      (candidate.spatialFrameRecovered ||
+        candidateWidth >= existingWidth * 1.18 ||
+        combinedHeight >= existingHeight * 1.08 ||
+        candidateCoverage >= existingCoverage + 0.04 ||
+        (candidate.curveEvidence?.directionChangeCount ?? 0) >
+          (existing.curveEvidence?.directionChangeCount ?? 0)) &&
+      area(candidate) <= area(existing) * 6;
+    const spatiallyCompletesFramelessCurve =
+      candidate.spatialChromaticTopology?.valid === true &&
+      candidateAbsoluteTraceSpan >=
+        existingAbsoluteTraceSpan * 1.15 &&
+      area(candidate) <= area(existing) * 3;
+    const partialFramelessCurve =
+      existing.detectionReason ===
+        "frameless-curve-region" &&
+      candidateWidth >= existingWidth * 0.9 &&
+      (spatiallyCompletesFramelessCurve ||
+        (candidate.axisMode === "content" &&
+          combinedHeight >= existingHeight * 1.12 &&
+          candidateCoverage >= existingCoverage * 0.9 &&
+          area(candidate) <= area(existing) * 2.5 &&
+          (candidate.spatialChromaticTopology?.valid ||
+            (candidate.curveEvidence?.directionChangeCount ??
+              0) >= 2 ||
+            (candidate.curveEvidence
+              ?.segmentedWaveformTrace === true &&
+              (candidate.curveEvidence?.curvedSegmentCount ??
+                0) >= 3))));
+    if (partialLAxis || partialFramelessCurve) {
+      established[existingIndex] =
+        candidate.spatialFrameRecovered
+          ? candidate
+          : {
+              ...candidate,
+              left: Math.min(existing.left, candidate.left),
+              // A physical L-axis gives the reliable top/bottom extent while
+              // the spatial Curve supplies the missing right-hand span.
+              top: Math.min(existing.top, candidate.top),
+              right: Math.max(existing.right, candidate.right),
+              bottom: Math.max(
+                existing.bottom,
+                candidate.bottom,
+              ),
+            };
+    }
+  }
+  return established;
+}
+
+function mergeLocalSpatialWaveformFragments(
+  candidates,
+  curveEvidenceMask,
+  width,
+  height,
+) {
+  const normalizedCandidates = candidates.map((candidate) =>
+    candidate.detectionReason ===
+      "arbitrary-waveform-region"
+      ? clipSpatialCandidateAtInternalEdgeGutter(
+          candidate,
+          curveEvidenceMask,
+          width,
+          height,
+        )
+      : candidate,
+  );
+  const fragments = normalizedCandidates.filter(
+    (candidate) =>
+      candidate.detectionReason ===
+        "arbitrary-waveform-region" &&
+      candidate.axisMode === "content" &&
+      !candidate.spatialFrameRecovered,
+  );
+  if (fragments.length < 2) return normalizedCandidates;
+
+  const unvisited = new Set(
+    fragments.map((_candidate, index) => index),
+  );
+  const groups = [];
+  while (unvisited.size) {
+    const seed = unvisited.values().next().value;
+    unvisited.delete(seed);
+    const indexes = [seed];
+    for (let cursor = 0; cursor < indexes.length; cursor += 1) {
+      const current = fragments[indexes[cursor]];
+      for (const otherIndex of [...unvisited]) {
+        const other = fragments[otherIndex];
+        const verticalOverlap = overlapLength(
+          current.top,
+          current.bottom,
+          other.top,
+          other.bottom,
+        );
+        const verticallyAligned =
+          verticalOverlap >=
+          Math.min(
+            current.bottom - current.top + 1,
+            other.bottom - other.top + 1,
+          ) *
+            0.35;
+        const first =
+          current.left <= other.left ? current : other;
+        const second =
+          first === current ? other : current;
+        const clearGutter = clearSeparationGutter(
+          current,
+          other,
+          curveEvidenceMask,
+          width,
+          height,
+        ) || findClearVerticalCurveCorridor(
+          current,
+          other,
+          curveEvidenceMask,
+          width,
+          height,
+        );
+        const hasInterveningFragment = normalizedCandidates.some(
+          (intervening) =>
+            intervening !== current &&
+            intervening !== other &&
+            intervening.left > first.right &&
+            intervening.right < second.left &&
+            overlapLength(
+              intervening.top,
+              intervening.bottom,
+              Math.max(current.top, other.top),
+              Math.min(current.bottom, other.bottom),
+            ) > 0,
+        );
+        if (
+          !verticallyAligned ||
+          hasInterveningFragment ||
+          clearGutter
+        ) {
+          continue;
+        }
+        unvisited.delete(otherIndex);
+        indexes.push(otherIndex);
+      }
+    }
+    groups.push(indexes.map((index) => fragments[index]));
+  }
+
+  const mergedFragments = groups.flatMap((group) => {
+    if (group.length < 2) return group;
+    const union = {
+      left: Math.min(...group.map((candidate) => candidate.left)),
+      top: Math.min(...group.map((candidate) => candidate.top)),
+      right: Math.max(...group.map((candidate) => candidate.right)),
+      bottom: Math.max(...group.map((candidate) => candidate.bottom)),
+      axisMode: "content",
+    };
+    const groupWidth = union.right - union.left + 1;
+    const groupHeight = union.bottom - union.top + 1;
+    const paddingX = clamp(
+      Math.round(groupWidth * 0.025),
+      4,
+      Math.max(4, Math.round(width * 0.025)),
+    );
+    const paddingY = clamp(
+      Math.round(groupHeight * 0.08),
+      4,
+      Math.max(4, Math.round(height * 0.03)),
+    );
+    const bounds = {
+      left: Math.max(0, union.left - paddingX),
+      top: Math.max(0, union.top - paddingY),
+      right: Math.min(width - 1, union.right + paddingX),
+      bottom: Math.min(height - 1, union.bottom + paddingY),
+      axisMode: "content",
+    };
+    const curveEvidence = measureChartCurveEvidence(
+      bounds,
+      curveEvidenceMask,
+      width,
+    );
+    if (
+      !curveEvidence.valid ||
+      curveEvidence.tableGridArtifact
+    ) {
+      return group;
+    }
+    return [
+      {
+        ...bounds,
+        confidence: clamp(
+          Math.max(
+            ...group.map(
+              (candidate) => candidate.confidence,
+            ),
+          ) * 0.97,
+          0,
+          0.97,
+        ),
+        detectionScale: "spatial",
+        detectionReason: "grouped-waveform-region",
+        curveEvidence,
+        groupedFragmentCount: group.length,
+      },
+    ];
+  });
+  const fragmentSet = new Set(fragments);
+  return clipCandidatesAtClearVerticalCorridors([
+    ...normalizedCandidates.filter(
+      (candidate) => !fragmentSet.has(candidate),
+    ),
+    ...mergedFragments,
+  ], curveEvidenceMask, width, height);
+}
+
+function candidateCoveredByRotatedLattice(
+  candidate,
+  analysis,
+  width,
+  height,
+) {
+  const latticeBounds = analysis?.lattice?.bounds;
+  if (
+    !analysis?.tableGridArtifact ||
+    !latticeBounds ||
+    !Number.isFinite(analysis.angle)
+  ) {
+    return false;
+  }
+  const radians = (analysis.angle * Math.PI) / 180;
+  const cosine = Math.cos(radians);
+  const sine = Math.sin(radians);
+  const centerX = (width - 1) / 2;
+  const centerY = (height - 1) / 2;
+  const rotatePoint = (x, y) => {
+    const localX = x - centerX;
+    const localY = y - centerY;
+    return {
+      x: cosine * localX - sine * localY + centerX,
+      y: sine * localX + cosine * localY + centerY,
+    };
+  };
+  const candidateCenter = rotatePoint(
+    (candidate.left + candidate.right) / 2,
+    (candidate.top + candidate.bottom) / 2,
+  );
+  const paddingX = Math.max(
+    3,
+    (latticeBounds.right - latticeBounds.left + 1) *
+      0.025,
+  );
+  const paddingY = Math.max(
+    3,
+    (latticeBounds.bottom - latticeBounds.top + 1) *
+      0.025,
+  );
+  return (
+    candidateCenter.x >= latticeBounds.left - paddingX &&
+    candidateCenter.x <= latticeBounds.right + paddingX &&
+    candidateCenter.y >= latticeBounds.top - paddingY &&
+    candidateCenter.y <= latticeBounds.bottom + paddingY
+  );
+}
+
 /**
  * Detect independent chart panels from a precomputed foreground mask.
  *
@@ -4151,6 +7950,19 @@ export function detectChartPanelsFromMask(
           "compact",
         )
       : [];
+  const microCandidates =
+    compactMinimumWidth > 32 ||
+    compactMinimumHeight > 24
+      ? detectGeometricCandidatesAtScale(
+          workingMask,
+          width,
+          height,
+          Math.min(compactMinimumWidth, 28),
+          Math.min(compactMinimumHeight, 22),
+          "micro",
+          2,
+        )
+      : [];
   // A repaired or anti-aliased line hypothesis is intentionally tolerant of
   // short gaps within an axis. At FHD, however, its proportional scan gap can
   // also bridge the 1–12 px gutters between aligned plots in a dense 6 × 5
@@ -4240,6 +8052,7 @@ export function detectChartPanelsFromMask(
     [
       ...strictCandidates,
       ...compactCandidates,
+      ...microCandidates,
       ...retainedSeparationCandidates,
       ...retainedSharedFrameCellCandidates,
       ...framelessDetection.candidates,
@@ -4259,14 +8072,108 @@ export function detectChartPanelsFromMask(
       options.curveColorMasks,
       width,
     );
+  const curveColorUnionMask = mergeCurveColorMasks(
+    options.curveColorMasks,
+    width,
+    height,
+  );
   const measuredCandidates = geometricCandidates.map((candidate) => {
-    const broadCurveEvidence =
+    const sourceCurveEvidence =
       candidate.curveEvidence ??
       measureChartCurveEvidence(
         candidate,
         curveEvidenceMask,
         width,
       );
+    const locallyUpscaledEvidence =
+      !sourceCurveEvidence.valid
+        ? measureLocallyUpscaledCurveEvidence(
+            candidate,
+            curveEvidenceMask,
+            curveColorUnionMask,
+            workingMask,
+            width,
+            height,
+          )
+        : null;
+    const tinyChromaticSignature =
+      measureTinyChromaticWaveformSignature(
+        candidate,
+        options.curveColorMasks,
+        width,
+        height,
+      );
+    const microFrameSignal = measureMicroFrameSignal(
+      candidate,
+      curveEvidenceMask,
+      workingMask,
+      width,
+    );
+    let broadCurveEvidence =
+      tinyChromaticSignature?.valid
+        ? {
+            ...(locallyUpscaledEvidence ??
+              sourceCurveEvidence),
+            valid: true,
+            score: Math.max(
+              locallyUpscaledEvidence?.score ?? 0,
+              sourceCurveEvidence.score,
+              tinyChromaticSignature.score,
+            ),
+            horizontalCoverage: Math.max(
+              locallyUpscaledEvidence?.horizontalCoverage ??
+                0,
+              sourceCurveEvidence.horizontalCoverage,
+              tinyChromaticSignature.horizontalCoverage,
+            ),
+            verticalVariation: Math.max(
+              locallyUpscaledEvidence?.verticalVariation ??
+                0,
+              sourceCurveEvidence.verticalVariation,
+              tinyChromaticSignature.verticalVariation,
+            ),
+            localUpscaleApplied:
+              locallyUpscaledEvidence?.localUpscaleApplied ===
+              true,
+            tinyChromaticRescue: true,
+            tinyChromaticColorCount:
+              tinyChromaticSignature.colorCount,
+            tinyChromaticTrajectoryCount:
+              tinyChromaticSignature.trajectoryColorCount,
+            tinyChromaticDensity:
+              tinyChromaticSignature.density,
+          }
+        : locallyUpscaledEvidence ?? sourceCurveEvidence;
+    if (
+      !broadCurveEvidence.valid &&
+      microFrameSignal?.valid
+    ) {
+      broadCurveEvidence = {
+        ...broadCurveEvidence,
+        valid: true,
+        score: Math.max(
+          broadCurveEvidence.score,
+          microFrameSignal.score,
+        ),
+        horizontalCoverage: Math.max(
+          broadCurveEvidence.horizontalCoverage,
+          0.4,
+        ),
+        continuousCoverage: Math.max(
+          broadCurveEvidence.continuousCoverage,
+          0.25,
+        ),
+        verticalVariation: Math.max(
+          broadCurveEvidence.verticalVariation,
+          0.12,
+        ),
+        microFrameSignalRescue: true,
+        microFrameCurvePixelCount:
+          microFrameSignal.curvePixelCount,
+        microFrameBroadResidualPixelCount:
+          microFrameSignal.broadResidualPixelCount,
+      };
+    }
     const colorSeriesEvidence =
       measureColorSeriesCurveEvidence(
         candidate,
@@ -4280,7 +8187,7 @@ export function detectChartPanelsFromMask(
         candidate.axisMode !== "content" &&
         !axisAlignedDocumentLattice.tableGridArtifact &&
         !sharedFrameGridArtifact);
-    const curveEvidence = colorSeriesRescue
+    const rescuedCurveEvidence = colorSeriesRescue
       ? {
           ...broadCurveEvidence,
           valid: true,
@@ -4294,6 +8201,17 @@ export function detectChartPanelsFromMask(
             colorSeriesEvidence.evidences,
         }
       : broadCurveEvidence;
+    // Frame support, local upscaling, or a coloured series must not turn an
+    // annotation chevron into a density chart. Inspect the physical source
+    // trace before any low-resolution rescue mutates `valid`.
+    const curveEvidence =
+      isAngularApexArtifact(sourceCurveEvidence)
+        ? {
+            ...rescuedCurveEvidence,
+            valid: false,
+            angularApexArtifact: true,
+          }
+        : rescuedCurveEvidence;
     return {
       ...candidate,
       confidence: clamp(
@@ -4305,6 +8223,75 @@ export function detectChartPanelsFromMask(
       curveEvidence,
     };
   });
+  const dominantMultiSeriesWaveform =
+    measuredCandidates.find(
+      (candidate) =>
+        candidate.curveEvidence.valid &&
+        !candidate.curveEvidence.tableGridArtifact &&
+        (candidate.curveEvidence.colorSeriesCount ?? 0) >=
+          2 &&
+        area(candidate) / Math.max(1, width * height) >=
+          0.3,
+    ) ?? null;
+  // Run the bounded spatial pass independently of an expected chart count.
+  // Its own topology/frame guards reject isolated State arcs, so one, three or
+  // eleven arbitrarily placed plots receive the same recovery opportunity as
+  // a dense thirty-panel slide.
+  const rawArbitraryWaveformRecovery =
+    recoverArbitraryWaveformCandidates(
+      curveEvidenceMask,
+      options.curveColorMasks,
+      workingMask,
+      edgeEvidenceMask ?? workingMask,
+      width,
+      height,
+    );
+  const largestMeasuredCandidateAreaRatio =
+    measuredCandidates.reduce(
+      (maximum, candidate) =>
+        Math.max(
+          maximum,
+          area(candidate) / Math.max(1, width * height),
+        ),
+      0,
+    );
+  const deskewedPhysicalFrameRecovery =
+    largestMeasuredCandidateAreaRatio < 0.22
+      ? recoverDeskewedPhysicalFrame(
+          mask,
+          options.edgeEvidenceMask ?? mask,
+          curveEvidenceMask,
+          rawArbitraryWaveformRecovery.candidates,
+          width,
+          height,
+        )
+      : null;
+  const arbitraryWaveformRecovery =
+    dominantMultiSeriesWaveform
+      ? {
+          ...rawArbitraryWaveformRecovery,
+          candidates:
+            rawArbitraryWaveformRecovery.candidates.filter(
+              (candidate) =>
+                intersectionArea(
+                  candidate,
+                  dominantMultiSeriesWaveform,
+                ) /
+                  Math.max(1, area(candidate)) <
+                0.5,
+            ),
+          suppressedInsideDominantCount:
+            rawArbitraryWaveformRecovery.candidates.filter(
+              (candidate) =>
+                intersectionArea(
+                  candidate,
+                  dominantMultiSeriesWaveform,
+                ) /
+                  Math.max(1, area(candidate)) >=
+                0.5,
+            ).length,
+        }
+      : rawArbitraryWaveformRecovery;
   const repeatedGridRecovery =
     recoverRepeatedWaveformGridCandidates(
       measuredCandidates,
@@ -4315,9 +8302,19 @@ export function detectChartPanelsFromMask(
   const candidatePool = repeatedGridRecovery
     ? [
         ...measuredCandidates,
+        ...arbitraryWaveformRecovery.candidates,
+        ...(deskewedPhysicalFrameRecovery
+          ? [deskewedPhysicalFrameRecovery.candidate]
+          : []),
         ...repeatedGridRecovery.candidates,
       ]
-    : measuredCandidates;
+    : [
+        ...measuredCandidates,
+        ...arbitraryWaveformRecovery.candidates,
+        ...(deskewedPhysicalFrameRecovery
+          ? [deskewedPhysicalFrameRecovery.candidate]
+          : []),
+      ];
   const geometricRejectedNonChartCount = measuredCandidates.reduce(
     (count, candidate) =>
       count + (candidate.curveEvidence.valid ? 0 : 1),
@@ -4337,13 +8334,18 @@ export function detectChartPanelsFromMask(
     return extendedDeskewedDocument;
   };
   const rotatedDocumentTableGridArtifact =
-    measuredCandidates.some(
+    (measuredCandidates.some(
       (candidate) =>
         candidate.curveEvidence.valid &&
         (candidate.axisMode === "l-axis" ||
           candidate.detectionReason ===
             "frameless-curve-region"),
-    ) &&
+    ) ||
+      arbitraryWaveformRecovery.candidates.some(
+        (candidate) =>
+          candidate.axisMode === "content" &&
+          !candidate.spatialFrameRecovered,
+      )) &&
     getExtendedDeskewedDocument().tableGridArtifact;
   let candidates = candidatePool.filter(
     (candidate) => {
@@ -4377,6 +8379,37 @@ export function detectChartPanelsFromMask(
                 : MINIMUM_OPEN_AXIS_PANEL_AREA_RATIO,
             )
           : areaRatio;
+      const locallyVerifiedTinyWaveform =
+        (candidate.curveEvidence.localUpscaleApplied === true ||
+          candidate.curveEvidence.tinyChromaticRescue ===
+            true ||
+          (candidate.spatialFrameRecovered === true &&
+            candidate.spatialFrameSupport >= 0.62) ||
+          candidate.curveEvidence.microFrameSignalRescue ===
+            true ||
+          (candidate.axisMode !== "content" &&
+            candidate.right - candidate.left + 1 <= 100 &&
+            candidate.bottom - candidate.top + 1 <= 75 &&
+            candidate.curveEvidence.score >=
+              (candidate.detectionScale === "micro"
+                ? 0.6
+                : 0.68) &&
+            candidate.curveEvidence.horizontalCoverage >=
+              (candidate.detectionScale === "micro"
+                ? 0.4
+                : 0.5) &&
+            candidate.curveEvidence.continuousCoverage >=
+              (candidate.detectionScale === "micro"
+                ? 0.35
+                : 0.38) &&
+            candidate.curveEvidence.verticalVariation >=
+              0.12)) &&
+        candidate.right - candidate.left + 1 >= 28 &&
+        candidate.bottom - candidate.top + 1 >= 22;
+      const effectiveMinimumCandidateAreaRatio =
+        locallyVerifiedTinyWaveform
+          ? 0
+          : minimumCandidateAreaRatio;
       const latticeBounds =
         axisAlignedDocumentLattice.bounds;
       const centerX =
@@ -4394,12 +8427,108 @@ export function detectChartPanelsFromMask(
           intersectionArea(candidate, latticeBounds) /
             Math.max(1, area(candidate)) >=
             0.35);
+      const coveredByRotatedTable =
+        rotatedDocumentTableGridArtifact &&
+        (candidate.curveEvidence.colorSeriesCount ?? 0) < 2 &&
+        candidateCoveredByRotatedLattice(
+          candidate,
+          getExtendedDeskewedDocument(),
+          width,
+          height,
+        );
+      const coveredByLocalTable =
+        candidate.axisMode !== "content" &&
+        !(
+          candidate.spatialFrameRecovered === true &&
+          candidate.spatialFrameSupport >= 0.85
+        ) &&
+        // A locally regular frame/grid is still a real plot when one
+        // independently coherent coloured Curve spans it. Local office
+        // tables that prompted this veto have no panel-wide series; requiring
+        // two would wrongly delete ordinary single-series charts.
+        (candidate.curveEvidence.colorSeriesCount ?? 0) < 1 &&
+        candidateHasLocalTableLattice(
+          candidate,
+          workingMask,
+          width,
+          height,
+        );
+      const weakFramelessArtifact =
+        candidate.detectionReason ===
+          "frameless-curve-region" &&
+        candidate.curveEvidence.continuousCoverage < 0.3 &&
+        (!candidate.curveEvidence.segmentedWaveformTrace ||
+          (candidate.curveEvidence.score < 0.78 &&
+            (candidate.curveEvidence.colorSeriesCount ?? 0) <
+              1));
+      const weakUnframedSpatialOutline =
+        candidate.detectionReason ===
+          "arbitrary-waveform-region" &&
+        candidate.axisMode === "content" &&
+        !candidate.spatialFrameRecovered &&
+        !candidate.spatialChromaticTopology?.valid &&
+        !candidate.curveEvidence.segmentedWaveformTrace &&
+        candidate.curveEvidence.curvedSegmentCount <= 1 &&
+        candidate.curveEvidence.twoBranchCoverage >= 0.1;
+      const microCandidateWidth =
+        candidate.right - candidate.left + 1;
+      const microCandidateHeight =
+        candidate.bottom - candidate.top + 1;
+      const horizontalDominantOverlap =
+        dominantMultiSeriesWaveform
+          ? overlapLength(
+              candidate.left,
+              candidate.right,
+              dominantMultiSeriesWaveform.left,
+              dominantMultiSeriesWaveform.right,
+            )
+          : 0;
+      const verticalDominantGap = dominantMultiSeriesWaveform
+        ? Math.max(
+            0,
+            dominantMultiSeriesWaveform.top -
+              candidate.bottom -
+              1,
+            candidate.top -
+              dominantMultiSeriesWaveform.bottom -
+              1,
+          )
+        : Number.POSITIVE_INFINITY;
+      const weakMicroNearDominant =
+        candidate !== dominantMultiSeriesWaveform &&
+        candidate.curveEvidence.microFrameSignalRescue ===
+          true &&
+        dominantMultiSeriesWaveform &&
+        area(dominantMultiSeriesWaveform) >=
+          area(candidate) * 10 &&
+        horizontalDominantOverlap >=
+          microCandidateWidth * 0.5 &&
+        verticalDominantGap <=
+          Math.max(3, microCandidateHeight * 0.2);
+      const deskewedPhysicalCandidate =
+        deskewedPhysicalFrameRecovery?.candidate;
+      const weakMicroInsideDeskewedFrame =
+        candidate !== deskewedPhysicalCandidate &&
+        candidate.curveEvidence.microFrameSignalRescue ===
+          true &&
+        deskewedPhysicalCandidate &&
+        area(deskewedPhysicalCandidate) >=
+          area(candidate) * 10 &&
+        intersectionArea(deskewedPhysicalCandidate, candidate) /
+          Math.max(1, area(candidate)) >=
+          0.35;
       return (
         candidate.curveEvidence.valid &&
+        !weakFramelessArtifact &&
+        !weakUnframedSpatialOutline &&
+        !weakMicroNearDominant &&
+        !weakMicroInsideDeskewedFrame &&
         !coveredByAxisAlignedTable &&
-        !rotatedDocumentTableGridArtifact &&
+        !coveredByRotatedTable &&
+        !coveredByLocalTable &&
         area(candidate) >=
-          width * height * minimumCandidateAreaRatio
+          width * height *
+            effectiveMinimumCandidateAreaRatio
       );
     },
   );
@@ -4424,6 +8553,72 @@ export function detectChartPanelsFromMask(
       ...recoveredCandidates,
       ...independentCandidates,
     ];
+  } else {
+    candidates =
+      reconcileArbitraryWaveformCandidates(
+        candidates,
+        width,
+        height,
+        curveEvidenceMask ?? workingMask,
+      );
+  }
+  // Merge only State fragments whose intervening region still contains Curve
+  // ink. A genuinely blank gutter keeps adjacent frameless charts independent,
+  // regardless of whether either chart touches the document boundary.
+  candidates = mergeLocalSpatialWaveformFragments(
+    candidates,
+    curveEvidenceMask,
+    width,
+    height,
+  );
+  if (deskewedPhysicalFrameRecovery) {
+    const physicalFrame =
+      deskewedPhysicalFrameRecovery.candidate;
+    const independentCandidateOutsideFrame =
+      candidates.some(
+        (candidate) =>
+          candidate !== physicalFrame &&
+          intersectionArea(candidate, physicalFrame) /
+            Math.max(1, area(candidate)) <
+            0.35,
+      );
+    if (!independentCandidateOutsideFrame) {
+      // One deskewed physical frame containing every strong spatial fragment
+      // is one uploaded chart, not a set of State-level panels. Preserve the
+      // full source so axis/label removal and Curve normalization run once.
+      candidates = [];
+    }
+  }
+  const loneBoundaryClippedWaveform =
+    candidates.length === 1 &&
+    candidates[0].axisMode === "content" &&
+    (candidates[0].detectionReason ===
+      "grouped-waveform-region" ||
+      candidates[0].detectionReason ===
+        "arbitrary-waveform-region") &&
+    (candidates[0].left <= 1 ||
+      candidates[0].right >= width - 2 ||
+      candidates[0].top <= 1 ||
+      candidates[0].bottom >= height - 2) &&
+    !axisAlignedDocumentLattice.tableGridArtifact &&
+    measureChartCurveEvidence(
+      {
+        left: 0,
+        top: 0,
+        right: width - 1,
+        bottom: height - 1,
+        axisMode: "content",
+      },
+      curveEvidenceMask,
+      width,
+    ).valid;
+  if (loneBoundaryClippedWaveform) {
+    // When one Curve fragment is clipped by a source edge, its unseen chart
+    // boundary cannot be reconstructed reliably. Preserve the complete upload
+    // only after an independent whole-image waveform gate verifies it; this
+    // keeps standalone corpus provenance intact without expanding an inset
+    // chart pasted onto an office slide.
+    candidates = [];
   }
   const framelessUsed = candidates.some(
     (candidate) =>
@@ -4454,6 +8649,14 @@ export function detectChartPanelsFromMask(
       foregroundRatio:
         foregroundPixelCount / Math.max(1, width * height),
       geometricCandidateCount: measuredCandidates.length,
+      preNmsValidation:
+        geometricCandidates.preNmsDiagnostics ?? {
+          rawCandidateCount: 0,
+          uniqueCandidateCount: 0,
+          boundedCandidateCount: 0,
+          measurementBudget: 512,
+          measurementBudgetHit: false,
+        },
       validCandidateCount: candidates.length,
       rejectedCandidateCount:
         geometricRejectedNonChartCount +
@@ -4490,6 +8693,28 @@ export function detectChartPanelsFromMask(
             candidate.curveEvidence.colorSeriesCount ?? 0,
           tableGridArtifact:
             candidate.curveEvidence.tableGridArtifact === true,
+          spatialFrameRecovered:
+            candidate.spatialFrameRecovered === true,
+          spatialFrameSupport:
+            candidate.spatialFrameSupport ?? 0,
+          localUpscaleApplied:
+            candidate.curveEvidence.localUpscaleApplied === true,
+          tinyChromaticRescue:
+            candidate.curveEvidence.tinyChromaticRescue === true,
+          tinyChromaticColorCount:
+            candidate.curveEvidence.tinyChromaticColorCount ?? 0,
+          tinyChromaticTrajectoryCount:
+            candidate.curveEvidence
+              .tinyChromaticTrajectoryCount ?? 0,
+          microFrameSignalRescue:
+            candidate.curveEvidence
+              .microFrameSignalRescue === true,
+          microFrameCurvePixelCount:
+            candidate.curveEvidence
+              .microFrameCurvePixelCount ?? 0,
+          microFrameBroadResidualPixelCount:
+            candidate.curveEvidence
+              .microFrameBroadResidualPixelCount ?? 0,
         })),
       repeatedGridRecovery: repeatedGridRecovery
         ? {
@@ -4509,6 +8734,79 @@ export function detectChartPanelsFromMask(
             rowStep: repeatedGridRecovery.rowStep,
           }
         : { applied: false },
+      arbitraryWaveformRecovery: {
+        attempted:
+          arbitraryWaveformRecovery.attempted === true,
+        applied:
+          arbitraryWaveformRecovery.applied === true,
+        recovered:
+          arbitraryWaveformRecovery.candidates.length > 0,
+        proposalCount:
+          arbitraryWaveformRecovery.proposalCount,
+        generatedProposalCount:
+          arbitraryWaveformRecovery.generatedProposalCount ??
+          arbitraryWaveformRecovery.proposalCount,
+        boundedProposalCount:
+          arbitraryWaveformRecovery.boundedProposalCount ?? 0,
+        retainedPassProposalCount:
+          arbitraryWaveformRecovery.retainedPassProposalCount ??
+          0,
+        passDroppedProposalCount:
+          arbitraryWaveformRecovery.passDroppedProposalCount ??
+          0,
+        globalDroppedProposalCount:
+          arbitraryWaveformRecovery.globalDroppedProposalCount ??
+          0,
+        droppedProposalCount:
+          arbitraryWaveformRecovery.droppedProposalCount ?? 0,
+        evaluatedCount:
+          arbitraryWaveformRecovery.evaluatedCount,
+        evidenceAcceptedCount:
+          arbitraryWaveformRecovery.evidenceAcceptedCount ??
+          0,
+        deniedProposalEvaluationCount:
+          arbitraryWaveformRecovery
+            .deniedProposalEvaluationCount ?? 0,
+        recoveredCandidateCount:
+          arbitraryWaveformRecovery.candidates.length,
+        selectedCandidateCount: candidates.filter(
+          (candidate) =>
+            candidate.detectionReason ===
+            "arbitrary-waveform-region",
+        ).length,
+        removedStraightPixelCount:
+          arbitraryWaveformRecovery.removedStraightPixelCount,
+        curveMeasurementCount:
+          arbitraryWaveformRecovery.curveMeasurementCount ?? 0,
+        curveMeasurementBudget:
+          arbitraryWaveformRecovery.curveMeasurementBudget ??
+          0,
+        deniedResidualMeasurementCount:
+          arbitraryWaveformRecovery
+            .deniedResidualMeasurementCount ?? 0,
+        deniedOriginalMeasurementCount:
+          arbitraryWaveformRecovery
+            .deniedOriginalMeasurementCount ?? 0,
+        deniedCurveMeasurementCount:
+          arbitraryWaveformRecovery
+            .deniedCurveMeasurementCount ?? 0,
+        frameMeasurementCount:
+          arbitraryWaveformRecovery.frameMeasurementCount ?? 0,
+        deniedFrameMeasurementCount:
+          arbitraryWaveformRecovery
+            .deniedFrameMeasurementCount ?? 0,
+        proposalBudgetHit:
+          arbitraryWaveformRecovery.proposalBudgetHit === true,
+        curveMeasurementBudgetHit:
+          arbitraryWaveformRecovery
+            .curveMeasurementBudgetHit === true,
+        frameMeasurementBudgetHit:
+          arbitraryWaveformRecovery
+            .frameMeasurementBudgetHit === true,
+        scales: arbitraryWaveformRecovery.scales,
+        proposalPasses:
+          arbitraryWaveformRecovery.proposalPasses ?? [],
+      },
       tableLatticeDominant: {
         axisAligned:
           axisAlignedDocumentLattice.tableGridArtifact,
@@ -4533,8 +8831,22 @@ export function detectChartPanelsFromMask(
       ),
     0,
   );
+  const independentCandidateOutsideDominant =
+    dominantMultiSeriesWaveform &&
+    candidates.some(
+      (candidate) =>
+        candidate !== dominantMultiSeriesWaveform &&
+        intersectionArea(
+          candidate,
+          dominantMultiSeriesWaveform,
+        ) /
+          Math.max(1, area(candidate)) <
+          0.5,
+    );
   const wholeImageSeriesEvidence =
-    maximumCandidateAreaRatio < 0.22
+    (maximumCandidateAreaRatio < 0.22 ||
+      dominantMultiSeriesWaveform) &&
+    !independentCandidateOutsideDominant
       ? measureWholeImageSeriesEvidence(
           mask,
           edgeEvidenceMask ?? mask,
@@ -4545,13 +8857,13 @@ export function detectChartPanelsFromMask(
         )
       : null;
   if (
-    wholeImageSeriesEvidence?.applied === true &&
+    wholeImageSeriesEvidence &&
     wholeImageSeriesEvidence.seriesCount >= 2
   ) {
-    // Mild rotation can fragment a full plot frame into several tiny L-axis
-    // false candidates. Multiple independently coherent full-width series are
-    // stronger evidence for one physical chart, so retain the source image and
-    // let the shared analysis core deskew and separate its traces.
+    // Rotation or segmented State colours can fragment a full plot frame into
+    // tiny geometric candidates. Multiple independently coherent full-width
+    // series are stronger evidence for one physical chart, so retain the
+    // source image and let the shared analysis core separate its traces.
     return {
       panels: [
         {

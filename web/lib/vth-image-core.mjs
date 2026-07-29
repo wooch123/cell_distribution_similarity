@@ -373,8 +373,13 @@ export function suppressMaskNoise(mask, width, height, options = {}) {
     options.minimumArea ??
     // Preserve tiny measured marker dots after resize/JPEG conversion. Salt
     // noise is normally one or two pixels; larger repeated dots may be the
-    // actual sampled Curve and must survive.
-    Math.max(3, Math.floor(width * height * 0.000006));
+    // actual sampled Curve and must survive. Keep the area-based noise gate
+    // bounded: a physically identical 48 px plot must not lose its Curve
+    // merely because it was pasted onto a 4K slide instead of a small image.
+    Math.max(
+      3,
+      Math.min(8, Math.floor(width * height * 0.000006)),
+    );
   if (minimumArea <= 1) return mask.slice();
 
   const visited = new Uint8Array(mask.length);

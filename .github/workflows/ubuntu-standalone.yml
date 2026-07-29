@@ -1,4 +1,4 @@
-name: Ubuntu x64 standalone
+name: Windows and Ubuntu x64 standalone
 
 on:
   push:
@@ -10,14 +10,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: ubuntu-standalone-${{ github.ref }}
+  group: standalone-packages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   package-and-verify:
-    name: Package and verify Ubuntu x64
+    name: Package and verify Windows and Ubuntu x64
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Check out source
@@ -36,9 +36,21 @@ jobs:
         working-directory: web
         run: npm ci
 
-      - name: Build Web application
+      - name: Lint Web application
         working-directory: web
-        run: npm run build
+        run: npm run lint
+
+      - name: Build and run the complete Web regression suite
+        working-directory: web
+        run: npm test
+
+      - name: Package Windows x64 standalone application
+        run: node local-server/package-windows.mjs
+
+      - name: Verify Windows package and offline runtime
+        run: >-
+          node local-server/verify-windows-package.mjs
+          artifacts/windows/vth-similarity-windows-x64-v1.38.0.zip
 
       - name: Package Ubuntu x64 standalone server
         run: node local-server/package-ubuntu.mjs
@@ -46,15 +58,24 @@ jobs:
       - name: Verify bundled runtime and start.sh
         run: >-
           node local-server/verify-ubuntu-package.mjs
-          artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.37.0.tar.gz
+          artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.38.0.tar.gz
+
+      - name: Upload verified Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: vth-similarity-windows-x64-v1.38.0
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            artifacts/windows/vth-similarity-windows-x64-v1.38.0.zip
+            artifacts/windows/vth-similarity-windows-x64-v1.38.0.zip.sha256
 
       - name: Upload verified Ubuntu package
         uses: actions/upload-artifact@v4
         with:
-          name: vth-similarity-ubuntu-x64-v1.37.0
+          name: vth-similarity-ubuntu-x64-v1.38.0
           if-no-files-found: error
           retention-days: 14
           path: |
-            artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.37.0.tar.gz
-            web/public/downloads/vth-similarity-ubuntu-x64.sha256
-            web/public/downloads/ubuntu-package-v1.37.0.json
+            artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.38.0.tar.gz
+            artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.38.0.tar.gz.sha256

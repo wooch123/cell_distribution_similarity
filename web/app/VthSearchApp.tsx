@@ -3745,7 +3745,7 @@ export function VthSearchApp() {
           <span>유사 산포 검색</span>
         </div>
         <p>Shape-first retrieval for log-scale V-NAND distributions.</p>
-        <span>ENGINE V3.7 / COLOR-SERIES · WAVEFORM-ONLY · 2·4·8·16-STATE · 30-PANEL MAX</span>
+        <span>ENGINE V3.8 / ARBITRARY-POSITION · COLOR-SERIES · WAVEFORM-ONLY · 2·4·8·16-STATE · 30-PANEL MAX</span>
       </footer>
     </main>
   );

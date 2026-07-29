@@ -914,6 +914,77 @@ test("returns one full-image fallback when no credible axes exist", () => {
   );
 });
 
+test("keeps the materially more complete nested physical plot instead of its broad outer frame", () => {
+  const width = 700;
+  const height = 450;
+  const mask = new Uint8Array(width * height);
+  const outer = {
+    left: 40,
+    top: 40,
+    right: 620,
+    bottom: 390,
+  };
+  const inner = {
+    left: 100,
+    top: 100,
+    right: 500,
+    bottom: 300,
+  };
+  drawFrame(
+    mask,
+    width,
+    outer.left,
+    outer.top,
+    outer.right,
+    outer.bottom,
+  );
+  drawFrame(
+    mask,
+    width,
+    inner.left,
+    inner.top,
+    inner.right,
+    inner.bottom,
+  );
+  let previous = { x: 118, y: 200 };
+  for (let x = 119; x <= 482; x += 1) {
+    const progress = (x - 118) / (482 - 118);
+    const y = Math.round(
+      200 + 70 * Math.sin(progress * Math.PI * 8),
+    );
+    drawLine(
+      mask,
+      width,
+      previous.x,
+      previous.y,
+      x,
+      y,
+      2,
+    );
+    previous = { x, y };
+  }
+
+  const result = detectChartPanelsFromMask(
+    mask,
+    width,
+    height,
+  );
+
+  assert.equal(result.panels.length, 1);
+  const [panel] = result.panels;
+  assert.ok(
+    Math.abs(panel.left - inner.left) <= 5 &&
+      Math.abs(panel.top - inner.top) <= 5 &&
+      Math.abs(panel.right - inner.right) <= 6 &&
+      Math.abs(panel.bottom - inner.bottom) <= 6,
+    `expected inner plot, received ${JSON.stringify(panel)}`,
+  );
+  assert.ok(
+    panel.width < outer.right - outer.left,
+    "broad outer frame must not suppress the complete curve crop",
+  );
+});
+
 test("rejects malformed pixel buffers deterministically", () => {
   assert.throws(
     () => detectChartPanels(new Uint8Array(31), 10, 10),
