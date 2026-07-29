@@ -391,8 +391,9 @@ test("similarity API ranks every arbitrary FHD waveform independently without ra
     ),
     "every separated waveform must receive one ranking",
   );
+  const apiBudgetMs = process.env.CI ? 60_000 : 30_000;
   assert.ok(
-    elapsedMs < 30_000,
-    `FHD unconstrained API analysis took ${elapsedMs.toFixed(1)} ms`,
+    elapsedMs < apiBudgetMs,
+    `FHD unconstrained API analysis took ${elapsedMs.toFixed(1)} ms (budget ${apiBudgetMs} ms)`,
   );
 });

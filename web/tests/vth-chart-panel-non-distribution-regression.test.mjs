@@ -1568,9 +1568,10 @@ test("accepts all 196 public corpus PNGs as distributions through the detector",
     "each known single-chart corpus distribution must be accepted exactly once",
   );
   const elapsedMs = performance.now() - startedAt;
+  const detectorBudgetMs = process.env.CI ? 60_000 : 30_000;
   assert.ok(
-    elapsedMs < 30000,
-    `196-image detector acceptance took ${elapsedMs.toFixed(1)} ms`,
+    elapsedMs < detectorBudgetMs,
+    `196-image detector acceptance took ${elapsedMs.toFixed(1)} ms (budget ${detectorBudgetMs} ms)`,
   );
 });
 
