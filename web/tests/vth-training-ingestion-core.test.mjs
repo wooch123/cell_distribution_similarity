@@ -27,6 +27,10 @@ import {
   alignedCurveSimilarity,
   descriptorFromProfile,
 } from "../lib/vth-shape-core.mjs";
+import {
+  shadedNumericTablePng,
+  sparklineTablePng,
+} from "./helpers/table-fixtures.mjs";
 
 const corpus = JSON.parse(
   await readFile(
@@ -513,6 +517,42 @@ test("rejects a ready source that mixes one waveform with a table", async () => 
     () =>
       validateTrainingWaveformImage({
         bytes: mixedWaveformAndTablePng(),
+        mimeType: "image/png",
+        profile: eightState.profile,
+        stateCount: eightState.stateCount,
+      }),
+    (error) => {
+      assert.ok(error instanceof SimilarityApiError);
+      assert.equal(error.status, 422);
+      assert.equal(error.code, "distribution_waveform_not_found");
+      return true;
+    },
+  );
+});
+
+test("rejects a shared-cell sparkline table before it can enter ready training", async () => {
+  await assert.rejects(
+    () =>
+      validateTrainingWaveformImage({
+        bytes: sparklineTablePng(),
+        mimeType: "image/png",
+        profile: eightState.profile,
+        stateCount: eightState.stateCount,
+      }),
+    (error) => {
+      assert.ok(error instanceof SimilarityApiError);
+      assert.equal(error.status, 422);
+      assert.equal(error.code, "distribution_waveform_not_found");
+      return true;
+    },
+  );
+});
+
+test("rejects a shaded numeric table before ready training provenance", async () => {
+  await assert.rejects(
+    () =>
+      validateTrainingWaveformImage({
+        bytes: shadedNumericTablePng(),
         mimeType: "image/png",
         profile: eightState.profile,
         stateCount: eightState.stateCount,

@@ -71,6 +71,44 @@ function drawCurve(mask, width, left, top, right, bottom, phase = 0) {
   }
 }
 
+function drawFiveStateGaussianCurve(
+  mask,
+  width,
+  left,
+  top,
+  right,
+  bottom,
+) {
+  const centers = [0.1, 0.3, 0.5, 0.7, 0.9];
+  let previous;
+  for (let x = left + 8; x <= right - 8; x += 1) {
+    const progress =
+      (x - left - 8) / Math.max(1, right - left - 16);
+    const response = Math.max(
+      ...centers.map((center) =>
+        Math.exp(
+          -0.5 * ((progress - center) / 0.055) ** 2,
+        ),
+      ),
+    );
+    const y = Math.round(
+      bottom - 10 - response * (bottom - top) * 0.52,
+    );
+    if (previous) {
+      drawLine(
+        mask,
+        width,
+        previous.x,
+        previous.y,
+        x,
+        y,
+        2,
+      );
+    }
+    previous = { x, y };
+  }
+}
+
 function drawLabel(mask, width, left, top, textWidth) {
   const glyphWidth = 5;
   const glyphGap = 3;
@@ -171,6 +209,147 @@ test("separates offset rectangular charts and ignores grid subdivisions", () => 
       (panel) => panel.detectionReason === "closed-plot-frame",
     ),
   );
+});
+
+test("keeps a three-by-three mix of framed and L-axis VTH charts across narrow gutters", async (context) => {
+  for (const blankGutter of [2, 5, 11]) {
+    await context.test(
+      `${blankGutter} blank pixels`,
+      () => {
+        const panelWidth = 260;
+        const panelHeight = 180;
+        const outerMargin = 25;
+        const coordinateGap = blankGutter + 1;
+        const width =
+          outerMargin * 2 +
+          panelWidth * 3 +
+          coordinateGap * 2;
+        const height =
+          outerMargin * 2 +
+          panelHeight * 3 +
+          coordinateGap * 2;
+        const mask = new Uint8Array(width * height);
+        const expectedCenters = [];
+
+        for (let row = 0; row < 3; row += 1) {
+          for (let column = 0; column < 3; column += 1) {
+            const left =
+              outerMargin +
+              column * (panelWidth + coordinateGap);
+            const top =
+              outerMargin +
+              row * (panelHeight + coordinateGap);
+            const right = left + panelWidth;
+            const bottom = top + panelHeight;
+            const lAxis = (row + column) % 2 === 1;
+            if (lAxis) {
+              drawLine(
+                mask,
+                width,
+                left,
+                top,
+                left,
+                bottom,
+                2,
+              );
+              drawLine(
+                mask,
+                width,
+                left,
+                bottom,
+                right,
+                bottom,
+                2,
+              );
+            } else {
+              drawFrame(
+                mask,
+                width,
+                left,
+                top,
+                right,
+                bottom,
+              );
+            }
+            for (const ratio of [0.25, 0.5, 0.75]) {
+              const y = Math.round(
+                top + (bottom - top) * ratio,
+              );
+              drawLine(
+                mask,
+                width,
+                left,
+                y,
+                right,
+                y,
+              );
+            }
+            for (const ratio of [0.2, 0.4, 0.6, 0.8]) {
+              const x = Math.round(
+                left + (right - left) * ratio,
+              );
+              drawLine(
+                mask,
+                width,
+                x,
+                top,
+                x,
+                bottom,
+              );
+            }
+            drawFiveStateGaussianCurve(
+              mask,
+              width,
+              left,
+              top,
+              right,
+              bottom,
+            );
+            expectedCenters.push({
+              x: (left + right) / 2,
+              y: (top + bottom) / 2,
+            });
+          }
+        }
+
+        for (const result of [
+          detectChartPanelsFromMask(
+            mask,
+            width,
+            height,
+          ),
+          detectChartPanels(
+            maskToRgb(mask),
+            width,
+            height,
+            3,
+          ),
+        ]) {
+          assert.equal(result.fallbackUsed, false);
+          assert.equal(result.panels.length, 9);
+          assert.deepEqual(result.layout, {
+            rows: 3,
+            columns: 3,
+          });
+          for (const expected of expectedCenters) {
+            assert.ok(
+              result.panels.some((panel) => {
+                const centerX =
+                  panel.left + panel.width / 2;
+                const centerY =
+                  panel.top + panel.height / 2;
+                return (
+                  Math.abs(centerX - expected.x) <= 8 &&
+                  Math.abs(centerY - expected.y) <= 8
+                );
+              }),
+              `missing panel near ${expected.x},${expected.y}`,
+            );
+          }
+        }
+      },
+    );
+  }
 });
 
 test("detects a closed frame and an open L axis in reading order", () => {

@@ -69,7 +69,7 @@ Web 서버 패키지에도 포함됩니다.
 `node scripts/generate-random-multichart-samples.mjs`, FHD 밀집 샘플은
 `node scripts/generate-fhd-30-chart-sample.mjs`로 재생성합니다.
 같은 샘플과 무작위 배치·저해상도 복원을 포함한 최대 30차트 분리기는
-Windows x64 및 Ubuntu x64 v1.34.0 독립판에도 함께 포함됩니다.
+Windows x64 및 Ubuntu x64 v1.35.0 독립판에도 함께 포함됩니다.
 추출 결과는 함께 배포된 읽기 전용 코퍼스와 로컬로 비교합니다.
 격자는 실선과 점선의 긴 수평·수직 run을 함께 검출하며, 삭제 후 Curve가
 양쪽에서 이어지는 교차 픽셀만 복원해 peak·valley 단절을 줄입니다.
@@ -110,9 +110,9 @@ Ubuntu x64 패키지는 별도 외부 Web 서버용 배포본입니다. 상단�
 `UBUNTU X64 · WEB SERVER` 버튼으로 내려받으며 Windows 오프라인 실행판과
 용도와 버튼을 분리합니다. 웹 다운로드는 두 운영체제 모두 schema-v1
 매니페스트와 SHA-256 조각 검증을 거쳐 브라우저에서 원본 패키지를
-재조립합니다. v1.34.0의 고정 매니페스트 경로는
-`/downloads/windows-package-v1.34.0.json`과
-`/downloads/ubuntu-package-v1.34.0.json`입니다. Ubuntu 매니페스트의
+재조립합니다. v1.35.0의 고정 매니페스트 경로는
+`/downloads/windows-package-v1.35.0.json`과
+`/downloads/ubuntu-package-v1.35.0.json`입니다. Ubuntu 매니페스트의
 `fileName`은 우선 `vth-similarity-ubuntu-x64.tar.gz`를 사용하며, 다운로드
 코어는 검증된 `.tar.gz` 또는 `.zip` 파일명을 그대로 받아 버전이 붙은
 파일명으로 저장합니다.

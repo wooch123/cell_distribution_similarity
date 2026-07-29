@@ -1,6 +1,8 @@
 import {
   buildForegroundMasks,
   deskewForegroundMasks,
+  estimateDeskewAngle,
+  rotateBinaryMask,
 } from "./vth-image-core.mjs";
 
 // A 4 × 4 PPT grid leaves roughly 2.5–4% of the slide for each plot once
@@ -1035,6 +1037,22 @@ export function measureChartCurveEvidence(
     (sum, value) => sum + value,
     0,
   );
+  const ignoredColumnCount = ignoredColumns.reduce(
+    (sum, value) => sum + value,
+    0,
+  );
+  const countActiveBands = (values) => {
+    let bands = 0;
+    let active = false;
+    for (const value of values) {
+      if (value && !active) bands += 1;
+      active = Boolean(value);
+    }
+    return bands;
+  };
+  const ignoredRowBandCount = countActiveBands(ignoredRows);
+  const ignoredColumnBandCount =
+    countActiveBands(ignoredColumns);
 
   const columnPixels = Array.from(
     { length: interiorWidth },
@@ -1690,6 +1708,45 @@ export function measureChartCurveEvidence(
     curvedSegmentCount >= 2 &&
     twoBranchCoverage >= 0.003 &&
     maximumBranchGap >= interiorHeight * 0.035;
+  const repeatedGridStructure =
+    ignoredRowCount >= 4 &&
+    ignoredColumnCount >= 2 &&
+    ignoredRowBandCount >= 2 &&
+    ignoredColumnBandCount >= 1;
+  const compactGridStructure =
+    ignoredRowCount >= 2 &&
+    ignoredColumnCount >= 2 &&
+    ignoredRowBandCount >= 1 &&
+    ignoredColumnBandCount >= 1;
+  // Tables can contain numbers, glyphs, check marks or even real sparklines.
+  // After the long cell borders are suppressed those repeated fragments can
+  // look like several Curve segments. A plot grid may have the same straight
+  // lines, but its distribution remains one dominant trace; reject only when
+  // the repeated grid surrounds a fragmented or implausibly shallow trace.
+  const tableGridArtifact =
+    (repeatedGridStructure &&
+      ((verticalVariation < 0.46 &&
+        ((continuousCoverage < 0.45 &&
+          (curvedSegmentCount >= 3 ||
+            directionChangeCount >= 3)) ||
+          (verticalVariation < 0.075 &&
+            directionChangeCount >= 3))) ||
+        // Deskewing a rotated table can make the greedy path jump between
+        // distant cells and exaggerate its apparent y-range. The residual is
+        // still unmistakably a highly fragmented lattice, unlike a true
+        // multi-State Curve or the public demo's broad clipped valleys.
+        (continuousCoverage < 0.16 &&
+          curvedSegmentCount >= 10 &&
+          directionChangeCount >= 4))) ||
+    // A compact 2 × N table has only one internal row band, so it does not
+    // satisfy the repeated-grid threshold above. If a seemingly multi-peak
+    // trace stays inside that one shallow row while both row and column
+    // separators cross the frame, the shared cell lattice is the primary
+    // structure and must not become distribution data.
+    (compactGridStructure &&
+      continuousCoverage >= 0.72 &&
+      verticalVariation < 0.22 &&
+      directionChangeCount >= 3);
   const fullWidthTrace =
     (horizontalCoverage >= minimumFullWidthCoverage &&
       coherentTrace &&
@@ -1707,6 +1764,7 @@ export function measureChartCurveEvidence(
     !closedLoopArtifact &&
     !simpleTwoBranchOutlineArtifact &&
     !clippedClosedOutlineArtifact &&
+    !tableGridArtifact &&
     (fullWidthTrace ||
       (localizedSinglePeak && !straightSidedApex));
   const score = clamp(
@@ -1752,11 +1810,378 @@ export function measureChartCurveEvidence(
     closedLoopArtifact,
     simpleTwoBranchOutlineArtifact,
     clippedClosedOutlineArtifact,
+    tableGridArtifact,
     ignoredRowCount,
+    ignoredColumnCount,
+    ignoredRowBandCount,
+    ignoredColumnBandCount,
     topBoundaryCoverage,
     thinEnough,
     residualDensity,
     meanPixelsPerActiveColumn,
+  };
+}
+
+function dominantLineBands(
+  mask,
+  width,
+  height,
+  orientation,
+) {
+  const lineCount =
+    orientation === "horizontal" ? height : width;
+  const lineLength =
+    orientation === "horizontal" ? width : height;
+  // Preserve every genuinely blank pixel. Even a one-pixel PPT gutter
+  // separates independent frames, while rotated/JPEG table rules are repaired
+  // before they enter this projection pass.
+  const maximumGap = 0;
+  const qualifying = new Uint8Array(lineCount);
+  const strengths = new Float32Array(lineCount);
+
+  for (let coordinate = 0; coordinate < lineCount; coordinate += 1) {
+    let activeCount = 0;
+    let runCount = 0;
+    let substantialRunCount = 0;
+    let runStart = -1;
+    let lastActive = -1;
+    let longestSpan = 0;
+    const finishRun = () => {
+      if (runStart < 0) return;
+      const span = lastActive - runStart + 1;
+      runCount += 1;
+      if (span / Math.max(1, lineLength) >= 0.12) {
+        substantialRunCount += 1;
+      }
+      longestSpan = Math.max(
+        longestSpan,
+        span,
+      );
+      runStart = -1;
+      lastActive = -1;
+    };
+    for (let position = 0; position < lineLength; position += 1) {
+      const index =
+        orientation === "horizontal"
+          ? coordinate * width + position
+          : position * width + coordinate;
+      if (mask[index]) {
+        activeCount += 1;
+        if (runStart < 0) runStart = position;
+        lastActive = position;
+      } else if (
+        runStart >= 0 &&
+        position - lastActive > maximumGap
+      ) {
+        finishRun();
+      }
+    }
+    finishRun();
+    const activeCoverage =
+      activeCount / Math.max(1, lineLength);
+    const longestCoverage =
+      longestSpan / Math.max(1, lineLength);
+    if (
+      longestCoverage >= 0.45 ||
+      (activeCoverage >= 0.58 &&
+        substantialRunCount <= 2 &&
+        runCount <= 3)
+    ) {
+      qualifying[coordinate] = 1;
+      strengths[coordinate] = Math.max(
+        activeCoverage,
+        longestCoverage,
+      );
+    }
+  }
+
+  const bands = [];
+  let start = -1;
+  const finishBand = (end) => {
+    if (start < 0) return;
+    let coordinate = start;
+    for (let current = start + 1; current <= end; current += 1) {
+      if (strengths[current] > strengths[coordinate]) {
+        coordinate = current;
+      }
+    }
+    bands.push({
+      start,
+      end,
+      coordinate,
+      strength: strengths[coordinate],
+    });
+    start = -1;
+  };
+  for (let coordinate = 0; coordinate < lineCount; coordinate += 1) {
+    if (qualifying[coordinate]) {
+      if (start < 0) start = coordinate;
+    } else {
+      finishBand(coordinate - 1);
+    }
+  }
+  finishBand(lineCount - 1);
+  return bands;
+}
+
+function measureDominantDocumentLattice(
+  mask,
+  width,
+  height,
+) {
+  const horizontalBands = dominantLineBands(
+    mask,
+    width,
+    height,
+    "horizontal",
+  );
+  const verticalBands = dominantLineBands(
+    mask,
+    width,
+    height,
+    "vertical",
+  );
+  if (
+    horizontalBands.length < 3 ||
+    verticalBands.length < 3
+  ) {
+    return {
+      dominant: false,
+      horizontalBandCount: horizontalBands.length,
+      verticalBandCount: verticalBands.length,
+      intersectionCount: 0,
+      bounds: undefined,
+    };
+  }
+
+  const intersectionRadius = Math.max(
+    2,
+    Math.round(Math.min(width, height) * 0.004),
+  );
+  let intersectionCount = 0;
+  for (const horizontal of horizontalBands) {
+    for (const vertical of verticalBands) {
+      let intersects = false;
+      for (
+        let y = Math.max(
+          0,
+          horizontal.start - intersectionRadius,
+        );
+        y <=
+          Math.min(
+            height - 1,
+            horizontal.end + intersectionRadius,
+          ) && !intersects;
+        y += 1
+      ) {
+        for (
+          let x = Math.max(
+            0,
+            vertical.start - intersectionRadius,
+          );
+          x <=
+          Math.min(
+            width - 1,
+            vertical.end + intersectionRadius,
+          );
+          x += 1
+        ) {
+          if (mask[y * width + x]) {
+            intersects = true;
+            break;
+          }
+        }
+      }
+      if (intersects) intersectionCount += 1;
+    }
+  }
+  const possibleIntersections =
+    horizontalBands.length * verticalBands.length;
+  const minimumIntersections = Math.max(
+    6,
+    Math.ceil(possibleIntersections * 0.28),
+  );
+  const dominant =
+    intersectionCount >= minimumIntersections;
+  const medianSpacing = (bands) => {
+    const spacings = bands
+      .slice(1)
+      .map(
+        (band, index) =>
+          band.coordinate - bands[index].coordinate,
+      )
+      .sort((left, right) => left - right);
+    return spacings.length
+      ? spacings[Math.floor(spacings.length / 2)]
+      : 0;
+  };
+  const horizontalPadding = Math.round(
+    medianSpacing(verticalBands) * 0.55,
+  );
+  const verticalPadding = Math.round(
+    medianSpacing(horizontalBands) * 0.55,
+  );
+  return {
+    dominant,
+    horizontalBandCount: horizontalBands.length,
+    verticalBandCount: verticalBands.length,
+    intersectionCount,
+    bounds: dominant
+      ? {
+          left: Math.max(
+            0,
+            verticalBands[0].start - horizontalPadding,
+          ),
+          top: Math.max(
+            0,
+            horizontalBands[0].start - verticalPadding,
+          ),
+          right: Math.min(
+            width - 1,
+            verticalBands.at(-1).end + horizontalPadding,
+          ),
+          bottom: Math.min(
+            height - 1,
+            horizontalBands.at(-1).end + verticalPadding,
+          ),
+        }
+      : undefined,
+  };
+}
+
+function analyzeAxisAlignedDocumentLattice(
+  broadMask,
+  width,
+  height,
+) {
+  const lattice = measureDominantDocumentLattice(
+    broadMask,
+    width,
+    height,
+  );
+  if (!lattice.dominant) {
+    return {
+      ...lattice,
+      tableGridArtifact: false,
+      broadEvidence: undefined,
+    };
+  }
+  const broadEvidence = measureChartCurveEvidence(
+    {
+      left: 0,
+      top: 0,
+      right: width - 1,
+      bottom: height - 1,
+      axisMode: "content",
+    },
+    broadMask,
+    width,
+  );
+  const confinedFragmentedLattice =
+    broadEvidence.ignoredRowBandCount >= 3 &&
+    broadEvidence.ignoredColumnBandCount >= 3 &&
+    broadEvidence.continuousCoverage < 0.7 &&
+    broadEvidence.verticalVariation < 0.3 &&
+    broadEvidence.directionChangeCount >= 4;
+  return {
+    ...lattice,
+    tableGridArtifact:
+      broadEvidence.tableGridArtifact ||
+      !broadEvidence.valid ||
+      confinedFragmentedLattice,
+    broadEvidence,
+  };
+}
+
+function analyzeExtendedDeskewedDocument(
+  broadMask,
+  curveEvidenceMask,
+  width,
+  height,
+) {
+  const estimate = estimateDeskewAngle(
+    broadMask,
+    width,
+    height,
+    {
+      maximumAngle: 18,
+      step: 0.5,
+    },
+  );
+  if (!estimate.applied || Math.abs(estimate.angle) < 1.5) {
+    return {
+      applied: false,
+      tableGridArtifact: false,
+      curveEvidence: undefined,
+      broadEvidence: undefined,
+      lattice: undefined,
+      ...estimate,
+    };
+  }
+  const rotatedBroadMask = repairLowResolutionLineMask(
+    rotateBinaryMask(
+      broadMask,
+      width,
+      height,
+      estimate.angle,
+    ),
+    width,
+    height,
+    { maximumGap: 3 },
+  ).mask;
+  const rotatedCurveMask = rotateBinaryMask(
+    curveEvidenceMask,
+    width,
+    height,
+    estimate.angle,
+  );
+  const curveEvidence = measureChartCurveEvidence(
+    {
+      left: 0,
+      top: 0,
+      right: width - 1,
+      bottom: height - 1,
+      axisMode: "content",
+    },
+    rotatedCurveMask,
+    width,
+  );
+  const lattice = measureDominantDocumentLattice(
+    rotatedBroadMask,
+    width,
+    height,
+  );
+  const broadEvidence = lattice.dominant
+    ? measureChartCurveEvidence(
+        {
+          left: 0,
+          top: 0,
+          right: width - 1,
+          bottom: height - 1,
+          axisMode: "content",
+        },
+        rotatedBroadMask,
+        width,
+      )
+    : undefined;
+  const confinedFragmentedLattice =
+    lattice.dominant &&
+    broadEvidence.ignoredRowBandCount >= 3 &&
+    broadEvidence.ignoredColumnBandCount >= 3 &&
+    broadEvidence.continuousCoverage < 0.7 &&
+    broadEvidence.verticalVariation < 0.3 &&
+    broadEvidence.directionChangeCount >= 4;
+  return {
+    ...estimate,
+    applied: true,
+    tableGridArtifact:
+      lattice.dominant &&
+      (broadEvidence.tableGridArtifact ||
+        !broadEvidence.valid ||
+        confinedFragmentedLattice),
+    curveEvidence,
+    broadEvidence,
+    lattice,
   };
 }
 
@@ -3165,6 +3590,12 @@ export function detectChartPanelsFromMask(
     // 1–3 px gutter. Preserve the original topology when the caller provides
     // only one mask.
     mask;
+  const axisAlignedDocumentLattice =
+    analyzeAxisAlignedDocumentLattice(
+      mask,
+      width,
+      height,
+    );
   const sharedFrameCellCandidates =
     detectSharedFrameCellCandidates(
       mask,
@@ -3174,6 +3605,28 @@ export function detectChartPanelsFromMask(
       compactMinimumWidth,
       compactMinimumHeight,
     );
+  const sharedFrameDocumentEvidence =
+    sharedFrameCellCandidates.length >=
+    MINIMUM_DENSE_SEPARATION_CANDIDATES
+      ? measureChartCurveEvidence(
+          {
+            left: 0,
+            top: 0,
+            right: width - 1,
+            bottom: height - 1,
+            axisMode: "content",
+          },
+          curveEvidenceMask,
+          width,
+        )
+      : undefined;
+  const sharedFrameGridArtifact =
+    axisAlignedDocumentLattice.tableGridArtifact ||
+    sharedFrameDocumentEvidence?.tableGridArtifact === true;
+  const eligibleSharedFrameCellCandidates =
+    sharedFrameGridArtifact
+      ? []
+      : sharedFrameCellCandidates;
   // Exact-gap and shared-frame hypotheses are intentionally permissive
   // because their job is to split dense slide layouts. Activating them for a
   // lone card would also promote a chevron or a few dark grid cells. Require
@@ -3182,14 +3635,14 @@ export function detectChartPanelsFromMask(
   const denseSeparationDetected =
     separationCandidates.length >=
       MINIMUM_DENSE_SEPARATION_CANDIDATES ||
-    sharedFrameCellCandidates.length >=
+    eligibleSharedFrameCellCandidates.length >=
       MINIMUM_DENSE_SEPARATION_CANDIDATES;
   const retainedSeparationCandidates =
     denseSeparationDetected ? separationCandidates : [];
   const retainedSharedFrameCellCandidates =
-    sharedFrameCellCandidates.length >=
+    eligibleSharedFrameCellCandidates.length >=
     MINIMUM_DENSE_SEPARATION_CANDIDATES
-      ? sharedFrameCellCandidates
+      ? eligibleSharedFrameCellCandidates
       : [];
   const framelessDetection = detectFramelessCurveCandidates(
     curveEvidenceMask,
@@ -3239,6 +3692,28 @@ export function detectChartPanelsFromMask(
       count + (candidate.curveEvidence.valid ? 0 : 1),
     0,
   );
+  let extendedDeskewedDocument;
+  const getExtendedDeskewedDocument = () => {
+    if (!extendedDeskewedDocument) {
+      extendedDeskewedDocument =
+        analyzeExtendedDeskewedDocument(
+          mask,
+          curveEvidenceMask,
+          width,
+          height,
+        );
+    }
+    return extendedDeskewedDocument;
+  };
+  const rotatedDocumentTableGridArtifact =
+    measuredCandidates.some(
+      (candidate) =>
+        candidate.curveEvidence.valid &&
+        (candidate.axisMode === "l-axis" ||
+          candidate.detectionReason ===
+            "frameless-curve-region"),
+    ) &&
+    getExtendedDeskewedDocument().tableGridArtifact;
   const candidates = measuredCandidates.filter(
     (candidate) => {
       const candidateAreaRatio =
@@ -3271,8 +3746,26 @@ export function detectChartPanelsFromMask(
                 : MINIMUM_OPEN_AXIS_PANEL_AREA_RATIO,
             )
           : areaRatio;
+      const latticeBounds =
+        axisAlignedDocumentLattice.bounds;
+      const centerX =
+        (candidate.left + candidate.right) / 2;
+      const centerY =
+        (candidate.top + candidate.bottom) / 2;
+      const coveredByAxisAlignedTable =
+        axisAlignedDocumentLattice.tableGridArtifact &&
+        latticeBounds &&
+        ((centerX >= latticeBounds.left &&
+          centerX <= latticeBounds.right &&
+          centerY >= latticeBounds.top &&
+          centerY <= latticeBounds.bottom) ||
+          intersectionArea(candidate, latticeBounds) /
+            Math.max(1, area(candidate)) >=
+            0.35);
       return (
         candidate.curveEvidence.valid &&
+        !coveredByAxisAlignedTable &&
+        !rotatedDocumentTableGridArtifact &&
         area(candidate) >=
           width * height * minimumCandidateAreaRatio
       );
@@ -3327,7 +3820,14 @@ export function detectChartPanelsFromMask(
         width,
       );
     }
-    if (wholeImageCurveEvidence.valid) {
+    const fallbackTableGridArtifact =
+      axisAlignedDocumentLattice.tableGridArtifact ||
+      sharedFrameGridArtifact ||
+      getExtendedDeskewedDocument().tableGridArtifact;
+    if (
+      wholeImageCurveEvidence.valid &&
+      !fallbackTableGridArtifact
+    ) {
       return {
         panels: [
           {

@@ -619,7 +619,7 @@ async function main() {
       ),
     );
     assert(
-      manifest.version === "1.34.0" &&
+      manifest.version === "1.35.0" &&
         manifest.platform === "windows-x64" &&
         manifest.network?.mode === "offline-loopback-only" &&
         manifest.network?.externalNetworkAllowed === false &&

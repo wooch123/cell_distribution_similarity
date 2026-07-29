@@ -9,6 +9,10 @@ import {
   parseSimilarityImageRequest,
   searchSimilarityImage,
 } from "../lib/vth-similarity-api-core.mjs";
+import {
+  shadedNumericTablePng,
+  sparklineTablePng,
+} from "./helpers/table-fixtures.mjs";
 
 const demoQuery = await readFile(
   new URL("../public/demo-query.png", import.meta.url),
@@ -470,6 +474,44 @@ test("rejects tables, empty axes, text-like rows, and diagram boxes without a di
       assert.equal(error.status, 422);
       assert.equal(error.code, "distribution_waveform_not_found");
       assert.match(error.message, /분포 파형/);
+      return true;
+    },
+  );
+});
+
+test("rejects a shared-cell table even when one row contains a two-peak sparkline", async () => {
+  await assert.rejects(
+    () =>
+      searchSimilarityImage({
+        bytes: sparklineTablePng(),
+        mimeType: "image/png",
+        topK: 3,
+        corpus,
+        origin: "https://dove9999.com",
+      }),
+    (error) => {
+      assert.ok(error instanceof SimilarityApiError);
+      assert.equal(error.status, 422);
+      assert.equal(error.code, "distribution_waveform_not_found");
+      return true;
+    },
+  );
+});
+
+test("rejects a shaded numeric table without inventing a whole-image Curve", async () => {
+  await assert.rejects(
+    () =>
+      searchSimilarityImage({
+        bytes: shadedNumericTablePng(),
+        mimeType: "image/png",
+        topK: 3,
+        corpus,
+        origin: "https://dove9999.com",
+      }),
+    (error) => {
+      assert.ok(error instanceof SimilarityApiError);
+      assert.equal(error.status, 422);
+      assert.equal(error.code, "distribution_waveform_not_found");
       return true;
     },
   );
