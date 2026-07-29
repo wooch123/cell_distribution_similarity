@@ -6,6 +6,7 @@ import { decode as decodePng, encode as encodePng } from "fast-png";
 import jpeg from "jpeg-js";
 
 import {
+  MIN_TRAINING_CODEC_STABLE_SIMILARITY,
   SimilarityApiError,
   validateTrainingWaveformImage,
 } from "../lib/vth-similarity-api-core.mjs";
@@ -337,7 +338,7 @@ function assertAuthoritativeVerification(
     alignedCurveSimilarity(
       verification.authoritativeProfile,
       submittedProfile,
-    ) >= 0.985,
+    ) >= MIN_TRAINING_CODEC_STABLE_SIMILARITY,
     "stored authoritative Curve must be the accepted source hypothesis",
   );
   assert.deepEqual(

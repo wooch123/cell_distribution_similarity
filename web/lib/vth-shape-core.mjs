@@ -3,7 +3,9 @@ import {
   rerankWithDualEncoder,
 } from "./vth-dual-encoder-core.mjs";
 
-const SUPPORTED_STATE_COUNTS = [2, 4, 8, 16];
+export const MIN_STATE_COUNT = 1;
+export const MAX_STATE_COUNT = 20;
+const MAX_AUTOMATIC_REGULARIZED_STATE_COUNT = 16;
 const CANONICAL_IMAGE_RERANK_LIMIT = 2;
 const CANONICAL_IMAGE_RERANK_BLEND = 0.08;
 const CANONICAL_IMAGE_NEIGHBOR_FLOOR = 0.80;
@@ -14,6 +16,23 @@ const ARTIFACT_RESCUE_PRIMARY_CEILING = 0.55;
 const ARTIFACT_RESCUE_CONSENSUS_FLOOR = 0.70;
 const ARTIFACT_RESCUE_MARGIN = 0.18;
 const canonicalImageFeatureCache = new WeakMap();
+
+/**
+ * A visible waveform may contain any physical State count from 1 through 20.
+ * The generated corpus currently concentrates on 2/4/8/16 NAND modes, but
+ * uploaded and slide-extracted charts must not be snapped to those four
+ * values merely because they are the common product configurations.
+ *
+ * @param {unknown} value
+ */
+export function isValidStateCount(value) {
+  const count = Number(value);
+  return (
+    Number.isInteger(count) &&
+    count >= MIN_STATE_COUNT &&
+    count <= MAX_STATE_COUNT
+  );
+}
 
 function canonicalImageFeature(profile) {
   const cached = canonicalImageFeatureCache.get(profile);
@@ -243,7 +262,7 @@ export function detectPeaks(profile) {
   const window = Math.max(8, Math.floor(profile.length / 18));
 
   for (let index = 2; index < profile.length - 2; index += 1) {
-    if (profile[index] < 0.12) continue;
+    if (profile[index] < 0.115) continue;
     if (
       profile[index] < profile[index - 1] ||
       profile[index] <= profile[index + 1]
@@ -372,7 +391,562 @@ function selectStructuredPeaks(candidates, stateCount, profileLength) {
 }
 
 /**
+ * Eight-State fault profiles in the deployed corpus occasionally contain one
+ * strong tail turn at the outer boundary. It appears as a ninth peak, but the
+ * remaining eight peaks form a coherent lattice after removing that one
+ * boundary turn. Keep this narrow, evidence-based regularization so a genuine
+ * 9-State waveform (including one with close interior peaks) remains 9-State.
+ *
+ * @param {{index: number; prominence: number}[]} observed
+ * @param {number} profileLength
+ * @returns {number | null}
+ */
+function eightStateBoundaryArtifactIndex(observed, profileLength) {
+  if (observed.length !== 9) return null;
+  const spacings = observed
+    .slice(1)
+    .map((peak, index) => peak.index - observed[index].index);
+  const sorted = [...spacings].sort((left, right) => left - right);
+  const median = sorted[Math.floor(sorted.length / 2)] ?? 0;
+  if (median <= 0) return null;
+
+  const firstIsBoundaryTurn =
+    observed[1].index <= profileLength * 0.18 &&
+    spacings[0] <= median * 0.62;
+  const lastIsBoundaryTurn =
+    observed[observed.length - 2].index >= profileLength * 0.82 &&
+    spacings[spacings.length - 1] <= median * 0.62;
+  if (!firstIsBoundaryTurn && !lastIsBoundaryTurn) return null;
+
+  const remainingSpacings = firstIsBoundaryTurn
+    ? spacings.slice(1)
+    : spacings.slice(0, -1);
+  // A content crop can turn the opposite outer tail into one abnormally long
+  // terminal interval. It is not part of the repeated State lattice used to
+  // decide whether the close boundary turn is an extra peak.
+  if (
+    firstIsBoundaryTurn &&
+    remainingSpacings.at(-1) >= median * 1.8
+  ) {
+    remainingSpacings.pop();
+  } else if (
+    lastIsBoundaryTurn &&
+    remainingSpacings[0] >= median * 1.8
+  ) {
+    remainingSpacings.shift();
+  }
+  const average =
+    remainingSpacings.reduce((sum, value) => sum + value, 0) /
+    Math.max(1, remainingSpacings.length);
+  const variance =
+    remainingSpacings.reduce(
+      (sum, value) => sum + (value - average) ** 2,
+      0,
+    ) / Math.max(1, remainingSpacings.length);
+  if (Math.sqrt(variance) / Math.max(1, average) > 0.36) {
+    return null;
+  }
+  return firstIsBoundaryTurn
+    ? observed[0].index
+    : observed.at(-1).index;
+}
+
+/**
+ * A crop or antialiased outer tail can turn once before it reaches the first
+ * or last physical State. Treat that turn as an artifact only when all of the
+ * following independent signals agree:
+ *
+ * - no lower-prominence supplemental maxima make the topology ambiguous;
+ * - the suspect maximum lies in the outermost 8% of the profile, or within
+ *   10% when the post-removal lattice is especially regular (CV <= 0.08);
+ * - the outer interval is at most 55% of the robust State pitch;
+ * - the intervening valley loses at most 20% of the lower peak height;
+ * - removing that outer maximum leaves a regular lattice (CV <= 0.22);
+ * - the remaining lattice still spans at least 55% of the profile.
+ *
+ * The shallow-valley requirement is important: two close physical States with
+ * a material valley must remain separate.
+ *
+ * @param {number[]} profile
+ * @param {{index: number; prominence: number}[]} observed
+ * @param {number} profileLength
+ * @returns {number | null}
+ */
+function shallowOuterTailArtifactIndex(
+  profile,
+  observed,
+  profileLength,
+) {
+  if (
+    observed.length < 4 ||
+    observed.length > MAX_AUTOMATIC_REGULARIZED_STATE_COUNT
+  ) {
+    return null;
+  }
+  const spacings = observed
+    .slice(1)
+    .map((peak, index) => peak.index - observed[index].index);
+  const orderedSpacings = [...spacings].sort(
+    (left, right) => left - right,
+  );
+  const median =
+    orderedSpacings[Math.floor(orderedSpacings.length / 2)] ?? 0;
+  if (median <= 0) return null;
+
+  const hypotheses = [
+    {
+      artifact: observed[0],
+      neighbor: observed[1],
+      spacing: spacings[0],
+      remaining: observed.slice(1),
+      touchesBoundary:
+        observed[0].index <= profileLength * 0.1,
+      requiresTightLattice:
+        observed[0].index > profileLength * 0.08,
+    },
+    {
+      artifact: observed.at(-1),
+      neighbor: observed.at(-2),
+      spacing: spacings.at(-1),
+      remaining: observed.slice(0, -1),
+      touchesBoundary:
+        observed.at(-1).index >= profileLength * 0.9,
+      requiresTightLattice:
+        observed.at(-1).index < profileLength * 0.92,
+    },
+  ];
+  const accepted = [];
+  for (const hypothesis of hypotheses) {
+    if (
+      !hypothesis.touchesBoundary ||
+      hypothesis.spacing > median * 0.55
+    ) {
+      continue;
+    }
+    const left = Math.min(
+      hypothesis.artifact.index,
+      hypothesis.neighbor.index,
+    );
+    const right = Math.max(
+      hypothesis.artifact.index,
+      hypothesis.neighbor.index,
+    );
+    const valley = Math.min(...profile.slice(left + 1, right));
+    const lowerPeak = Math.min(
+      profile[hypothesis.artifact.index],
+      profile[hypothesis.neighbor.index],
+    );
+    const valleyDepth = clamp(
+      (lowerPeak - valley) / Math.max(0.05, lowerPeak),
+    );
+    if (valleyDepth > 0.2) continue;
+
+    const remainingSpacings = hypothesis.remaining
+      .slice(1)
+      .map(
+        (peak, index) =>
+          peak.index - hypothesis.remaining[index].index,
+      );
+    const average =
+      remainingSpacings.reduce((sum, value) => sum + value, 0) /
+      Math.max(1, remainingSpacings.length);
+    const variance =
+      remainingSpacings.reduce(
+        (sum, value) => sum + (value - average) ** 2,
+        0,
+      ) / Math.max(1, remainingSpacings.length);
+    const spacingCv =
+      Math.sqrt(variance) / Math.max(1, average);
+    const remainingSpan =
+      (hypothesis.remaining.at(-1).index -
+        hypothesis.remaining[0].index) /
+      Math.max(1, profileLength - 1);
+    const maximumSpacingCv = hypothesis.requiresTightLattice
+      ? 0.08
+      : 0.22;
+    if (
+      spacingCv > maximumSpacingCv ||
+      remainingSpan < 0.55
+    ) {
+      continue;
+    }
+    accepted.push({
+      index: hypothesis.artifact.index,
+      spacingRatio: hypothesis.spacing / median,
+      valleyDepth,
+      spacingCv,
+    });
+  }
+  if (!accepted.length) return null;
+  accepted.sort(
+    (left, right) =>
+      left.valleyDepth - right.valleyDepth ||
+      left.spacingCv - right.spacingCv ||
+      left.spacingRatio - right.spacingRatio,
+  );
+  return accepted[0].index;
+}
+
+/**
+ * Recover a faint but still visible maximum only when a domain regularization
+ * rule has already established a larger physical topology. This is deliberately
+ * separate from `detectPeaks`: supplemental maxima must not increase an
+ * otherwise exact arbitrary State count.
+ *
+ * @param {number[]} profile
+ * @param {{index: number; prominence: number}[]} candidates
+ * @param {number} targetCount
+ * @param {{ allowSaturatedPlateauExpansion?: boolean }} [options]
+ */
+function materializeRegularizedPeaks(
+  profile,
+  candidates,
+  targetCount,
+  options = {},
+) {
+  if (candidates.length >= targetCount) return [...candidates];
+  const minimumDistance = Math.max(5, Math.floor(profile.length / 28));
+  const window = Math.max(8, Math.floor(profile.length / 18));
+  const supplemental = [];
+  for (let index = 2; index < profile.length - 2; index += 1) {
+    if (
+      profile[index] < 0.06 ||
+      profile[index] < profile[index - 1] ||
+      profile[index] <= profile[index + 1] ||
+      candidates.some(
+        (candidate) =>
+          Math.abs(candidate.index - index) < minimumDistance,
+      )
+    ) {
+      continue;
+    }
+    const leftFloor = Math.min(
+      ...profile.slice(Math.max(0, index - window), index),
+    );
+    const rightFloor = Math.min(
+      ...profile.slice(
+        index + 1,
+        Math.min(profile.length, index + window + 1),
+      ),
+    );
+    const prominence =
+      profile[index] - Math.max(leftFloor, rightFloor);
+    if (prominence >= 0.002) {
+      supplemental.push({ index, prominence });
+    }
+  }
+
+  const materialized = [...candidates];
+  for (const peak of supplemental.sort(
+    (left, right) => right.prominence - left.prominence,
+  )) {
+    if (
+      materialized.every(
+        (candidate) =>
+          Math.abs(candidate.index - peak.index) >= minimumDistance,
+      )
+    ) {
+      materialized.push(peak);
+      if (materialized.length >= targetCount) break;
+    }
+  }
+  materialized.sort((left, right) => left.index - right.index);
+
+  // A rasterized high-density 16-State plot can clip several adjacent maxima
+  // to one flat 1.0 plateau. Every inserted sample here is therefore still a
+  // pixel-observed, non-strict local maximum; this never extrapolates into a
+  // sloped tail or an empty outer margin.
+  if (
+    options.allowSaturatedPlateauExpansion &&
+    targetCount === 16 &&
+    materialized.length < targetCount
+  ) {
+    const plateauCandidates = [];
+    for (let index = 2; index < profile.length - 2; index += 1) {
+      if (
+        profile[index] >= 0.995 &&
+        Math.abs(profile[index] - profile[index - 1]) <= 1e-9 &&
+        Math.abs(profile[index] - profile[index + 1]) <= 1e-9
+      ) {
+        plateauCandidates.push(index);
+      }
+    }
+    while (
+      plateauCandidates.length &&
+      materialized.length < targetCount
+    ) {
+      let bestPosition = -1;
+      let bestDistance = -1;
+      for (
+        let position = 0;
+        position < plateauCandidates.length;
+        position += 1
+      ) {
+        const index = plateauCandidates[position];
+        const distance = Math.min(
+          ...materialized.map((peak) =>
+            Math.abs(peak.index - index),
+          ),
+        );
+        if (distance >= 2 && distance > bestDistance) {
+          bestPosition = position;
+          bestDistance = distance;
+        }
+      }
+      if (bestPosition < 0) break;
+      const [index] = plateauCandidates.splice(bestPosition, 1);
+      materialized.push({ index, prominence: 0.002 });
+      materialized.sort((left, right) => left.index - right.index);
+    }
+  }
+  return materialized;
+}
+
+function descriptorFromResolvedPeaks(
+  profile,
+  peaks,
+  observedCount = peaks.length,
+) {
+  const peakWidths = peaks.map(({ index }, peakNumber) => {
+    const leftBoundary = peakNumber ? peaks[peakNumber - 1].index : 0;
+    const rightBoundary =
+      peakNumber + 1 < peaks.length
+        ? peaks[peakNumber + 1].index
+        : profile.length - 1;
+    const leftFloor = Math.min(
+      ...profile.slice(leftBoundary, index + 1),
+    );
+    const rightFloor = Math.min(
+      ...profile.slice(index, rightBoundary + 1),
+    );
+    const localFloor =
+      index === 0
+        ? rightFloor
+        : index === profile.length - 1
+          ? leftFloor
+          : Math.max(leftFloor, rightFloor);
+    const halfHeight =
+      localFloor + (profile[index] - localFloor) * 0.5;
+    let left = index;
+    let right = index;
+    while (left > leftBoundary && profile[left] > halfHeight) {
+      left -= 1;
+    }
+    while (right < rightBoundary && profile[right] > halfHeight) {
+      right += 1;
+    }
+    return Math.max(1, right - left) / profile.length;
+  });
+
+  const valleyHeights = [];
+  const valleyLocations = [];
+  const valleyDepths = [];
+  const valleyPositionRatios = [];
+  const peakValleyDistances = [];
+  for (let peakIndex = 0; peakIndex < peaks.length - 1; peakIndex += 1) {
+    const leftPeak = peaks[peakIndex].index;
+    const rightPeak = peaks[peakIndex + 1].index;
+    let valley = leftPeak + 1;
+    for (let index = leftPeak + 2; index < rightPeak; index += 1) {
+      if (profile[index] < profile[valley]) valley = index;
+    }
+    const valleyHeight = profile[valley];
+    valleyHeights.push(valleyHeight);
+    const leftDistance = Math.max(1, valley - leftPeak);
+    const rightDistance = Math.max(1, rightPeak - valley);
+    const peakGap = Math.max(1, rightPeak - leftPeak);
+    valleyLocations.push(
+      valley / Math.max(1, profile.length - 1),
+    );
+    valleyDepths.push(
+      Math.max(
+        0,
+        Math.min(profile[leftPeak], profile[rightPeak]) -
+          valleyHeight,
+      ),
+    );
+    valleyPositionRatios.push(leftDistance / peakGap);
+    peakValleyDistances.push(
+      leftDistance / Math.max(1, profile.length - 1),
+      rightDistance / Math.max(1, profile.length - 1),
+    );
+  }
+
+  const resolvedStateCount = peaks.length;
+  const tailSlopes = peaks.length
+    ? [
+        (profile[peaks[0].index] - profile[0]) /
+          Math.max(1, peaks[0].index),
+        (profile[peaks[peaks.length - 1].index] -
+          profile[profile.length - 1]) /
+          Math.max(
+            1,
+            profile.length - 1 - peaks[peaks.length - 1].index,
+          ),
+      ].map((value) => Math.max(0, value))
+    : [];
+
+  return {
+    stateCount: resolvedStateCount,
+    observedStateCount: observedCount,
+    regularized: observedCount !== resolvedStateCount,
+    peakLocations: peaks.map(
+      ({ index }) => index / (profile.length - 1),
+    ),
+    peakWidths,
+    valleyHeights,
+    valleyLocations,
+    valleyDepths,
+    valleyPositionRatios,
+    peakValleyDistances,
+    tailSlopes,
+    area:
+      profile.reduce((sum, value) => sum + value, 0) /
+      profile.length,
+  };
+}
+
+/**
+ * Resolve independently measured peak x-coordinates against the actual Curve
+ * profile. This helper is deliberately fail-closed: every hint must snap to a
+ * distinct local maximum and every adjacent pair must contain a measured
+ * interior valley. The input profile is never replaced or synthesized.
+ *
  * @param {number[]} profileInput
+ * @param {number[]} normalizedHints
+ * @returns {{
+ *   ok: true;
+ *   descriptor: ReturnType<typeof descriptorFromProfile>;
+ *   snappedLocations: number[];
+ * } | {
+ *   ok: false;
+ *   reason: string;
+ * }}
+ */
+export function tryDescriptorFromPeakHints(
+  profileInput,
+  normalizedHints,
+) {
+  if (
+    !Array.isArray(profileInput) ||
+    profileInput.length < 3 ||
+    profileInput.some((value) => !Number.isFinite(value))
+  ) {
+    return { ok: false, reason: "profile_invalid" };
+  }
+  if (
+    !Array.isArray(normalizedHints) ||
+    !isValidStateCount(normalizedHints.length) ||
+    normalizedHints.some(
+      (value) =>
+        !Number.isFinite(value) || value < 0 || value > 1,
+    ) ||
+    normalizedHints.some(
+      (value, index) =>
+        index > 0 && value <= normalizedHints[index - 1],
+    )
+  ) {
+    return { ok: false, reason: "hint_order_invalid" };
+  }
+
+  const profile = movingAverage(resample(profileInput), 2);
+  const plateauMaxima = [];
+  for (let start = 1; start < profile.length - 1; start += 1) {
+    let end = start;
+    while (
+      end + 1 < profile.length - 1 &&
+      Math.abs(profile[end + 1] - profile[start]) <= 1e-6
+    ) {
+      end += 1;
+    }
+    const value = profile[start];
+    const left = profile[start - 1];
+    const right = profile[end + 1];
+    if (
+      value >= 0.04 &&
+      value > left + 1e-6 &&
+      value > right + 1e-6
+    ) {
+      plateauMaxima.push(Math.round((start + end) / 2));
+    }
+    start = end;
+  }
+
+  const targets = normalizedHints.map((location) =>
+    Math.round(location * (profile.length - 1)),
+  );
+  const snapped = [];
+  for (let position = 0; position < targets.length; position += 1) {
+    const leftPitch =
+      position > 0
+        ? targets[position] - targets[position - 1]
+        : Number.POSITIVE_INFINITY;
+    const rightPitch =
+      position + 1 < targets.length
+        ? targets[position + 1] - targets[position]
+        : Number.POSITIVE_INFINITY;
+    const pitch = Math.min(leftPitch, rightPitch);
+    const radius = Math.max(
+      2,
+      Math.min(
+        Math.round(profile.length * 0.04),
+        Number.isFinite(pitch)
+          ? Math.round(pitch * 0.4)
+          : Math.round(profile.length * 0.04),
+      ),
+    );
+    const previous = snapped.at(-1) ?? -2;
+    const candidates = plateauMaxima
+      .filter(
+        (index) =>
+          index >= targets[position] - radius &&
+          index <= targets[position] + radius &&
+          index >= previous + 2,
+      )
+      .sort(
+        (left, right) =>
+          Math.abs(left - targets[position]) -
+            Math.abs(right - targets[position]) ||
+          profile[right] - profile[left],
+      );
+    if (!candidates.length) {
+      return { ok: false, reason: "peak_snap_missing" };
+    }
+    snapped.push(candidates[0]);
+  }
+
+  for (let index = 0; index < snapped.length - 1; index += 1) {
+    const left = snapped[index];
+    const right = snapped[index + 1];
+    if (right - left < 2) {
+      return { ok: false, reason: "peak_snap_collision" };
+    }
+    const interior = profile.slice(left + 1, right);
+    if (
+      !interior.length ||
+      Math.min(profile[left], profile[right]) -
+        Math.min(...interior) <=
+        1e-6
+    ) {
+      return { ok: false, reason: "valley_not_observed" };
+    }
+  }
+
+  const descriptor = descriptorFromResolvedPeaks(
+    profile,
+    snapped.map((index) => ({ index, prominence: 1 })),
+    snapped.length,
+  );
+  return {
+    ok: true,
+    descriptor,
+    snappedLocations: descriptor.peakLocations,
+  };
+}
+
+/**
+ * @param {number[]} profileInput
+ * @param {{ stateCountHint?: number }} [options]
  * @returns {{
  *   stateCount: number;
  *   observedStateCount: number;
@@ -388,14 +962,45 @@ function selectStructuredPeaks(candidates, stateCount, profileLength) {
  *   area: number;
  * }}
  */
-export function descriptorFromProfile(profileInput) {
+export function descriptorFromProfile(profileInput, options = {}) {
   const profile = movingAverage(resample(profileInput), 2);
   const candidates = detectPeaks(profile);
+  const locallyObservedCandidates = materializeRegularizedPeaks(
+    profile,
+    candidates,
+    MAX_AUTOMATIC_REGULARIZED_STATE_COUNT,
+  );
   const observed = candidates.filter((peak) => peak.prominence >= 0.05);
   const observedCount = observed.length || candidates.length;
+  const shallowOuterArtifactIndex =
+    candidates.length === observed.length
+      ? shallowOuterTailArtifactIndex(
+          profile,
+          observed,
+          profile.length,
+        )
+      : null;
+  const boundaryArtifactIndex =
+    shallowOuterArtifactIndex ??
+    eightStateBoundaryArtifactIndex(observed, profile.length);
   const candidateSpacings = candidates
     .slice(1)
     .map((peak, index) => peak.index - candidates[index].index);
+  const candidateValleyDepths = candidates
+    .slice(0, -1)
+    .map((peak, index) => {
+      const rightPeak = candidates[index + 1];
+      const valley = Math.min(
+        ...profile.slice(peak.index + 1, rightPeak.index),
+      );
+      const lowerPeak = Math.min(
+        profile[peak.index],
+        profile[rightPeak.index],
+      );
+      return clamp(
+        (lowerPeak - valley) / Math.max(0.05, lowerPeak),
+      );
+    });
   const ascendingSpacings = [...candidateSpacings].sort(
     (left, right) => left - right,
   );
@@ -421,6 +1026,23 @@ export function descriptorFromProfile(profileInput) {
       profile.length * 0.78 &&
     orderedSpacings[2] >= profile.length * 0.16 &&
     (orderedSpacings[3] ?? 0) <= profile.length * 0.12;
+  const edgeSplitFourStateLayout =
+    candidates.length === 6 &&
+    candidates[5].index - candidates[0].index >=
+      profile.length * 0.75 &&
+    spacingMedian > 0 &&
+    ((candidateSpacings[0] <= spacingMedian * 0.6 &&
+      candidateValleyDepths[0] <= 0.2) ||
+      (candidateSpacings.at(-1) <= spacingMedian * 0.6 &&
+        candidateValleyDepths.at(-1) <= 0.2)) &&
+    orderedSpacings[2] >= profile.length * 0.105 &&
+    orderedSpacings[3] <= profile.length * 0.12;
+  const boundaryClippedFourStateLayout =
+    observedCount === 4 &&
+    candidates.length === 9 &&
+    spacingMedian > 0 &&
+    candidateSpacings[0] <= spacingMedian * 0.65 &&
+    candidateSpacings.at(-1) >= spacingMedian * 2;
   const denseEightStateLayout =
     observedCount >= 4 &&
     observedCount <= 7 &&
@@ -430,12 +1052,69 @@ export function descriptorFromProfile(profileInput) {
       profile.length * 0.62 &&
     spacingMedian > 0 &&
     Math.max(...candidateSpacings) <= spacingMedian * 1.8 &&
-    Math.min(...candidateSpacings) >= spacingMedian * 0.4;
+    Math.min(...candidateSpacings) >= spacingMedian * 0.3;
+  const trimmedEightSpacings = candidateSpacings.filter(
+    (spacing, index) =>
+      !(
+        (index === 0 && spacing <= spacingMedian * 0.65) ||
+        (index === candidateSpacings.length - 1 &&
+          spacing >= spacingMedian * 1.8)
+      ),
+  );
+  const trimmedDenseEightStateLayout =
+    observedCount >= 4 &&
+    observedCount <= 7 &&
+    candidates.length >= 8 &&
+    candidates.length <= 10 &&
+    candidates[candidates.length - 1].index - candidates[0].index >=
+      profile.length * 0.62 &&
+    trimmedEightSpacings.length >= 5 &&
+    Math.max(...trimmedEightSpacings) <= spacingMedian * 1.8 &&
+    Math.min(...trimmedEightSpacings) >= spacingMedian * 0.3;
+  const partialEightStateLayout =
+    observedCount === 7 &&
+    candidates.length > 7;
+  const denseSixteenStateLayout =
+    candidates.length >= 12 &&
+    candidates.length < 16 &&
+    candidateSpacings.length >= 11 &&
+    spacingMedian > 0 &&
+    candidates[candidates.length - 1].index - candidates[0].index >=
+      profile.length * 0.86 &&
+    candidateSpacings.reduce(
+      (count, spacing) =>
+        count +
+        Math.max(0, Math.round(spacing / spacingMedian) - 1),
+      candidates.length,
+    ) >= 16 &&
+    candidateSpacings.filter(
+      (spacing) =>
+        spacing >= spacingMedian * 0.55 &&
+        spacing <= spacingMedian * 1.65,
+    ).length >=
+      candidateSpacings.length - 2;
   let stateCount;
-  if (structuredFourStateLayout || clusteredFourStateLayout) {
+  if (shallowOuterArtifactIndex !== null) {
+    stateCount = Math.max(
+      MIN_STATE_COUNT,
+      observedCount - 1,
+    );
+  } else if (
+    structuredFourStateLayout ||
+    clusteredFourStateLayout ||
+    edgeSplitFourStateLayout ||
+    boundaryClippedFourStateLayout
+  ) {
     stateCount = 4;
-  } else if (denseEightStateLayout) {
+  } else if (
+    denseEightStateLayout ||
+    trimmedDenseEightStateLayout
+  ) {
     stateCount = 8;
+  } else if (partialEightStateLayout) {
+    stateCount = 8;
+  } else if (denseSixteenStateLayout) {
+    stateCount = 16;
   } else if (
     observedCount === 3 &&
     candidates.length >= 4 &&
@@ -444,105 +1123,74 @@ export function descriptorFromProfile(profileInput) {
     stateCount = 4;
   } else if (candidates.length === 2 && observedCount === 1) {
     stateCount = 2;
+  } else if (boundaryArtifactIndex !== null) {
+    stateCount = 8;
   } else {
-    stateCount =
-      observedCount >= 2
-        ? SUPPORTED_STATE_COUNTS.reduce((best, count) =>
-            Math.abs(count - observedCount) < Math.abs(best - observedCount)
-              ? count
-              : best,
-          )
-        : observedCount;
+    stateCount = observedCount;
   }
   if (observedCount === 7 && candidates.length === 15) {
     stateCount = 8;
-  } else if (stateCount < 16 && candidates.length >= 15) {
-    stateCount = 16;
+  } else if (
+    stateCount < MAX_AUTOMATIC_REGULARIZED_STATE_COUNT &&
+    candidates.length >= MAX_AUTOMATIC_REGULARIZED_STATE_COUNT
+  ) {
+    stateCount = MAX_AUTOMATIC_REGULARIZED_STATE_COUNT;
+  } else if (stateCount > MAX_STATE_COUNT) {
+    stateCount = MAX_STATE_COUNT;
+  }
+  const hintedStateCount = Number(options.stateCountHint);
+  if (
+    isValidStateCount(hintedStateCount) &&
+    hintedStateCount > stateCount &&
+    hintedStateCount - stateCount <= 3 &&
+    candidates.length >= hintedStateCount - 2
+  ) {
+    stateCount = hintedStateCount;
   }
 
-  const selectedPeakCount = Math.min(
-    stateCount || candidates.length,
-    candidates.length,
+  const materializedCandidates = materializeRegularizedPeaks(
+    profile,
+    locallyObservedCandidates,
+    stateCount,
+    {
+      allowSaturatedPlateauExpansion:
+        denseSixteenStateLayout,
+    },
   );
-  const peaks = denseEightStateLayout
-    ? selectStructuredPeaks(candidates, selectedPeakCount, profile.length)
-    : [...candidates]
+  const topologyCandidates =
+    boundaryArtifactIndex === null
+      ? materializedCandidates
+      : materializedCandidates.filter(
+          (candidate) =>
+            candidate.index !== boundaryArtifactIndex,
+        );
+  const selectedPeakCount = Math.min(
+    isValidStateCount(stateCount)
+      ? stateCount
+      : topologyCandidates.length,
+    topologyCandidates.length,
+  );
+  const peaks =
+    denseEightStateLayout || trimmedDenseEightStateLayout
+    ? selectStructuredPeaks(
+        topologyCandidates,
+        selectedPeakCount,
+        profile.length,
+      )
+    : [...topologyCandidates]
         .sort((left, right) => right.prominence - left.prominence)
         .slice(0, selectedPeakCount)
         .sort((left, right) => left.index - right.index);
 
-  const peakWidths = peaks.map(({ index }, peakNumber) => {
-    const leftBoundary = peakNumber ? peaks[peakNumber - 1].index : 0;
-    const rightBoundary =
-      peakNumber + 1 < peaks.length
-        ? peaks[peakNumber + 1].index
-        : profile.length - 1;
-    const leftFloor = Math.min(...profile.slice(leftBoundary, index + 1));
-    const rightFloor = Math.min(...profile.slice(index, rightBoundary + 1));
-    const localFloor =
-      index === 0
-        ? rightFloor
-        : index === profile.length - 1
-          ? leftFloor
-          : Math.max(leftFloor, rightFloor);
-    const halfHeight = localFloor + (profile[index] - localFloor) * 0.5;
-    let left = index;
-    let right = index;
-    while (left > leftBoundary && profile[left] > halfHeight) left -= 1;
-    while (right < rightBoundary && profile[right] > halfHeight) right += 1;
-    return (right - left) / profile.length;
-  });
-
-  const valleyHeights = [];
-  const valleyLocations = [];
-  const valleyDepths = [];
-  const valleyPositionRatios = [];
-  const peakValleyDistances = [];
-  const tailSlopes = [];
-  for (let peakIndex = 0; peakIndex < peaks.length - 1; peakIndex += 1) {
-    const leftPeak = peaks[peakIndex].index;
-    const rightPeak = peaks[peakIndex + 1].index;
-    let valley = leftPeak;
-    for (let index = leftPeak; index <= rightPeak; index += 1) {
-      if (profile[index] < profile[valley]) valley = index;
-    }
-    const valleyHeight = profile[valley];
-    valleyHeights.push(valleyHeight);
-    const leftDistance = Math.max(1, valley - leftPeak);
-    const rightDistance = Math.max(1, rightPeak - valley);
-    const peakGap = Math.max(1, rightPeak - leftPeak);
-    valleyLocations.push(valley / Math.max(1, profile.length - 1));
-    valleyDepths.push(
-      Math.max(
-        0,
-        Math.min(profile[leftPeak], profile[rightPeak]) - valleyHeight,
-      ),
-    );
-    valleyPositionRatios.push(leftDistance / peakGap);
-    peakValleyDistances.push(
-      leftDistance / Math.max(1, profile.length - 1),
-      rightDistance / Math.max(1, profile.length - 1),
-    );
-    tailSlopes.push(
-      (profile[leftPeak] - valleyHeight) / leftDistance,
-      (profile[rightPeak] - valleyHeight) / rightDistance,
-    );
-  }
-
-  return {
-    stateCount,
-    observedStateCount: observedCount,
-    regularized: observedCount !== stateCount,
-    peakLocations: peaks.map(({ index }) => index / (profile.length - 1)),
-    peakWidths,
-    valleyHeights,
-    valleyLocations,
-    valleyDepths,
-    valleyPositionRatios,
-    peakValleyDistances,
-    tailSlopes,
-    area: profile.reduce((sum, value) => sum + value, 0) / profile.length,
-  };
+  // `stateCount` is the physical topology contract: every returned descriptor
+  // has exactly one location/width per State and exactly one valley between
+  // adjacent States. A regularization hypothesis may never claim more States
+  // than the peaks it can actually materialize.
+  return descriptorFromResolvedPeaks(
+    profile,
+    peaks,
+    observedCount,
+  );
 }
 
 /**
@@ -927,7 +1575,7 @@ export function searchCorpus(
   const hypothesisStateCounts = new Set(
     hypotheses
       .map((hypothesis) => hypothesis.descriptor.stateCount)
-      .filter((stateCount) => [2, 4, 8, 16].includes(stateCount)),
+      .filter((stateCount) => isValidStateCount(stateCount)),
   );
   const stateSupportedCandidates = candidates.filter((candidate) =>
     hypothesisStateCounts.has(candidate.stateCount),
@@ -974,6 +1622,9 @@ export function searchCorpus(
         )[0];
       const curve = bestHypothesis.curve;
       const shapeDescriptor = bestHypothesis.descriptor;
+      const candidateDescriptor = descriptorFromProfile(
+        candidate.profile,
+      );
       const location = Math.exp(
         -5 *
           sequenceDistance(
@@ -999,7 +1650,7 @@ export function searchCorpus(
         -18 *
           sequenceDistance(
             shapeDescriptor.tailSlopes,
-            candidate.tailSlopes,
+            candidateDescriptor.tailSlopes,
           ),
       );
       const count = Math.exp(
@@ -1016,7 +1667,7 @@ export function searchCorpus(
       );
       const relation = peakValleyComponents(
         peakValleyRelations(shapeDescriptor),
-        peakValleyRelations(descriptorFromProfile(candidate.profile)),
+        peakValleyRelations(candidateDescriptor),
       );
       const featureValues = {
         // Preserve the pairwise model's historical 256-point profile input.

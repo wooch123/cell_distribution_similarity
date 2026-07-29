@@ -21,6 +21,9 @@
 `results`는 첫 번째 패널을 그대로 가리킵니다. FHD 한 이미지당 최대
 30개를 분석하며, 초과 시 신뢰도가 높은 30개를 선택하고
 `panelDetection.truncated`로 알립니다.
+각 Query는 `stateCount`, `peakCount`, `valleyCount`,
+`topologyConsistent`를 함께 반환해 `peak=State`,
+`valley=peak-1` 계약을 외부 연동에서도 확인할 수 있습니다.
 한 물리 패널 안에 검정·회색을 포함해 서로 다른 색의 full-width 파형이
 여러 개 있으면
 `seriesCount`, `selectedSeriesIndex`, `series[]`로 분리하고 각 시리즈에
@@ -82,13 +85,18 @@ Web 서버 패키지에도 포함됩니다.
 `node scripts/generate-random-multichart-samples.mjs`, FHD 밀집 샘플은
 `node scripts/generate-fhd-30-chart-sample.mjs`로 재생성합니다.
 같은 샘플과 무작위 배치·저해상도 복원을 포함한 최대 30차트 분리기는
-Windows x64 및 Ubuntu x64 v1.38.0 독립판에도 함께 포함됩니다.
+Windows x64 및 Ubuntu x64 v1.39.0 독립판에도 함께 포함됩니다.
 160×90의 4차트, 240×135의 12차트, 조밀한 표형 격자 위 색상/검정
 유효 파형과 실제 색상 표를 짝지은 회귀로 초저해상도 분리와 표 오판정을
 동시에 검증합니다.
 1672×941 진단 슬라이드에서는 회색 외곽선을 배경으로 오인하지 않고,
 좌측 4행×5열의 8-State VTH 파형 20개만 반복 격자로 복원합니다.
 우측 설명문·수치 표·단조 RBER 추세선 차트는 비분포 콘텐츠로 제외합니다.
+추가 4종 State Count Sweep 회귀는 프레임 유무, 점 형태 outlier,
+주석·화살표·강조 원, 1280/1672px 해상도 차이에도 좌측 4×4 분포
+패널 16개만 모두 복원합니다. 패널 안에서는 캡션 숫자를 답으로 사용하지
+않고 물리적으로 보이는 peak를 1~20 State로 세며, 모든 검색·학습·API
+경로에서 `peak=State`, `valley=peak-1`, 좌·우 tail 2개를 강제합니다.
 행·열 정렬을 전제로 하지 않는 전역 공간 탐색과 다중 스케일 후보,
 원본 ROI 재분석 및 저해상도 색상 State 복구를 결합합니다. 별도 FHD
 회귀는 1920×1080 안에 48×35부터 315×205까지 실제 QLC 차트 28개를
@@ -135,9 +143,9 @@ Ubuntu x64 패키지는 별도 외부 Web 서버용 배포본입니다. 상단�
 `UBUNTU X64 · WEB SERVER` 버튼으로 내려받으며 Windows 오프라인 실행판과
 용도와 버튼을 분리합니다. 웹 다운로드는 두 운영체제 모두 schema-v1
 매니페스트와 SHA-256 조각 검증을 거쳐 브라우저에서 원본 패키지를
-재조립합니다. v1.38.0의 고정 매니페스트 경로는
-`/downloads/windows-package-v1.38.0.json`과
-`/downloads/ubuntu-package-v1.38.0.json`입니다. Ubuntu 매니페스트의
+재조립합니다. v1.39.0의 고정 매니페스트 경로는
+`/downloads/windows-package-v1.39.0.json`과
+`/downloads/ubuntu-package-v1.39.0.json`입니다. Ubuntu 매니페스트의
 `fileName`은 우선 `vth-similarity-ubuntu-x64.tar.gz`를 사용하며, 다운로드
 코어는 검증된 `.tar.gz` 또는 `.zip` 파일명을 그대로 받아 버전이 붙은
 파일명으로 저장합니다.

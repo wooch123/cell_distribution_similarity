@@ -7,6 +7,7 @@ import {
   assembleUbuntuPackage,
   assembleWindowsPackage,
 } from "../lib/vth-download-core.mjs";
+import { descriptorFromProfile } from "../lib/vth-shape-core.mjs";
 
 const projectRoot = new URL("../", import.meta.url);
 const distClientRoot = new URL("../dist/client/", import.meta.url);
@@ -147,6 +148,7 @@ test("public shared ready ingestion rejects a non-waveform source before storage
     (item) => item.id === "vth-08s-s0042-00000",
   );
   assert.ok(candidate);
+  const descriptor = descriptorFromProfile(candidate.profile);
   const form = new FormData();
   form.append(
     "payload",
@@ -154,20 +156,7 @@ test("public shared ready ingestion rejects a non-waveform source before storage
       schemaVersion: 2,
       label: "Rejected table",
       profile: candidate.profile,
-      descriptor: {
-        stateCount: candidate.stateCount,
-        observedStateCount: candidate.observedStateCount,
-        regularized: candidate.regularized,
-        peakLocations: candidate.peakLocations,
-        peakWidths: candidate.peakWidths,
-        valleyHeights: candidate.valleyHeights,
-        valleyLocations: candidate.valleyLocations,
-        valleyDepths: candidate.valleyDepths,
-        valleyPositionRatios: candidate.valleyPositionRatios,
-        peakValleyDistances: candidate.peakValleyDistances,
-        tailSlopes: candidate.tailSlopes,
-        area: candidate.area,
-      },
+      descriptor,
       sharingConsent: true,
       consentVersion: "2026-07-28-v2",
       contributorToken: "a".repeat(32),
@@ -345,24 +334,24 @@ async function verifyStandalonePackageDownload({
 
 test("ships the verified Windows standalone package as a web download", async () => {
   await verifyStandalonePackageDownload({
-    manifestFileName: "windows-package-v1.38.0.json",
+    manifestFileName: "windows-package-v1.39.0.json",
     checksumFileName: "vth-similarity-windows-x64.sha256",
-    expectedVersion: "1.38.0",
+    expectedVersion: "1.39.0",
     expectedFileName: "vth-similarity-windows-x64.zip",
     expectedDownloadFileName:
-      "vth-similarity-windows-x64-v1.38.0.zip",
+      "vth-similarity-windows-x64-v1.39.0.zip",
     assemble: assembleWindowsPackage,
   });
 });
 
 test("ships the verified Ubuntu external Web server package as a web download", async () => {
   await verifyStandalonePackageDownload({
-    manifestFileName: "ubuntu-package-v1.38.0.json",
+    manifestFileName: "ubuntu-package-v1.39.0.json",
     checksumFileName: "vth-similarity-ubuntu-x64.sha256",
-    expectedVersion: "1.38.0",
+    expectedVersion: "1.39.0",
     expectedFileName: "vth-similarity-ubuntu-x64.tar.gz",
     expectedDownloadFileName:
-      "vth-similarity-ubuntu-x64-v1.38.0.tar.gz",
+      "vth-similarity-ubuntu-x64-v1.39.0.tar.gz",
     assemble: assembleUbuntuPackage,
   });
 });

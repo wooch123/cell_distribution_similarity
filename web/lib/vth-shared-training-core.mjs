@@ -1,4 +1,7 @@
-import { descriptorFromProfile } from "./vth-shape-core.mjs";
+import {
+  descriptorFromProfile,
+  isValidStateCount,
+} from "./vth-shape-core.mjs";
 
 export const SHARED_TRAINING_CONSENT_VERSION = "2026-07-28-v2";
 export const MAX_SHARED_SOURCE_IMAGE_BYTES = 3 * 1024 * 1024;
@@ -6,7 +9,6 @@ export const MAX_SHARED_CANDIDATES = 2000;
 export const MAX_SHARED_CANDIDATES_PER_DAY = 200;
 export const MAX_SHARED_CANDIDATE_PAGE_SIZE = 500;
 
-const VALID_STATE_COUNTS = new Set([2, 4, 8, 16]);
 const TOKEN_PATTERN = /^[a-zA-Z0-9_-]{32,128}$/;
 const SHARED_CANDIDATE_ID_PATTERN =
   /^shared-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -50,24 +52,20 @@ export function validateSharedTrainingPayload(payload) {
     throw new Error("학습 Curve의 형상 변화가 너무 작습니다.");
   }
   const stateCount = Number(payload?.descriptor?.stateCount);
-  if (!VALID_STATE_COUNTS.has(stateCount)) {
-    throw new Error("State는 2, 4, 8 또는 16이어야 합니다.");
+  if (!isValidStateCount(stateCount)) {
+    throw new Error("State는 1~20 정수여야 합니다.");
   }
   const suppliedPeakLocations = numberArray(
     payload?.descriptor?.peakLocations,
-    { min: 2, max: stateCount },
+    stateCount,
     "peakLocations",
   );
   const suppliedPeakCount = suppliedPeakLocations.length;
   const valleyCount = suppliedPeakCount - 1;
   const suppliedDescriptor = {
     stateCount,
-    observedStateCount: Math.max(
-      1,
-      Math.min(
-        stateCount,
-        Number(payload?.descriptor?.observedStateCount ?? stateCount),
-      ),
+    observedStateCount: Number(
+      payload?.descriptor?.observedStateCount ?? stateCount,
     ),
     regularized: Boolean(payload?.descriptor?.regularized),
     peakLocations: suppliedPeakLocations,
@@ -103,14 +101,13 @@ export function validateSharedTrainingPayload(payload) {
     ),
     tailSlopes: numberArray(
       payload?.descriptor?.tailSlopes,
-      valleyCount * 2,
+      2,
       "tailSlopes",
     ),
     area: Number(payload?.descriptor?.area),
   };
   if (
-    !Number.isFinite(suppliedDescriptor.observedStateCount) ||
-    !Number.isInteger(suppliedDescriptor.observedStateCount) ||
+    !isValidStateCount(suppliedDescriptor.observedStateCount) ||
     !Number.isFinite(suppliedDescriptor.area) ||
     suppliedDescriptor.area < 0 ||
     suppliedDescriptor.area > 1.5

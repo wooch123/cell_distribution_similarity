@@ -698,14 +698,22 @@ test("does not let an aggressive hypothesis flip a valid physical State count", 
     stateCount: 8,
     observedStateCount: 8,
     regularized: false,
+    peakLocations: Array.from(
+      { length: 8 },
+      (_, index) => (index + 1) / 9,
+    ),
+    valleyLocations: Array.from(
+      { length: 7 },
+      (_, index) => (index + 1.5) / 9,
+    ),
   };
   assert.deepEqual(reconcileStateDescriptor(primary, conflicting), primary);
-  assert.equal(
+  assert.deepEqual(
     reconcileStateDescriptor(
       { ...primary, stateCount: 0, observedStateCount: 0 },
       conflicting,
-    ).stateCount,
-    8,
+    ),
+    conflicting,
   );
 });
 

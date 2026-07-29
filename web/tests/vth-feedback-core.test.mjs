@@ -24,7 +24,7 @@ const analysis = {
     valleyDepths: [0.12, 0.1, 0.13],
     valleyPositionRatios: [0.5, 0.48, 0.51],
     peakValleyDistances: [0.11, 0.12, 0.1, 0.12, 0.11, 0.12],
-    tailSlopes: [0.03, 0.04, 0.03, 0.04, 0.03, 0.04],
+    tailSlopes: [0.03, 0.04],
     area: 0.52,
   },
 };

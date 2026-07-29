@@ -74,7 +74,7 @@ descriptor, 파일명·메타데이터를 제거하고 JPEG로 다시 만든 원
 
 ## Windows 무설치판과 Ubuntu 외부 Web 서버판
 
-`artifacts/windows/vth-similarity-windows-x64-v1.38.0.zip`은 공식
+`artifacts/windows/vth-similarity-windows-x64-v1.39.0.zip`은 공식
 Windows x64 Node 런타임, 웹 빌드, 로컬 학습 API를 함께 담습니다. 다른
 Windows PC에서 압축을 푼 뒤 `start.bat`을 실행하면 설치 없이
 `http://127.0.0.1:4173`에서 동작합니다. 코퍼스, 모델, 웹 화면, 런타임이
@@ -106,13 +106,16 @@ FHD 한 이미지에서 오밀조밀하게 배치된 차트를 최대 30개까�
 추가 회귀는 160×90 이미지의 4개 차트와 240×135 이미지의 12개 차트를
 각각 분리하며, 조밀한 표 형태 격자 위의 유효 파형은 색상/검정 Curve 모두
 유지하고 같은 크기의 실제 색상 표는 계속 제외하는지 확인합니다.
-v1.38.0은 행·열 정렬을 전제로 하지 않는 전역 공간 탐색을 추가해 차트의
-위치, 크기, 간격을 사전에 알 수 없는 현업 슬라이드도 처리합니다. 다중
-스케일 후보와 원본 ROI 재분석, 저해상도 색상 State 복구를 결합하며,
-1920×1080 안에 48×35부터 315×205까지 임의로 놓인 실제 QLC 차트 28개와
-텍스트·표·도형·단조 추세선을 섞은 회귀에서 28개만 모두 분리하는지
-검증합니다. 가까운 차트와 단일 차트의 여러 색상 시리즈도 각각 패널과
-시리즈 단위로 구분합니다.
+v1.39.0은 행·열 정렬을 전제로 하지 않는 전역 공간 탐색에 반복 색상
+격자 복구를 결합합니다. 위치, 크기, 간격을 사전에 알 수 없는 현업
+슬라이드는 그대로 독립 검출하고, 4×4처럼 반복되는 소형 VTH 패널은
+색상 Curve 투영으로 빠진 셀을 복원합니다. 제공된 4개 State Count Sweep
+슬라이드에서 좌측의 분포 패널 16개를 모두 분리하고, 우측 설명문·표·
+단조 추세선은 제외하는 고정 회귀를 포함합니다. 각 패널의 물리적으로
+보이는 peak 수를 1~20 State로 보존하며 `peak=State`,
+`valley=peak-1`, 좌·우 tail 2개의 위상 계약을 검색·학습·API 전체
+경로에서 동일하게 검증합니다. 캡션 수와 달리 화면 밖으로 완전히 잘린
+peak는 임의 생성하지 않습니다.
 
 Ubuntu x64는 여러 사용자가 접속하는 외부 Web 서버용 독립 배포본입니다.
 운영 페이지 상단에서 Windows의 `WINDOWS X64 · FULL OFFLINE` 버튼과
@@ -131,9 +134,9 @@ Node.js나 npm을 설치하지 않고 `.tar.gz`를 풀어 `./start.sh`를 실행
 `data/` 학습 저장소와 추천 후보를 공유하지만 외부 공용 서버로 원본이나
 학습 데이터를 전송하지 않습니다.
 
-v1.38.0 웹 배포는
-`/downloads/windows-package-v1.38.0.json`과
-`/downloads/ubuntu-package-v1.38.0.json`을 고정 매니페스트 경로로
+v1.39.0 웹 배포는
+`/downloads/windows-package-v1.39.0.json`과
+`/downloads/ubuntu-package-v1.39.0.json`을 고정 매니페스트 경로로
 사용합니다. 두 매니페스트 모두 schema-v1 `browser-assembled` 계약과
 SHA-256 조각 목록을 제공하며 브라우저는 각 조각과 완성 파일을 검증한 뒤
 저장합니다. Windows 결과물은 ZIP이고 Ubuntu는
@@ -166,6 +169,9 @@ Windows 패키지 내부에는 다운로드 자산을 다시 넣지 않아 재�
 다중 차트 응답의 `panelCount`, `panelLayout`, `panels[]`에는 행 우선 순서의
 좌표·검출 신뢰도·패널별 Query와 결과가 들어가며, 최상위 `query/results`는
 기존 클라이언트 호환을 위해 첫 번째 패널을 유지합니다.
+각 Query는 `stateCount`, `peakCount`, `valleyCount`와
+`topologyConsistent`를 함께 반환하므로 연동 시스템도
+`peak=State`, `valley=peak-1` 계약을 즉시 검사할 수 있습니다.
 공용 API는 Curve와 descriptor를 검증해 D1에 저장하고, 서버가 생성한 축
 없는 표준 그래프와 브라우저가 파일명·메타데이터를 제거해 다시 만든 JPEG
 원본 미리보기를 R2에 분리 저장합니다.
@@ -205,7 +211,7 @@ Curve/descriptor를 로컬 API에 함께 전달하면 `ready`가 되어 해당 P
   → 기울기 보정 및 그래프 프레임 검출
   → 축·눈금·격자·텍스트 제거
   → 색/채움 여부와 무관한 표준 Curve로 변환
-  → State 수·위치·폭·valley·tail 분석 및 2/4/8/16-State 보정
+  → 물리적으로 보이는 1~20 State와 위치·폭·valley·tail 분석
   → 3,200차원 표준 이미지 + 384차원 Curve 벡터 1차 검색
   → 샘플 중복 제거 및 pairwise + dual Curve + 이미지 합의 재정렬
   → Top 5~10 이미지·점수·유사 이유 출력
@@ -369,9 +375,11 @@ $NODE_BIN web/scripts/export-dual-training-pairs.mjs \
 현재 자동 테스트는 합성 재현성, State 중복 제거, 축 포함 이미지 정규화,
 특징 차원, 벡터 검색, 전체 파이프라인을 검증합니다.
 
-State 수 분석은 원시 peak count와 V-NAND 도메인 규칙으로 보정한
-2/4/8/16-State count를 모두 기록합니다. 따라서 자동 보정 성능과 순수
-영상 검출 성능을 분리해 평가할 수 있습니다.
+State 수 분석은 원시 peak count와 위상 계약을 함께 기록합니다. 일반
+입력은 물리적으로 보이는 1~20개 peak를 그대로 State 수로 사용하고,
+아주 낮은 해상도나 잘린 경계처럼 충분한 영상 증거가 있을 때만
+4/8/16-State 격자 복구를 제한적으로 적용합니다. 따라서 자동 복구
+성능과 순수 영상 검출 성능을 분리해 평가할 수 있습니다.
 
 현재 2/4/8/16-State 혼합 코퍼스의 인덱스에 없는 미등록 로그 그래프
 192장을 고정 seed로 검증한 결과는 Top-1 `146/192`(76.0%),

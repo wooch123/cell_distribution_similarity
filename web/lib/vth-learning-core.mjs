@@ -1,6 +1,7 @@
-import { descriptorFromProfile } from "./vth-shape-core.mjs";
-
-const VALID_STATE_COUNTS = new Set([2, 4, 8, 16]);
+import {
+  descriptorFromProfile,
+  isValidStateCount,
+} from "./vth-shape-core.mjs";
 
 function copyNumberArray(value, expectedLength = null) {
   if (!Array.isArray(value)) return null;
@@ -44,22 +45,40 @@ export function buildLearnedCandidate(input) {
   const descriptor = input.descriptor ?? input;
   const safeProfile = copyNumberArray(profile, 256);
   const stateCount = Number(descriptor?.stateCount);
-  if (!id || !safeProfile || !VALID_STATE_COUNTS.has(stateCount)) {
+  if (!id || !safeProfile || !isValidStateCount(stateCount)) {
     throw new Error("학습 후보의 ID, 256-point Curve 또는 State가 올바르지 않습니다.");
   }
 
-  const peakLocations = copyNumberArray(descriptor.peakLocations);
-  const peakWidths = copyNumberArray(descriptor.peakWidths);
-  const valleyHeights = copyNumberArray(descriptor.valleyHeights);
-  const valleyLocations = copyNumberArray(descriptor.valleyLocations);
-  const valleyDepths = copyNumberArray(descriptor.valleyDepths);
+  const valleyCount = stateCount - 1;
+  const peakLocations = copyNumberArray(
+    descriptor.peakLocations,
+    stateCount,
+  );
+  const peakWidths = copyNumberArray(descriptor.peakWidths, stateCount);
+  const valleyHeights = copyNumberArray(
+    descriptor.valleyHeights,
+    valleyCount,
+  );
+  const valleyLocations = copyNumberArray(
+    descriptor.valleyLocations,
+    valleyCount,
+  );
+  const valleyDepths = copyNumberArray(
+    descriptor.valleyDepths,
+    valleyCount,
+  );
   const valleyPositionRatios = copyNumberArray(
     descriptor.valleyPositionRatios,
+    valleyCount,
   );
   const peakValleyDistances = copyNumberArray(
     descriptor.peakValleyDistances,
+    valleyCount * 2,
   );
-  const tailSlopes = copyNumberArray(descriptor.tailSlopes);
+  const tailSlopes = copyNumberArray(
+    descriptor.tailSlopes,
+    2,
+  );
   const area = Number(descriptor.area);
   if (
     [

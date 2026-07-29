@@ -13,6 +13,11 @@ import {
   startVthServer,
 } from "../server.mjs";
 import { nonDistributionPng } from "../non-distribution-fixture.mjs";
+import { analyzeSimilarityImage } from "../../web/lib/vth-similarity-api-core.mjs";
+import {
+  descriptorFromProfile,
+  resample,
+} from "../../web/lib/vth-shape-core.mjs";
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(testDirectory, "../..");
@@ -58,6 +63,26 @@ const sameStateSourcePng = await readFile(
     sameStateSourceCandidate.image.replace(/^\/+/, ""),
   ),
 );
+const sameStateWrongPng = await readFile(
+  path.join(
+    projectRoot,
+    "web",
+    "public",
+    sameStateWrongCandidate.image.replace(/^\/+/, ""),
+  ),
+);
+const authoritativeProfiles = new Map(
+  await Promise.all(
+    [
+      [trainingCandidate, trainingSourcePng],
+      [sameStateSourceCandidate, sameStateSourcePng],
+      [sameStateWrongCandidate, sameStateWrongPng],
+    ].map(async ([candidate, bytes]) => {
+      const analysis = await analyzeSimilarityImage(bytes, "image/png");
+      return [candidate.id, resample(analysis.profile)];
+    }),
+  ),
+);
 
 function trainingPayload(
   id = "sample-1",
@@ -66,26 +91,29 @@ function trainingPayload(
     sourcePng = trainingSourcePng,
   } = {},
 ) {
+  const profile = authoritativeProfiles.get(candidate.id);
+  assert.ok(profile);
+  const descriptor = descriptorFromProfile(profile);
   return {
     schemaVersion: 2,
     id,
     label: "Retention sample",
     imageDataUrl: `data:image/png;base64,${tinyPng.toString("base64")}`,
     sourceImageDataUrl: `data:image/png;base64,${sourcePng.toString("base64")}`,
-    profile: candidate.profile,
+    profile,
     descriptor: {
-      stateCount: candidate.stateCount,
-      observedStateCount: candidate.observedStateCount,
-      regularized: candidate.regularized,
-      peakLocations: candidate.peakLocations,
-      peakWidths: candidate.peakWidths,
-      valleyHeights: candidate.valleyHeights,
-      valleyLocations: candidate.valleyLocations,
-      valleyDepths: candidate.valleyDepths,
-      valleyPositionRatios: candidate.valleyPositionRatios,
-      peakValleyDistances: candidate.peakValleyDistances,
-      tailSlopes: candidate.tailSlopes,
-      area: candidate.area,
+      stateCount: descriptor.stateCount,
+      observedStateCount: descriptor.observedStateCount,
+      regularized: descriptor.regularized,
+      peakLocations: descriptor.peakLocations,
+      peakWidths: descriptor.peakWidths,
+      valleyHeights: descriptor.valleyHeights,
+      valleyLocations: descriptor.valleyLocations,
+      valleyDepths: descriptor.valleyDepths,
+      valleyPositionRatios: descriptor.valleyPositionRatios,
+      peakValleyDistances: descriptor.peakValleyDistances,
+      tailSlopes: descriptor.tailSlopes,
+      area: descriptor.area,
     },
     metadata: {
       learnedAt: "2026-07-27T00:00:00.000Z",
@@ -648,6 +676,12 @@ test("protects network-bound training data with a bootstrap cookie", async () =>
       openApi.components.securitySchemes.browserCookie.name,
       "vth_access",
     );
+    const queryAnalysisContract =
+      openApi.components.schemas.QueryAnalysis.properties;
+    assert.equal(queryAnalysisContract.stateCount.maximum, 20);
+    assert.equal(queryAnalysisContract.observedStateCount.maximum, 20);
+    assert.equal(queryAnalysisContract.peakCount.maximum, 20);
+    assert.equal(queryAnalysisContract.valleyCount.maximum, 19);
     assert.ok(
       openApi.paths["/api/v1/similarity-search"].post.responses["401"],
     );

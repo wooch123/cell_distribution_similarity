@@ -7225,7 +7225,7 @@ function isRepeatedGridCellEvidence(evidence) {
   );
 }
 
-function recoverRepeatedWaveformGridCandidates(
+function recoverStrictRepeatedWaveformGridCandidates(
   measuredCandidates,
   curveEvidenceMask,
   width,
@@ -7404,19 +7404,500 @@ function recoverRepeatedWaveformGridCandidates(
   };
 }
 
-function isCredibleCandidateOutsideRepeatedGrid(candidate) {
+function collectProjectionBands(
+  active,
+  maximumGap,
+  minimumSpan,
+) {
+  const bands = [];
+  let start = -1;
+  let last = -1;
+  for (let index = 0; index < active.length; index += 1) {
+    if (!active[index]) continue;
+    if (start < 0) {
+      start = index;
+      last = index;
+      continue;
+    }
+    if (index - last <= maximumGap + 1) {
+      last = index;
+      continue;
+    }
+    if (last - start + 1 >= minimumSpan) {
+      bands.push({ start, end: last });
+    }
+    start = index;
+    last = index;
+  }
+  if (start >= 0 && last - start + 1 >= minimumSpan) {
+    bands.push({ start, end: last });
+  }
+  return bands;
+}
+
+function selectRegularProjectionBands(
+  bands,
+  maximumCount,
+) {
+  if (bands.length < 2) return null;
+  let best = null;
+  for (let start = 0; start < bands.length - 1; start += 1) {
+    for (
+      let count = 2;
+      count <= Math.min(maximumCount, bands.length - start);
+      count += 1
+    ) {
+      const selected = bands.slice(start, start + count);
+      const centers = selected.map(
+        (band) => (band.start + band.end) / 2,
+      );
+      const spans = selected.map(
+        (band) => band.end - band.start + 1,
+      );
+      const meanIndex = (count - 1) / 2;
+      const meanCenter =
+        centers.reduce((sum, value) => sum + value, 0) /
+        count;
+      let numerator = 0;
+      let denominator = 0;
+      for (let index = 0; index < count; index += 1) {
+        numerator +=
+          (index - meanIndex) *
+          (centers[index] - meanCenter);
+        denominator += (index - meanIndex) ** 2;
+      }
+      const step =
+        numerator / Math.max(1e-9, denominator);
+      const origin = meanCenter - step * meanIndex;
+      const maximumResidual = Math.max(
+        ...centers.map((center, index) =>
+          Math.abs(center - (origin + step * index)),
+        ),
+      );
+      const typicalSpan = medianNumber(spans);
+      const maximumSpanDeviation = Math.max(
+        ...spans.map((span) =>
+          Math.abs(span - typicalSpan),
+        ),
+      );
+      if (
+        step < Math.max(8, typicalSpan * 1.04) ||
+        maximumResidual > Math.max(5, step * 0.11) ||
+        maximumSpanDeviation >
+          Math.max(12, typicalSpan * 0.48)
+      ) {
+        continue;
+      }
+      const regularity =
+        maximumResidual / Math.max(1, step) +
+        maximumSpanDeviation /
+          Math.max(1, typicalSpan) *
+          0.35;
+      const score = count * 10 - regularity * 12;
+      if (
+        !best ||
+        score > best.score ||
+        (score === best.score && count > best.bands.length)
+      ) {
+        best = {
+          bands: selected,
+          step,
+          origin,
+          maximumResidual,
+          typicalSpan,
+          score,
+        };
+      }
+    }
+  }
+  return best;
+}
+
+function recoverChromaticRepeatedWaveformGridCandidates(
+  measuredCandidates,
+  curveEvidenceMask,
+  curveColorMasks,
+  width,
+  height,
+) {
+  const chromaticMask = mergeCurveColorMasks(
+    curveColorMasks,
+    width,
+    height,
+  );
+  if (!chromaticMask) return null;
+
+  const activeRows = new Uint8Array(height);
+  const minimumRowInk = Math.max(
+    5,
+    Math.round(width * 0.004),
+  );
+  for (let y = 0; y < height; y += 1) {
+    let count = 0;
+    for (let x = 0; x < width; x += 1) {
+      count += chromaticMask[y * width + x] ? 1 : 0;
+    }
+    activeRows[y] = count >= minimumRowInk ? 1 : 0;
+  }
+  const rawRows = collectProjectionBands(
+    activeRows,
+    3,
+    Math.max(12, Math.round(height * 0.055)),
+  );
+  const rowFit = selectRegularProjectionBands(rawRows, 8);
+  if (!rowFit || rowFit.bands.length < 2) return null;
+
+  const activeColumns = new Uint8Array(width);
+  const columnCounts = new Uint16Array(width);
+  for (const row of rowFit.bands) {
+    for (let y = row.start; y <= row.end; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        if (chromaticMask[y * width + x]) {
+          columnCounts[x] += 1;
+        }
+      }
+    }
+  }
+  for (let x = 0; x < width; x += 1) {
+    activeColumns[x] = columnCounts[x] >= 2 ? 1 : 0;
+  }
+  const rawColumns = collectProjectionBands(
+    activeColumns,
+    6,
+    Math.max(12, Math.round(width * 0.025)),
+  );
+  let columnFit = selectRegularProjectionBands(
+    rawColumns,
+    Math.floor(
+      MAXIMUM_CHART_PANELS / rowFit.bands.length,
+    ),
+  );
+  if (!columnFit || columnFit.bands.length < 2) {
+    return null;
+  }
+
+  // A right-hand explanation/table/trend pane can contribute coloured ink in
+  // every sweep row and, by coincidence, sit at almost exactly one more grid
+  // interval. Unlike a VTH column, however, it does not contain a turning,
+  // vertically varying waveform in most rows. Trim only a weak edge column
+  // when all interior columns have strong row-by-row waveform support.
+  if (columnFit.bands.length >= 5) {
+    const edgeProbePaddingX = clamp(
+      Math.round(columnFit.step * 0.055),
+      4,
+      24,
+    );
+    const edgeProbePaddingY = clamp(
+      Math.round(rowFit.step * 0.055),
+      3,
+      16,
+    );
+    const supports = columnFit.bands.map((columnBand) =>
+      rowFit.bands.reduce((count, rowBand) => {
+        const evidence = measureChartCurveEvidence(
+          {
+            left: Math.max(
+              0,
+              columnBand.start - edgeProbePaddingX,
+            ),
+            top: Math.max(
+              0,
+              rowBand.start - edgeProbePaddingY,
+            ),
+            right: Math.min(
+              width - 1,
+              columnBand.end + edgeProbePaddingX,
+            ),
+            bottom: Math.min(
+              height - 1,
+              rowBand.end + edgeProbePaddingY,
+            ),
+            axisMode: "content",
+          },
+          curveEvidenceMask,
+          width,
+        );
+        return (
+          count +
+          (evidence.horizontalCoverage >= 0.25 &&
+          evidence.verticalVariation >= 0.1 &&
+          evidence.thinEnough !== false &&
+          (evidence.directionChangeCount >= 1 ||
+            evidence.localizedSinglePeak ||
+            evidence.segmentedWaveformTrace)
+            ? 1
+            : 0)
+        );
+      }, 0),
+    );
+    const strongSupport = Math.ceil(
+      rowFit.bands.length * 0.75,
+    );
+    const weakSupport = Math.floor(
+      rowFit.bands.length * 0.35,
+    );
+    const firstIsWeak =
+      supports[0] <= weakSupport &&
+      supports.slice(1).every(
+        (support) => support >= strongSupport,
+      );
+    const lastIsWeak =
+      supports.at(-1) <= weakSupport &&
+      supports.slice(0, -1).every(
+        (support) => support >= strongSupport,
+      );
+    const trimmedBands = firstIsWeak
+      ? columnFit.bands.slice(1)
+      : lastIsWeak
+        ? columnFit.bands.slice(0, -1)
+        : null;
+    if (trimmedBands) {
+      columnFit =
+        selectRegularProjectionBands(
+          trimmedBands,
+          trimmedBands.length,
+        ) ?? columnFit;
+    }
+  }
+
+  const expectedCellCount =
+    rowFit.bands.length * columnFit.bands.length;
+  if (
+    expectedCellCount < 8 ||
+    expectedCellCount > MAXIMUM_CHART_PANELS
+  ) {
+    return null;
+  }
+
+  const occupiedCells = new Set();
+  const completeMeasuredCells = new Set();
+  for (const candidate of measuredCandidates) {
+    const candidateWidth =
+      candidate.right - candidate.left + 1;
+    const candidateHeight =
+      candidate.bottom - candidate.top + 1;
+    if (
+      candidateWidth > columnFit.step * 1.35 ||
+      candidateHeight > rowFit.step * 1.35
+    ) {
+      continue;
+    }
+    const centerX =
+      (candidate.left + candidate.right) / 2;
+    const centerY =
+      (candidate.top + candidate.bottom) / 2;
+    const column = Math.round(
+      (centerX - columnFit.origin) / columnFit.step,
+    );
+    const row = Math.round(
+      (centerY - rowFit.origin) / rowFit.step,
+    );
+    if (
+      row < 0 ||
+      row >= rowFit.bands.length ||
+      column < 0 ||
+      column >= columnFit.bands.length ||
+      Math.abs(
+        centerX -
+          (columnFit.origin + columnFit.step * column),
+      ) >
+        columnFit.step * 0.43 ||
+      Math.abs(
+        centerY - (rowFit.origin + rowFit.step * row),
+      ) >
+        rowFit.step * 0.43
+    ) {
+      continue;
+    }
+    occupiedCells.add(`${row}:${column}`);
+    if (
+      candidate.curveEvidence.valid &&
+      candidateWidth >= columnFit.typicalSpan * 0.55 &&
+      candidateHeight >= rowFit.typicalSpan * 0.5
+    ) {
+      completeMeasuredCells.add(`${row}:${column}`);
+    }
+  }
+  if (
+    occupiedCells.size !== expectedCellCount
+  ) {
+    return null;
+  }
+  // Keep the established geometric crops when they already provide one
+  // complete, validated physical panel in every repeated cell. The chromatic
+  // projection is a missing-cell recovery path; replacing a complete set
+  // would widen exact plot-frame crops to outer card/ink extents.
+  if (completeMeasuredCells.size === expectedCellCount) {
+    return null;
+  }
+
+  const paddingX = clamp(
+    Math.round(columnFit.step * 0.055),
+    4,
+    24,
+  );
+  const paddingY = clamp(
+    Math.round(rowFit.step * 0.055),
+    3,
+    16,
+  );
+  const candidates = [];
+  let chromaticCellCount = 0;
+  let waveformCellCount = 0;
+  let turningCellCount = 0;
+  for (let row = 0; row < rowFit.bands.length; row += 1) {
+    for (
+      let column = 0;
+      column < columnFit.bands.length;
+      column += 1
+    ) {
+      const rowBand = rowFit.bands[row];
+      const columnBand = columnFit.bands[column];
+      const candidate = {
+        left: Math.max(0, columnBand.start - paddingX),
+        top: Math.max(0, rowBand.start - paddingY),
+        right: Math.min(
+          width - 1,
+          columnBand.end + paddingX,
+        ),
+        bottom: Math.min(
+          height - 1,
+          rowBand.end + paddingY,
+        ),
+        axisMode: "content",
+        detectionScale: "repeated-grid",
+        detectionReason: "repeated-waveform-grid",
+        repeatedGridStructuralRescue: true,
+      };
+      let cellInk = 0;
+      for (let y = rowBand.start; y <= rowBand.end; y += 1) {
+        for (
+          let x = columnBand.start;
+          x <= columnBand.end;
+          x += 1
+        ) {
+          cellInk += chromaticMask[y * width + x] ? 1 : 0;
+        }
+      }
+      if (cellInk >= 8) chromaticCellCount += 1;
+      const curveEvidence = measureChartCurveEvidence(
+        candidate,
+        curveEvidenceMask,
+        width,
+      );
+      const hasWaveformVariation =
+        curveEvidence.horizontalCoverage >= 0.18 &&
+        curveEvidence.verticalVariation >= 0.075;
+      const hasTurningWaveform =
+        curveEvidence.directionChangeCount >= 1 ||
+        curveEvidence.localizedSinglePeak ||
+        curveEvidence.segmentedWaveformTrace;
+      if (hasWaveformVariation) waveformCellCount += 1;
+      if (hasTurningWaveform) turningCellCount += 1;
+      candidates.push({
+        ...candidate,
+        confidence: clamp(
+          0.7 + curveEvidence.score * 0.25,
+          0,
+          0.98,
+        ),
+        curveEvidence: {
+          ...curveEvidence,
+          repeatedGridStructuralRescue: true,
+          repeatedGridChromaticPixelCount: cellInk,
+        },
+      });
+    }
+  }
+  if (
+    chromaticCellCount <
+      Math.ceil(expectedCellCount * 0.9) ||
+    waveformCellCount !== expectedCellCount ||
+    turningCellCount <
+      Math.ceil(expectedCellCount * 0.75)
+  ) {
+    return null;
+  }
+  return {
+    candidates,
+    anchorCount: measuredCandidates.length,
+    occupiedCellCount: occupiedCells.size,
+    waveformCellCount,
+    turningCellCount,
+    expectedCellCount,
+    rows: rowFit.bands.length,
+    columns: columnFit.bands.length,
+    frameWidth: Math.round(columnFit.typicalSpan),
+    frameHeight: Math.round(rowFit.typicalSpan),
+    columnStep: columnFit.step,
+    rowStep: rowFit.step,
+    recoveryMode: "chromatic-repeated-lattice",
+    requireTurningTopologyOutsideGrid: true,
+  };
+}
+
+function recoverRepeatedWaveformGridCandidates(
+  measuredCandidates,
+  curveEvidenceMask,
+  curveColorMasks,
+  width,
+  height,
+  allowChromaticRecovery = true,
+) {
+  return (
+    recoverStrictRepeatedWaveformGridCandidates(
+      measuredCandidates,
+      curveEvidenceMask,
+      width,
+      height,
+    ) ??
+    (allowChromaticRecovery
+      ? recoverChromaticRepeatedWaveformGridCandidates(
+          measuredCandidates,
+          curveEvidenceMask,
+          curveColorMasks,
+          width,
+          height,
+        )
+      : null)
+  );
+}
+
+function isCredibleCandidateOutsideRepeatedGrid(
+  candidate,
+  requireTurningTopology = false,
+  repeatedGridRecovery = null,
+) {
   const evidence = candidate.curveEvidence;
+  const candidateWidth =
+    candidate.right - candidate.left + 1;
+  const candidateHeight =
+    candidate.bottom - candidate.top + 1;
+  const plausibleIndependentPanelSize =
+    !requireTurningTopology ||
+    !repeatedGridRecovery ||
+    (candidateWidth >= repeatedGridRecovery.frameWidth * 0.45 &&
+      candidateHeight >=
+        repeatedGridRecovery.frameHeight * 0.5);
+  const turningWaveformTopology =
+    evidence.localizedSinglePeak ||
+    evidence.segmentedWaveformTrace ||
+    (evidence.continuousCoverage >= 0.28 &&
+      evidence.directionChangeCount >= 2 &&
+      evidence.verticalVariation >= 0.075);
   return (
     evidence.valid &&
     !evidence.tableGridArtifact &&
     evidence.horizontalCoverage >= 0.42 &&
     evidence.verticalVariation >= 0.045 &&
     evidence.thinEnough !== false &&
-    (evidence.colorSeriesCount >= 1 ||
-      evidence.segmentedWaveformTrace ||
-      evidence.localizedSinglePeak ||
-      (evidence.continuousCoverage >= 0.3 &&
-        evidence.directionChangeCount >= 1))
+    plausibleIndependentPanelSize &&
+    (requireTurningTopology
+      ? turningWaveformTopology
+      : evidence.colorSeriesCount >= 1 ||
+        turningWaveformTopology ||
+        (evidence.continuousCoverage >= 0.3 &&
+          evidence.directionChangeCount >= 1))
   );
 }
 
@@ -8296,8 +8777,11 @@ export function detectChartPanelsFromMask(
     recoverRepeatedWaveformGridCandidates(
       measuredCandidates,
       curveEvidenceMask,
+      options.curveColorMasks,
       width,
       height,
+      !axisAlignedDocumentLattice.tableGridArtifact &&
+        !sharedFrameGridArtifact,
     );
   const candidatePool = repeatedGridRecovery
     ? [
@@ -8517,15 +9001,21 @@ export function detectChartPanelsFromMask(
         intersectionArea(deskewedPhysicalCandidate, candidate) /
           Math.max(1, area(candidate)) >=
           0.35;
+      const repeatedGridStructuralRescue =
+        candidate.repeatedGridStructuralRescue === true &&
+        candidate.curveEvidence
+          .repeatedGridStructuralRescue === true;
       return (
-        candidate.curveEvidence.valid &&
+        (candidate.curveEvidence.valid ||
+          repeatedGridStructuralRescue) &&
         !weakFramelessArtifact &&
         !weakUnframedSpatialOutline &&
         !weakMicroNearDominant &&
         !weakMicroInsideDeskewedFrame &&
-        !coveredByAxisAlignedTable &&
-        !coveredByRotatedTable &&
-        !coveredByLocalTable &&
+        (repeatedGridStructuralRescue ||
+          (!coveredByAxisAlignedTable &&
+            !coveredByRotatedTable &&
+            !coveredByLocalTable)) &&
         area(candidate) >=
           width * height *
             effectiveMinimumCandidateAreaRatio
@@ -8547,7 +9037,12 @@ export function detectChartPanelsFromMask(
             intersectionArea(recovered, candidate) >
             Math.min(area(recovered), area(candidate)) * 0.08,
         ) &&
-        isCredibleCandidateOutsideRepeatedGrid(candidate),
+        isCredibleCandidateOutsideRepeatedGrid(
+          candidate,
+          repeatedGridRecovery
+            .requireTurningTopologyOutsideGrid === true,
+          repeatedGridRecovery,
+        ),
     );
     candidates = [
       ...recoveredCandidates,
@@ -8689,6 +9184,14 @@ export function detectChartPanelsFromMask(
             candidate.curveEvidence.continuousCoverage,
           verticalVariation:
             candidate.curveEvidence.verticalVariation,
+          directionChangeCount:
+            candidate.curveEvidence.directionChangeCount ?? 0,
+          localizedSinglePeak:
+            candidate.curveEvidence.localizedSinglePeak === true,
+          segmentedWaveformTrace:
+            candidate.curveEvidence.segmentedWaveformTrace === true,
+          thinEnough:
+            candidate.curveEvidence.thinEnough !== false,
           colorSeriesCount:
             candidate.curveEvidence.colorSeriesCount ?? 0,
           tableGridArtifact:
@@ -8722,6 +9225,12 @@ export function detectChartPanelsFromMask(
             anchorCount: repeatedGridRecovery.anchorCount,
             occupiedCellCount:
               repeatedGridRecovery.occupiedCellCount,
+            waveformCellCount:
+              repeatedGridRecovery.waveformCellCount ??
+              repeatedGridRecovery.expectedCellCount,
+            turningCellCount:
+              repeatedGridRecovery.turningCellCount ??
+              repeatedGridRecovery.expectedCellCount,
             recoveredCellCount:
               repeatedGridRecovery.candidates.length,
             expectedCellCount:
@@ -8732,6 +9241,11 @@ export function detectChartPanelsFromMask(
             frameHeight: repeatedGridRecovery.frameHeight,
             columnStep: repeatedGridRecovery.columnStep,
             rowStep: repeatedGridRecovery.rowStep,
+            recoveryMode:
+              repeatedGridRecovery.recoveryMode ?? "strict",
+            requireTurningTopologyOutsideGrid:
+              repeatedGridRecovery
+                .requireTurningTopologyOutsideGrid === true,
           }
         : { applied: false },
       arbitraryWaveformRecovery: {

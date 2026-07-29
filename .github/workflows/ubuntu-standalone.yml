@@ -44,13 +44,16 @@ jobs:
         working-directory: web
         run: npm test
 
+      - name: Run standalone server tests
+        run: node --test local-server/tests/*.test.mjs
+
       - name: Package Windows x64 standalone application
         run: node local-server/package-windows.mjs
 
       - name: Verify Windows package and offline runtime
         run: >-
           node local-server/verify-windows-package.mjs
-          artifacts/windows/vth-similarity-windows-x64-v1.38.0.zip
+          artifacts/windows/vth-similarity-windows-x64-v1.39.0.zip
 
       - name: Package Ubuntu x64 standalone server
         run: node local-server/package-ubuntu.mjs
@@ -58,24 +61,24 @@ jobs:
       - name: Verify bundled runtime and start.sh
         run: >-
           node local-server/verify-ubuntu-package.mjs
-          artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.38.0.tar.gz
+          artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.39.0.tar.gz
 
       - name: Upload verified Windows package
         uses: actions/upload-artifact@v6
         with:
-          name: vth-similarity-windows-x64-v1.38.0
+          name: vth-similarity-windows-x64-v1.39.0
           if-no-files-found: error
           retention-days: 14
           path: |
-            artifacts/windows/vth-similarity-windows-x64-v1.38.0.zip
-            artifacts/windows/vth-similarity-windows-x64-v1.38.0.zip.sha256
+            artifacts/windows/vth-similarity-windows-x64-v1.39.0.zip
+            artifacts/windows/vth-similarity-windows-x64-v1.39.0.zip.sha256
 
       - name: Upload verified Ubuntu package
         uses: actions/upload-artifact@v6
         with:
-          name: vth-similarity-ubuntu-x64-v1.38.0
+          name: vth-similarity-ubuntu-x64-v1.39.0
           if-no-files-found: error
           retention-days: 14
           path: |
-            artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.38.0.tar.gz
-            artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.38.0.tar.gz.sha256
+            artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.39.0.tar.gz
+            artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.39.0.tar.gz.sha256

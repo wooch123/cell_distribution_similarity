@@ -17,6 +17,8 @@ import {
   alignedCurveSimilarity,
   clamp,
   descriptorFromProfile,
+  isValidStateCount,
+  resample,
   searchCorpus,
 } from "./vth-shape-core.mjs";
 
@@ -24,6 +26,9 @@ export const MAX_SIMILARITY_IMAGE_BYTES = 12 * 1024 * 1024;
 export const MAX_SIMILARITY_IMAGE_PIXELS = 8_000_000;
 export const MAX_SIMILARITY_RESULTS = 10;
 export const DEFAULT_SIMILARITY_RESULTS = 8;
+export const MIN_TRAINING_PROVENANCE_STATE_SIMILARITY = 0.985;
+export const MIN_TRAINING_CODEC_STABLE_SIMILARITY = 0.95;
+const MIN_TRAINING_STANDARD_CODEC_SIMILARITY = 0.97;
 export { MAXIMUM_CHART_PANELS };
 export const SUPPORTED_SIMILARITY_IMAGE_TYPES = [
   "image/png",
@@ -571,6 +576,160 @@ function waveformOnlySource(detected, panel, width, height) {
   );
 }
 
+function trainingProvenanceHypotheses(
+  analysis,
+  candidateKind,
+) {
+  const extractedSeries =
+    Array.isArray(analysis.series) && analysis.series.length
+      ? analysis.series
+      : [
+          {
+            seriesIndex: 0,
+            profile: analysis.profile,
+            descriptor: analysis.descriptor,
+            selected: true,
+          },
+        ];
+  const analysisHypotheses = [
+    ...extractedSeries.map((series, seriesIndex) => ({
+      profile: series.profile,
+      descriptor: series.descriptor,
+      candidateKind,
+      seriesIndex:
+        Number.isInteger(series.seriesIndex)
+          ? series.seriesIndex
+          : seriesIndex,
+    })),
+    ...(analysis.alternatives ?? []).map(
+      (alternative) => ({
+        ...alternative,
+        candidateKind: `${candidateKind}-alternative`,
+        seriesIndex:
+          Number.isInteger(analysis.selectedSeriesIndex)
+            ? analysis.selectedSeriesIndex
+            : 0,
+      }),
+    ),
+  ];
+  const profileTopologyHypotheses =
+    analysisHypotheses.flatMap((hypothesis) => {
+      const rebuiltDescriptor = descriptorFromProfile(
+        hypothesis.profile,
+      );
+      if (
+        rebuiltDescriptor.stateCount ===
+        hypothesis.descriptor?.stateCount
+      ) {
+        return [];
+      }
+      return [
+        {
+          ...hypothesis,
+          descriptor: rebuiltDescriptor,
+          candidateKind:
+            `${hypothesis.candidateKind}-profile-topology`,
+        },
+      ];
+    });
+  return {
+    extractedSeries,
+    hypotheses: [
+      ...analysisHypotheses,
+      ...profileTopologyHypotheses,
+    ],
+  };
+}
+
+function appendDistinctProvenanceHypotheses(
+  target,
+  candidates,
+) {
+  for (const candidate of candidates) {
+    if (
+      target.some(
+        (existing) =>
+          existing.descriptor?.stateCount ===
+            candidate.descriptor?.stateCount &&
+          alignedCurveSimilarity(
+            existing.profile,
+            candidate.profile,
+          ) >= 0.9999,
+      )
+    ) {
+      continue;
+    }
+    target.push(candidate);
+  }
+}
+
+function summarizeTrainingProvenanceMatch(
+  hypotheses,
+  normalizedProfile,
+  normalizedStateCount,
+) {
+  const scoredHypotheses = hypotheses.map((hypothesis) => ({
+    hypothesis,
+    similarity: alignedCurveSimilarity(
+      hypothesis.profile,
+      normalizedProfile,
+    ),
+  }));
+  const matchingStateSimilarity = Math.max(
+    0,
+    ...scoredHypotheses
+      .filter(
+        ({ hypothesis }) =>
+          hypothesis.descriptor?.stateCount ===
+          normalizedStateCount,
+      )
+      .map(({ similarity }) => similarity),
+  );
+  const acceptedHypotheses = scoredHypotheses.filter(
+    ({ hypothesis, similarity }) => {
+      const codecStateCount = Number(
+        hypothesis.descriptor?.stateCount,
+      );
+      const standardCodecStableMatch =
+        similarity >=
+          MIN_TRAINING_STANDARD_CODEC_SIMILARITY &&
+        isValidStateCount(codecStateCount) &&
+        Math.abs(
+          codecStateCount - normalizedStateCount,
+        ) <= 1;
+      const sevenNineCodecAliasMatch =
+        similarity >=
+          MIN_TRAINING_CODEC_STABLE_SIMILARITY &&
+        ((normalizedStateCount === 7 &&
+          codecStateCount === 9) ||
+          (normalizedStateCount === 9 &&
+            codecStateCount === 7));
+      return (
+        (codecStateCount === normalizedStateCount &&
+          similarity >=
+            MIN_TRAINING_PROVENANCE_STATE_SIMILARITY) ||
+        standardCodecStableMatch ||
+        sevenNineCodecAliasMatch
+      );
+    },
+  );
+  const authoritativeScoredHypothesis =
+    acceptedHypotheses.reduce(
+      (best, current) =>
+        !best || current.similarity > best.similarity
+          ? current
+          : best,
+      null,
+    );
+  return {
+    accepted: authoritativeScoredHypothesis !== null,
+    authoritativeScoredHypothesis,
+    matchingStateSimilarity,
+    profileSimilarity:
+      authoritativeScoredHypothesis?.similarity ?? 0,
+  };
+}
+
 /**
  * Verify that a ready-to-search training payload is backed by the submitted
  * source image rather than by caller-controlled Curve JSON alone.
@@ -602,9 +761,9 @@ export async function validateTrainingWaveformImage({
   const normalizedStateCount = Number(
     stateCount ?? suppliedDescriptor.stateCount,
   );
-  if (![2, 4, 8, 16].includes(normalizedStateCount)) {
+  if (!isValidStateCount(normalizedStateCount)) {
     throw new SimilarityApiError(
-      "학습 provenance의 State는 2, 4, 8 또는 16이어야 합니다.",
+      "학습 provenance의 State는 1~20 정수여야 합니다.",
       400,
       "invalid_training_profile",
     );
@@ -678,82 +837,104 @@ export async function validateTrainingWaveformImage({
     cropped.height,
     cropped.scale ?? decoded.scale,
   );
-  const extractedSeries =
-    Array.isArray(analysis.series) && analysis.series.length
-      ? analysis.series
-      : [
-          {
-            seriesIndex: 0,
-            profile: analysis.profile,
-            descriptor: analysis.descriptor,
-            selected: true,
-          },
-        ];
-  const hypotheses = [
-    ...extractedSeries.map((series, seriesIndex) => ({
-      profile: series.profile,
-      descriptor: series.descriptor,
-      seriesIndex:
-        Number.isInteger(series.seriesIndex)
-          ? series.seriesIndex
-          : seriesIndex,
-    })),
-    ...(analysis.alternatives ?? []).map((alternative) => ({
-      ...alternative,
-      seriesIndex:
-        Number.isInteger(analysis.selectedSeriesIndex)
-          ? analysis.selectedSeriesIndex
-          : 0,
-    })),
-  ];
-  const scoredHypotheses = hypotheses.map((hypothesis) => ({
-    hypothesis,
-    similarity: alignedCurveSimilarity(
-      hypothesis.profile,
-      normalizedProfile,
-    ),
-  }));
-  const matchingStateHypotheses = hypotheses.filter(
-    (hypothesis) =>
-      hypothesis.descriptor?.stateCount === normalizedStateCount,
+  const initial = trainingProvenanceHypotheses(
+    analysis,
+    "browser-raster",
   );
-  const matchingStateSimilarity = Math.max(
-    0,
-    ...matchingStateHypotheses.map((hypothesis) =>
-      alignedCurveSimilarity(
-        hypothesis.profile,
-        normalizedProfile,
+  const extractedSeries = initial.extractedSeries;
+  const hypotheses = [...initial.hypotheses];
+  let match = summarizeTrainingProvenanceMatch(
+    hypotheses,
+    normalizedProfile,
+    normalizedStateCount,
+  );
+
+  // JPEG antialiasing can move a shallow shoulder across a binary-mask
+  // threshold at one exact raster width. Only after the browser-sized fast
+  // path fails, retry the same already-isolated source at native resolution
+  // and one bounded high-resolution raster. These are independent
+  // source-derived Curve hypotheses; no similarity threshold is relaxed.
+  if (!match.accepted) {
+    const fallbackRasters = [
+      resizeRgb(
+        decoded.sourceData,
+        decoded.sourceWidth,
+        decoded.sourceHeight,
+        decoded.sourceWidth,
+        decoded.sourceHeight,
+        {
+          maximumScale: 1,
+          maximumPixels:
+            decoded.sourceWidth * decoded.sourceHeight,
+        },
       ),
-    ),
-  );
-  const codecStableSimilarity = Math.max(
-    0,
-    ...scoredHypotheses.map(({ similarity }) => similarity),
-  );
-  const minimumProvenanceSimilarity = 0.985;
-  const profileSimilarity = Math.max(
-    matchingStateSimilarity,
-    codecStableSimilarity >= minimumProvenanceSimilarity
-      ? codecStableSimilarity
-      : 0,
-  );
-  if (
-    matchingStateSimilarity < minimumProvenanceSimilarity &&
-    codecStableSimilarity < minimumProvenanceSimilarity
-  ) {
+      resizeRgb(
+        decoded.sourceData,
+        decoded.sourceWidth,
+        decoded.sourceHeight,
+        1700,
+        1200,
+        {
+          maximumScale: 16,
+          maximumPixels: 2_100_000,
+        },
+      ),
+    ];
+    const seenRasterSizes = new Set([
+      `${cropped.width}x${cropped.height}`,
+    ]);
+    for (
+      let index = 0;
+      index < fallbackRasters.length && !match.accepted;
+      index += 1
+    ) {
+      const raster = fallbackRasters[index];
+      const rasterKey = `${raster.width}x${raster.height}`;
+      if (seenRasterSizes.has(rasterKey)) continue;
+      seenRasterSizes.add(rasterKey);
+      const fallbackAnalysis = analyzeSimilarityPixels(
+        raster.data,
+        raster.width,
+        raster.height,
+        raster.scale ?? decoded.scale,
+      );
+      const fallback =
+        trainingProvenanceHypotheses(
+          fallbackAnalysis,
+          index === 0
+            ? "native-raster"
+            : "bounded-high-raster",
+        );
+      appendDistinctProvenanceHypotheses(
+        hypotheses,
+        fallback.hypotheses,
+      );
+      match = summarizeTrainingProvenanceMatch(
+        hypotheses,
+        normalizedProfile,
+        normalizedStateCount,
+      );
+    }
+  }
+
+  if (!match.accepted) {
     throw new SimilarityApiError(
       "학습 원본의 파형과 제출한 profile이 일치하지 않습니다.",
       422,
       "training_profile_image_mismatch",
     );
   }
-  const authoritativeHypothesis = scoredHypotheses.reduce(
-    (best, current) =>
-      current.similarity > best.similarity ? current : best,
-  ).hypothesis;
-  const authoritativeProfile = [
-    ...authoritativeHypothesis.profile,
-  ];
+  const {
+    authoritativeScoredHypothesis,
+    matchingStateSimilarity,
+    profileSimilarity,
+  } = match;
+  const authoritativeHypothesis =
+    authoritativeScoredHypothesis.hypothesis;
+  const authoritativeProfile = resample(
+    authoritativeHypothesis.profile,
+    256,
+  );
   const authoritativeDescriptor = descriptorFromProfile(
     authoritativeProfile,
   );
@@ -769,7 +950,8 @@ export async function validateTrainingWaveformImage({
     stateCount: normalizedStateCount,
     profileSimilarity,
     stateHypothesisMatched:
-      matchingStateSimilarity >= minimumProvenanceSimilarity,
+      matchingStateSimilarity >=
+      MIN_TRAINING_PROVENANCE_STATE_SIMILARITY,
     authoritativeProfile,
     authoritativeDescriptor: {
       ...authoritativeDescriptor,
@@ -973,6 +1155,45 @@ function queryForApi(
 ) {
   const structureDescriptor =
     credibleStructureDescriptor(analysis);
+  const peakCount =
+    structureDescriptor.peakLocations?.length ?? 0;
+  const valleyCount =
+    structureDescriptor.valleyLocations?.length ?? 0;
+  const expectedValleyCount = Math.max(0, peakCount - 1);
+  const orderedPeakValleyTopology =
+    structureDescriptor.peakWidths?.every(
+      (width) => Number.isFinite(width) && width > 0,
+    ) &&
+    structureDescriptor.peakLocations?.every(
+      (location, index, locations) =>
+        Number.isFinite(location) &&
+        (index === 0 || locations[index - 1] < location),
+    ) &&
+    structureDescriptor.valleyLocations?.every(
+      (location, index) =>
+        Number.isFinite(location) &&
+        structureDescriptor.peakLocations[index] < location &&
+        location <
+          structureDescriptor.peakLocations[index + 1],
+    ) &&
+    structureDescriptor.valleyPositionRatios?.every(
+      (ratio) =>
+        Number.isFinite(ratio) && ratio > 0 && ratio < 1,
+    );
+  const topologyConsistent =
+    structureDescriptor.stateCount === peakCount &&
+    structureDescriptor.peakWidths?.length === peakCount &&
+    valleyCount === expectedValleyCount &&
+    structureDescriptor.valleyHeights?.length ===
+      expectedValleyCount &&
+    structureDescriptor.valleyDepths?.length ===
+      expectedValleyCount &&
+    structureDescriptor.valleyPositionRatios?.length ===
+      expectedValleyCount &&
+    structureDescriptor.peakValleyDistances?.length ===
+      expectedValleyCount * 2 &&
+    structureDescriptor.tailSlopes?.length === 2 &&
+    orderedPeakValleyTopology === true;
   return {
     mimeType: contentTypeOnly(mimeType),
     sourceWidth,
@@ -982,6 +1203,9 @@ function queryForApi(
     stateCount: structureDescriptor.stateCount,
     observedStateCount:
       structureDescriptor.observedStateCount,
+    peakCount,
+    valleyCount,
+    topologyConsistent,
     regularized: Boolean(structureDescriptor.regularized),
     axesDetected: analysis.axesDetected,
     axisMode: analysis.axisMode,

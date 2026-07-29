@@ -1,10 +1,11 @@
 import { normalizeAnonymousCode } from "./vth-feedback-core.mjs";
+import { isValidStateCount } from "./vth-shape-core.mjs";
 
 export const SHARED_RELEVANCE_CONSENT_VERSION = "2026-07-27-v1";
 export const MAX_SHARED_RELEVANCE_REPORTS = 10_000;
 export const MAX_SHARED_RELEVANCE_REPORTS_PER_DAY = 50;
 
-const VALID_STATE_COUNTS = new Set([2, 4, 8, 16]);
+const SUPPORTED_CORPUS_STATE_COUNTS = new Set([2, 4, 8, 16]);
 const TOKEN_PATTERN = /^[a-zA-Z0-9_-]{32,128}$/;
 const CANDIDATE_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{1,127}$/;
 const SCORE_FIELDS = [
@@ -63,7 +64,7 @@ function sanitizeJudgment(value, index) {
     throw new Error(`judgments[${index}].rank가 올바르지 않습니다.`);
   }
   const stateCount = Number(value.state_count);
-  if (!VALID_STATE_COUNTS.has(stateCount)) {
+  if (!isValidStateCount(stateCount)) {
     throw new Error(`judgments[${index}].state_count가 올바르지 않습니다.`);
   }
   const scores = Object.fromEntries(
@@ -135,10 +136,8 @@ export function validateSharedRelevancePayload(payload) {
   const observedStateCount = Number(report.query?.observed_state_count);
   if (
     report.query?.y_scale !== "log10" ||
-    !VALID_STATE_COUNTS.has(detectedStateCount) ||
-    !Number.isInteger(observedStateCount) ||
-    observedStateCount < 1 ||
-    observedStateCount > 16
+    !isValidStateCount(detectedStateCount) ||
+    !isValidStateCount(observedStateCount)
   ) {
     throw new Error("Query의 로그 축 또는 State 정보가 올바르지 않습니다.");
   }
@@ -146,8 +145,8 @@ export function validateSharedRelevancePayload(payload) {
   const peakCount = descriptor?.peak_locations?.length;
   if (
     !Number.isInteger(peakCount) ||
-    peakCount < 2 ||
-    peakCount > detectedStateCount
+    peakCount < 1 ||
+    peakCount !== detectedStateCount
   ) {
     throw new Error("Query peak descriptor가 올바르지 않습니다.");
   }
@@ -190,11 +189,31 @@ export function validateSharedRelevancePayload(payload) {
     ),
     tail_slopes: numberArray(
       descriptor.tail_slopes,
-      valleyCount * 2,
+      2,
       "query.descriptor.tail_slopes",
     ),
     area: unitScore(descriptor.area, "query.descriptor.area"),
   };
+  if (
+    sanitizedDescriptor.peak_locations.some(
+      (location, index, locations) =>
+        index > 0 && location <= locations[index - 1],
+    ) ||
+    sanitizedDescriptor.peak_widths.some((width) => width <= 0) ||
+    sanitizedDescriptor.valley_locations.some(
+      (location, index) =>
+        location <= sanitizedDescriptor.peak_locations[index] ||
+        location >= sanitizedDescriptor.peak_locations[index + 1],
+    ) ||
+    sanitizedDescriptor.valley_position_ratios.some(
+      (ratio) => ratio <= 0 || ratio >= 1,
+    ) ||
+    sanitizedDescriptor.peak_valley_distances.some(
+      (distance) => distance <= 0,
+    )
+  ) {
+    throw new Error("Query peak/valley 위상 순서가 올바르지 않습니다.");
+  }
   if (
     !Array.isArray(report.judgments) ||
     report.judgments.length < 1 ||
@@ -218,7 +237,9 @@ export function validateSharedRelevancePayload(payload) {
     candidateCount < 1 ||
     candidateCount > 12_000 ||
     !stateCounts.length ||
-    stateCounts.some((value) => !VALID_STATE_COUNTS.has(value))
+    stateCounts.some(
+      (value) => !SUPPORTED_CORPUS_STATE_COUNTS.has(value),
+    )
   ) {
     throw new Error("검색 corpus 정보가 올바르지 않습니다.");
   }

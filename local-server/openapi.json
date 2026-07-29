@@ -462,6 +462,45 @@
       }
     },
     "schemas": {
+      "QueryAnalysis": {
+        "type": "object",
+        "required": [
+          "stateCount",
+          "observedStateCount",
+          "peakCount",
+          "valleyCount",
+          "topologyConsistent"
+        ],
+        "properties": {
+          "stateCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "description": "Physical State count represented by the materialized waveform peaks."
+          },
+          "observedStateCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "description": "Raw peak evidence before bounded artifact regularization."
+          },
+          "peakCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20
+          },
+          "valleyCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 19
+          },
+          "topologyConsistent": {
+            "type": "boolean",
+            "description": "True when State, peak, valley, distance, width and outer-tail array lengths satisfy the topology contract."
+          }
+        },
+        "additionalProperties": true
+      },
       "SimilaritySearchResponse": {
         "type": "object",
         "required": ["schemaVersion", "requestId", "service", "inputHandling", "warnings", "privacy", "model", "query", "candidateCount", "matchedCandidateCount", "processingMs", "results", "panelCount", "panelLayout", "panelDetection", "panels"],
@@ -522,7 +561,7 @@
             "type": "number"
           },
           "query": {
-            "type": "object"
+            "$ref": "#/components/schemas/QueryAnalysis"
           },
           "panelCount": {
             "type": "integer",
@@ -715,7 +754,7 @@
             }
           },
           "query": {
-            "type": "object"
+            "$ref": "#/components/schemas/QueryAnalysis"
           },
           "matchedCandidateCount": {
             "type": "integer"
@@ -756,7 +795,7 @@
             "minimum": 0
           },
           "query": {
-            "type": "object"
+            "$ref": "#/components/schemas/QueryAnalysis"
           },
           "matchedCandidateCount": {
             "type": "integer",
@@ -909,7 +948,67 @@
               "peakValleyDistances",
               "tailSlopes",
               "area"
-            ]
+            ],
+            "properties": {
+              "stateCount": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20
+              },
+              "observedStateCount": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20
+              },
+              "peakLocations": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20,
+                "items": { "type": "number", "minimum": 0, "maximum": 1 }
+              },
+              "peakWidths": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20,
+                "items": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+              },
+              "valleyHeights": {
+                "type": "array",
+                "maxItems": 19,
+                "items": { "type": "number", "minimum": 0, "maximum": 1 }
+              },
+              "valleyLocations": {
+                "type": "array",
+                "maxItems": 19,
+                "items": { "type": "number", "minimum": 0, "maximum": 1 }
+              },
+              "valleyDepths": {
+                "type": "array",
+                "maxItems": 19,
+                "items": { "type": "number", "minimum": 0, "maximum": 1 }
+              },
+              "valleyPositionRatios": {
+                "type": "array",
+                "maxItems": 19,
+                "items": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 }
+              },
+              "peakValleyDistances": {
+                "type": "array",
+                "maxItems": 38,
+                "items": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+              },
+              "tailSlopes": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": { "type": "number", "minimum": 0, "maximum": 1 }
+              },
+              "area": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1.5
+              }
+            }
           }
         }
       }

@@ -207,6 +207,45 @@
           "processing": { "type": "string", "example": "transient-memory-only" }
         }
       },
+      "QueryAnalysis": {
+        "type": "object",
+        "required": [
+          "stateCount",
+          "observedStateCount",
+          "peakCount",
+          "valleyCount",
+          "topologyConsistent"
+        ],
+        "properties": {
+          "stateCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "description": "Physical State count represented by the materialized waveform peaks."
+          },
+          "observedStateCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "description": "Raw peak evidence before bounded artifact regularization."
+          },
+          "peakCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20
+          },
+          "valleyCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 19
+          },
+          "topologyConsistent": {
+            "type": "boolean",
+            "description": "True when State, peak, valley, distance, width and outer-tail array lengths satisfy the topology contract."
+          }
+        },
+        "additionalProperties": true
+      },
       "SearchResponse": {
         "type": "object",
         "required": ["schemaVersion", "requestId", "service", "inputHandling", "warnings", "model", "query", "candidateCount", "matchedCandidateCount", "processingMs", "results", "panelCount", "panelLayout", "panelDetection", "panels"],
@@ -217,7 +256,7 @@
           "inputHandling": { "$ref": "#/components/schemas/InputHandling" },
           "warnings": { "type": "array", "items": { "$ref": "#/components/schemas/Warning" } },
           "model": { "type": "object", "additionalProperties": true },
-          "query": { "type": "object", "additionalProperties": true },
+          "query": { "$ref": "#/components/schemas/QueryAnalysis" },
           "candidateCount": { "type": "integer" },
           "matchedCandidateCount": { "type": "integer" },
           "processingMs": { "type": "number" },
@@ -330,7 +369,7 @@
             "minItems": 1,
             "items": { "$ref": "#/components/schemas/SeriesSearchResult" }
           },
-          "query": { "type": "object", "additionalProperties": true },
+          "query": { "$ref": "#/components/schemas/QueryAnalysis" },
           "matchedCandidateCount": { "type": "integer" },
           "results": {
             "type": "array",
@@ -364,7 +403,7 @@
             "type": "number",
             "minimum": 0
           },
-          "query": { "type": "object", "additionalProperties": true },
+          "query": { "$ref": "#/components/schemas/QueryAnalysis" },
           "matchedCandidateCount": { "type": "integer" },
           "results": {
             "type": "array",

@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-const VALID_STATE_COUNTS = new Set([2, 4, 8, 16]);
+const MIN_PHYSICAL_STATE_COUNT = 1;
+const MAX_PHYSICAL_STATE_COUNT = 20;
 const MIME_EXTENSIONS = new Map([
   ["image/png", ".png"],
   ["image/jpeg", ".jpg"],
@@ -38,6 +39,15 @@ function numberArray(value, expectedLength = null) {
   return result;
 }
 
+function isValidPhysicalStateCount(value) {
+  const stateCount = Number(value);
+  return (
+    Number.isInteger(stateCount) &&
+    stateCount >= MIN_PHYSICAL_STATE_COUNT &&
+    stateCount <= MAX_PHYSICAL_STATE_COUNT
+  );
+}
+
 function decodeImageDataUrl(value) {
   const match = /^data:(image\/(?:png|jpeg|webp));base64,([a-zA-Z0-9+/=\s]+)$/.exec(
     String(value || ""),
@@ -54,32 +64,84 @@ function decodeImageDataUrl(value) {
 
 function validateDescriptor(descriptor) {
   const stateCount = Number(descriptor?.stateCount);
-  const area = Number(descriptor?.area);
-  const fields = [
-    "peakLocations",
-    "peakWidths",
-    "valleyHeights",
-    "valleyLocations",
-    "valleyDepths",
-    "valleyPositionRatios",
-    "peakValleyDistances",
-    "tailSlopes",
-  ];
-  const arrays = Object.fromEntries(
-    fields.map((field) => [field, numberArray(descriptor?.[field])]),
+  const observedStateCount = Number(
+    descriptor?.observedStateCount ?? stateCount,
   );
+  const area = Number(descriptor?.area);
+  const valleyCount = stateCount - 1;
+  const arrays = {
+    peakLocations: numberArray(
+      descriptor?.peakLocations,
+      stateCount,
+    ),
+    peakWidths: numberArray(descriptor?.peakWidths, stateCount),
+    valleyHeights: numberArray(
+      descriptor?.valleyHeights,
+      valleyCount,
+    ),
+    valleyLocations: numberArray(
+      descriptor?.valleyLocations,
+      valleyCount,
+    ),
+    valleyDepths: numberArray(
+      descriptor?.valleyDepths,
+      valleyCount,
+    ),
+    valleyPositionRatios: numberArray(
+      descriptor?.valleyPositionRatios,
+      valleyCount,
+    ),
+    peakValleyDistances: numberArray(
+      descriptor?.peakValleyDistances,
+      valleyCount * 2,
+    ),
+    tailSlopes: numberArray(descriptor?.tailSlopes, 2),
+  };
+  const normalizedValues = [
+    arrays.peakLocations,
+    arrays.peakWidths,
+    arrays.valleyHeights,
+    arrays.valleyLocations,
+    arrays.valleyDepths,
+    arrays.valleyPositionRatios,
+    arrays.peakValleyDistances,
+    arrays.tailSlopes,
+  ];
   if (
-    !VALID_STATE_COUNTS.has(stateCount) ||
+    !isValidPhysicalStateCount(stateCount) ||
+    !isValidPhysicalStateCount(observedStateCount) ||
     !Number.isFinite(area) ||
-    Object.values(arrays).some((value) => value === null)
+    area < 0 ||
+    area > 1.5 ||
+    normalizedValues.some(
+      (values) =>
+        values === null ||
+        values.some((value) => value < 0 || value > 1.5),
+    ) ||
+    arrays.peakLocations.some(
+      (location, index, locations) =>
+        location > 1 ||
+        (index > 0 && location <= locations[index - 1]),
+    ) ||
+    arrays.peakWidths.some((width) => width <= 0 || width > 1) ||
+    arrays.valleyLocations.some(
+      (location, index) =>
+        location <= arrays.peakLocations[index] ||
+        location >= arrays.peakLocations[index + 1],
+    ) ||
+    arrays.valleyPositionRatios.some(
+      (ratio) => ratio <= 0 || ratio >= 1,
+    ) ||
+    arrays.peakValleyDistances.some(
+      (distance) => distance <= 0 || distance > 1,
+    ) ||
+    arrays.tailSlopes.some((slope) => slope > 1)
   ) {
     throw new Error("State와 Curve descriptor가 올바르지 않습니다.");
   }
   return {
     stateCount,
-    observedStateCount: Number(
-      descriptor.observedStateCount ?? stateCount,
-    ),
+    observedStateCount,
     regularized: Boolean(descriptor.regularized),
     ...arrays,
     area,
