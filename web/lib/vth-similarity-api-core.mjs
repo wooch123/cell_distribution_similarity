@@ -10,6 +10,10 @@ import { analyzeForegroundMasks } from "./vth-image-analysis-core.mjs";
 import { buildForegroundMasks } from "./vth-image-core.mjs";
 import { mergeCandidateSets } from "./vth-learning-core.mjs";
 import {
+  inputDiagnostic,
+  waveformFailureDiagnostic,
+} from "./vth-diagnostics-core.mjs";
+import {
   alignedCurveSimilarity,
   clamp,
   descriptorFromProfile,
@@ -27,11 +31,17 @@ export const SUPPORTED_SIMILARITY_IMAGE_TYPES = [
 ];
 
 export class SimilarityApiError extends Error {
-  constructor(message, status = 400, code = "invalid_request") {
+  constructor(
+    message,
+    status = 400,
+    code = "invalid_request",
+    details = undefined,
+  ) {
     super(message);
     this.name = "SimilarityApiError";
     this.status = status;
     this.code = code;
+    if (details) this.details = details;
   }
 }
 
@@ -45,6 +55,7 @@ function asUint8Array(value) {
     "이미지 바이트가 필요합니다.",
     400,
     "image_required",
+    inputDiagnostic("image_required"),
   );
 }
 
@@ -88,6 +99,7 @@ function decodeBase64(value) {
       "Base64 이미지 데이터가 올바르지 않습니다.",
       400,
       "invalid_image_data",
+      inputDiagnostic("decode_failed"),
     );
   }
   try {
@@ -98,6 +110,7 @@ function decodeBase64(value) {
       "Base64 이미지 데이터가 올바르지 않습니다.",
       400,
       "invalid_image_data",
+      inputDiagnostic("decode_failed"),
     );
   }
 }
@@ -112,6 +125,7 @@ function decodeImageDataUrl(value) {
       "imageDataUrl에는 PNG 또는 JPEG Base64 이미지가 필요합니다.",
       415,
       "unsupported_image_type",
+      inputDiagnostic("unsupported"),
     );
   }
   return {
@@ -128,6 +142,9 @@ function validateImagePayload(bytes, mimeType) {
       "검색 API는 PNG 또는 JPEG 이미지를 지원합니다.",
       415,
       "unsupported_image_type",
+      inputDiagnostic("unsupported", {
+        mimeType: normalizedMimeType,
+      }),
     );
   }
   if (!normalizedBytes.length) {
@@ -135,6 +152,7 @@ function validateImagePayload(bytes, mimeType) {
       "빈 이미지는 분석할 수 없습니다.",
       400,
       "image_required",
+      inputDiagnostic("image_required"),
     );
   }
   if (normalizedBytes.length > MAX_SIMILARITY_IMAGE_BYTES) {
@@ -142,6 +160,10 @@ function validateImagePayload(bytes, mimeType) {
       "검색 이미지는 12MB 이하여야 합니다.",
       413,
       "payload_too_large",
+      inputDiagnostic("resource_limit", {
+        byteLength: normalizedBytes.length,
+        maximumBytes: MAX_SIMILARITY_IMAGE_BYTES,
+      }),
     );
   }
   const isPng =
@@ -167,6 +189,9 @@ function validateImagePayload(bytes, mimeType) {
       "Content-Type과 실제 이미지 형식이 일치하지 않습니다.",
       422,
       "invalid_image",
+      inputDiagnostic("decode_failed", {
+        mimeType: normalizedMimeType,
+      }),
     );
   }
   if (isPng) {
@@ -191,9 +216,18 @@ function validateImageDimensions(width, height) {
     width * height > MAX_SIMILARITY_IMAGE_PIXELS
   ) {
     throw new SimilarityApiError(
-      "이미지 해상도는 최대 800만 픽셀까지 지원합니다.",
+      "기능상 차트 크기 제한과 별개로 안전한 디코딩은 800만 픽셀까지 지원합니다.",
       413,
       "image_dimensions_too_large",
+      inputDiagnostic("resource_limit", {
+        width,
+        height,
+        pixelCount:
+          Number.isFinite(width * height)
+            ? width * height
+            : undefined,
+        maximumPixels: MAX_SIMILARITY_IMAGE_PIXELS,
+      }),
     );
   }
 }
@@ -223,6 +257,7 @@ export async function parseSimilarityImageRequest(request) {
         "multipart/form-data의 image 파일이 필요합니다.",
         400,
         "image_required",
+        inputDiagnostic("image_required"),
       );
     }
     topKValue ??= typeof form.get("topK") === "string"
@@ -244,12 +279,26 @@ export async function parseSimilarityImageRequest(request) {
       );
     }
     topKValue ??= payload?.topK;
+    if (
+      typeof payload?.imageDataUrl !== "string" ||
+      !payload.imageDataUrl.trim()
+    ) {
+      throw new SimilarityApiError(
+        "JSON 요청에 imageDataUrl 이미지가 필요합니다.",
+        400,
+        "image_required",
+        inputDiagnostic("image_required"),
+      );
+    }
     image = decodeImageDataUrl(payload?.imageDataUrl);
   } else {
     throw new SimilarityApiError(
       "Content-Type은 image/png, image/jpeg, multipart/form-data 또는 application/json이어야 합니다.",
       415,
       "unsupported_content_type",
+      inputDiagnostic("unsupported", {
+        contentType: requestContentType,
+      }),
     );
   }
 
@@ -270,6 +319,9 @@ function pngRgb(decoded) {
       "1/2/4-bit 비팔레트 PNG는 지원하지 않습니다.",
       415,
       "unsupported_png_depth",
+      inputDiagnostic("unsupported", {
+        pngDepth: decoded.depth,
+      }),
     );
   }
 
@@ -405,6 +457,7 @@ async function decodeSimilarityImage(bytes, mimeType) {
       }`,
       422,
       "invalid_image",
+      inputDiagnostic("decode_failed"),
     );
   }
 
@@ -415,7 +468,7 @@ async function decodeSimilarityImage(bytes, mimeType) {
     1920,
     1200,
     {
-      maximumScale: 4,
+      maximumScale: 16,
       maximumPixels: 2_100_000,
     },
   );
@@ -467,12 +520,26 @@ export async function analyzeSimilarityImage(bytes, mimeType) {
   };
 }
 
-function distributionWaveformNotFound(message) {
+function distributionWaveformNotFound({
+  message,
+  detected,
+  decoded,
+  reason,
+} = {}) {
+  const details = waveformFailureDiagnostic(detected, {
+    reason,
+    message,
+    sourceWidth: decoded?.sourceWidth,
+    sourceHeight: decoded?.sourceHeight,
+    processedWidth: decoded?.width,
+    processedHeight: decoded?.height,
+    sourceScale: decoded?.scale,
+  });
   throw new SimilarityApiError(
-    message ??
-      "학습 원본에서 독립된 분포 파형 하나를 찾지 못했습니다.",
+    details.message,
     422,
     "distribution_waveform_not_found",
+    details,
   );
 }
 
@@ -551,6 +618,12 @@ export async function validateTrainingWaveformImage({
     3,
     { sourceScale: decoded.scale },
   );
+  if (!detected.panels.length) {
+    distributionWaveformNotFound({
+      detected,
+      decoded,
+    });
+  }
   if (
     detected.panels.length !== 1 ||
     !waveformOnlySource(
@@ -560,9 +633,13 @@ export async function validateTrainingWaveformImage({
       decoded.height,
     )
   ) {
-    distributionWaveformNotFound(
-      "학습 원본에는 다른 텍스트·표·도형 없이 분포 파형 하나만 있어야 합니다.",
-    );
+    distributionWaveformNotFound({
+      message:
+        "학습 원본에는 다른 텍스트·표·도형 없이 분포 파형 하나만 있어야 합니다.",
+      detected,
+      decoded,
+      reason: "candidates_ambiguous",
+    });
   }
 
   const panel = detected.panels[0];
@@ -585,7 +662,7 @@ export async function validateTrainingWaveformImage({
     1100,
     720,
     {
-      maximumScale: 4,
+      maximumScale: 16,
       maximumPixels: 800_000,
     },
   );
@@ -601,12 +678,33 @@ export async function validateTrainingWaveformImage({
     cropped.height,
     cropped.scale ?? decoded.scale,
   );
+  const extractedSeries =
+    Array.isArray(analysis.series) && analysis.series.length
+      ? analysis.series
+      : [
+          {
+            seriesIndex: 0,
+            profile: analysis.profile,
+            descriptor: analysis.descriptor,
+            selected: true,
+          },
+        ];
   const hypotheses = [
-    {
-      profile: analysis.profile,
-      descriptor: analysis.descriptor,
-    },
-    ...(analysis.alternatives ?? []),
+    ...extractedSeries.map((series, seriesIndex) => ({
+      profile: series.profile,
+      descriptor: series.descriptor,
+      seriesIndex:
+        Number.isInteger(series.seriesIndex)
+          ? series.seriesIndex
+          : seriesIndex,
+    })),
+    ...(analysis.alternatives ?? []).map((alternative) => ({
+      ...alternative,
+      seriesIndex:
+        Number.isInteger(analysis.selectedSeriesIndex)
+          ? analysis.selectedSeriesIndex
+          : 0,
+    })),
   ];
   const scoredHypotheses = hypotheses.map((hypothesis) => ({
     hypothesis,
@@ -662,6 +760,9 @@ export async function validateTrainingWaveformImage({
 
   return {
     panelCount: 1,
+    seriesCount: extractedSeries.length,
+    matchedSeriesIndex:
+      authoritativeHypothesis.seriesIndex ?? 0,
     fallbackUsed: Boolean(detected.fallbackUsed),
     detectionReason: panel.detectionReason,
     sourceBounds,
@@ -711,7 +812,7 @@ function sourceResolutionPanelPixels(decoded, sourceBounds) {
     900,
     600,
     {
-      maximumScale: 4,
+      maximumScale: 16,
       maximumPixels: 540_000,
     },
   );
@@ -806,6 +907,41 @@ function queryForApi(
   };
 }
 
+function normalizedAnalysisSeries(analysis) {
+  const declared =
+    Array.isArray(analysis.series) && analysis.series.length
+      ? analysis.series
+      : [
+          {
+            seriesIndex: 0,
+            sourceIndex: 0,
+            profile: analysis.profile,
+            descriptor: analysis.descriptor,
+            irregularityScore:
+              analysis.distributionSelection.irregularityScore,
+            separationMode:
+              analysis.preprocessing.distributionSeparationMode ??
+              "single",
+            selected: true,
+          },
+        ];
+  const selectedByFlag = declared.findIndex(
+    (series) => series.selected === true,
+  );
+  const selectedSeriesIndex =
+    Number.isInteger(analysis.selectedSeriesIndex) &&
+    analysis.selectedSeriesIndex >= 0 &&
+    analysis.selectedSeriesIndex < declared.length
+      ? analysis.selectedSeriesIndex
+      : selectedByFlag >= 0
+        ? selectedByFlag
+        : 0;
+  return {
+    series: declared,
+    selectedSeriesIndex,
+  };
+}
+
 function sourcePanelBounds(
   panel,
   processedWidth,
@@ -890,11 +1026,10 @@ export async function searchSimilarityImage({
     { sourceScale: decoded.scale },
   );
   if (!detected.panels.length) {
-    throw new SimilarityApiError(
-      "분포 파형을 찾지 못했습니다. 텍스트·표·빈 좌표계·사각형 및 설명 도형은 분석 대상에서 제외됩니다.",
-      422,
-      "distribution_waveform_not_found",
-    );
+    distributionWaveformNotFound({
+      detected,
+      decoded,
+    });
   }
   // Only the verified whole-image fallback keeps the complete input. A
   // geometric or frameless singleton is cropped as well, so nearby prose,
@@ -937,14 +1072,64 @@ export async function searchSimilarityImage({
       cropped.height,
       cropped.scale ?? decoded.scale,
     );
-    const ranked = searchCorpus(
-      analysis.profile,
-      analysis.descriptor,
-      candidates,
-      corpus.reranker,
-      analysis.alternatives,
-      corpus.dualEncoder,
-    );
+    const {
+      series,
+      selectedSeriesIndex,
+    } = normalizedAnalysisSeries(analysis);
+    const seriesResults = series.map((seriesAnalysis, seriesIndex) => {
+      const selected = seriesIndex === selectedSeriesIndex;
+      const alternatives = selected
+        ? analysis.alternatives
+        : [];
+      const ranked = searchCorpus(
+        seriesAnalysis.profile,
+        seriesAnalysis.descriptor,
+        candidates,
+        corpus.reranker,
+        alternatives,
+        corpus.dualEncoder,
+      );
+      const query = queryForApi(
+        {
+          ...analysis,
+          profile: seriesAnalysis.profile,
+          descriptor: seriesAnalysis.descriptor,
+          alternatives,
+          distributionSelection: {
+            ...analysis.distributionSelection,
+            selectedIndex:
+              seriesAnalysis.sourceIndex ?? seriesIndex,
+            irregularityScore:
+              seriesAnalysis.irregularityScore ??
+              analysis.distributionSelection.irregularityScore,
+          },
+        },
+        mimeType,
+        sourceBounds.width,
+        sourceBounds.height,
+        cropped.width,
+        cropped.height,
+      );
+      return {
+        seriesIndex,
+        sourceIndex:
+          seriesAnalysis.sourceIndex ?? seriesIndex,
+        selected,
+        separationMode:
+          seriesAnalysis.separationMode ?? "single",
+        irregularityScore: rounded(
+          seriesAnalysis.irregularityScore ??
+            analysis.distributionSelection.irregularityScore,
+        ),
+        query,
+        matchedCandidateCount: ranked.length,
+        results: ranked
+          .slice(0, safeTopK)
+          .map((result) => resultForApi(result, origin)),
+      };
+    });
+    const selectedSeries =
+      seriesResults[selectedSeriesIndex] ?? seriesResults[0];
     return {
       panelIndex,
       bounds: {
@@ -964,18 +1149,15 @@ export async function searchSimilarityImage({
       confidence: rounded(panel.confidence),
       detectionReason: panel.detectionReason,
       axisMode: panel.axisMode,
-      query: queryForApi(
-        analysis,
-        mimeType,
-        sourceBounds.width,
-        sourceBounds.height,
-        cropped.width,
-        cropped.height,
-      ),
-      matchedCandidateCount: ranked.length,
-      results: ranked
-        .slice(0, safeTopK)
-        .map((result) => resultForApi(result, origin)),
+      seriesCount: seriesResults.length,
+      selectedSeriesIndex,
+      series: seriesResults,
+      // Compatibility fields continue to mirror the representative (the
+      // most-irregular distribution when several color traces coexist).
+      query: selectedSeries.query,
+      matchedCandidateCount:
+        selectedSeries.matchedCandidateCount,
+      results: selectedSeries.results,
     };
   });
   const primary = panelResults[0];

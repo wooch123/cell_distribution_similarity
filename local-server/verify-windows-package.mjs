@@ -11,6 +11,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import {
+  colorSeriesVerificationPng,
+  verifyColorSeriesSearch,
+} from "./color-series-verification.mjs";
 import { nonDistributionPng } from "./non-distribution-fixture.mjs";
 
 function run(command, args) {
@@ -253,7 +257,13 @@ async function verifyService(packageDirectory, validationDirectory) {
     assert(
       nonDistributionResponse.status === 422 &&
         nonDistribution.error?.code ===
-          "distribution_waveform_not_found",
+          "distribution_waveform_not_found" &&
+        nonDistribution.error?.reasonCode ===
+          "table_lattice_dominant" &&
+        nonDistribution.error?.details?.diagnosticCode ===
+          "VTH-DETECT-TABLE-LATTICE" &&
+        nonDistribution.error?.details?.diagnostics
+          ?.tableLatticeDominant === true,
       "Packaged API did not reject table and diagram-only content.",
     );
     assert(
@@ -261,6 +271,19 @@ async function verifyService(packageDirectory, validationDirectory) {
         similarity.results[1].score >= similarity.results[2].score,
       "Packaged similarity results are not score-sorted.",
     );
+    const colorSeriesResponse = await fetch(
+      `${baseUrl}/api/v1/similarity-search?topK=2`,
+      {
+        method: "POST",
+        headers: { "content-type": "image/png" },
+        body: colorSeriesVerificationPng(),
+      },
+    );
+    assert(
+      colorSeriesResponse.status === 200,
+      "Packaged color-series search did not return 200.",
+    );
+    verifyColorSeriesSearch(await colorSeriesResponse.json(), 2);
 
     const bundledMultiChartSamplePath = path.join(
       packageDirectory,
@@ -605,7 +628,8 @@ async function main() {
         readme.includes("4/8-State 분포") &&
         readme.includes("랜덤 멀티 차트 분석") &&
         readme.includes("선택 원본 패널") &&
-        readme.includes("정규화 추출 Curve"),
+        readme.includes("정규화 추출 Curve") &&
+        readme.includes("색상 시리즈"),
       "Offline operation is not documented.",
     );
     assert(
@@ -619,7 +643,7 @@ async function main() {
       ),
     );
     assert(
-      manifest.version === "1.35.0" &&
+      manifest.version === "1.36.0" &&
         manifest.platform === "windows-x64" &&
         manifest.network?.mode === "offline-loopback-only" &&
         manifest.network?.externalNetworkAllowed === false &&
@@ -627,6 +651,9 @@ async function main() {
         manifest.bundled?.model === true &&
         manifest.bundled?.multiChartPanelSplitting === true &&
         manifest.bundled?.multiChartMaximumPanels === 30 &&
+        manifest.bundled?.colorSeriesSeparation === true &&
+        manifest.bundled?.similarityRanking ===
+          "per-panel-per-series" &&
         manifest.bundled?.multiChartSample?.path ===
           "site/client/samples/vnand-ppt-12-chart-sample.png" &&
         manifest.bundled?.multiChartSample?.panelCount === 12 &&

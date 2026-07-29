@@ -5,7 +5,7 @@ export function boundedUiRasterScale(
     maximumWidth = 1920,
     maximumHeight = 1200,
     maximumPixels = 2_100_000,
-    maximumScale = 4,
+    maximumScale = 16,
     upscaleBelowDimension = 360,
   } = {},
 ) {

@@ -1598,12 +1598,20 @@ export function measureChartCurveEvidence(
     singlePeakMonotonicity >= 0.97 &&
     traceSmoothness >= 0.68 &&
     roundedApexScore >= 0.45;
+  const lowResolutionRoundedApexLoss =
+    baseSinglePeakShape &&
+    singlePeakMonotonicity >= 0.97 &&
+    traceSmoothness >= 0.95 &&
+    linearDeviation >= 0.12 &&
+    leftArmLinearDeviation >= 0.04 &&
+    rightArmLinearDeviation >= 0.04;
   const smoothSinglePeakShape =
     baseSinglePeakShape &&
     ((singlePeakMonotonicity >= 0.82 &&
       traceSmoothness >= 0.92 &&
       roundedApexScore >= 0.1) ||
-      logScaleParabolicPeak);
+      logScaleParabolicPeak ||
+      lowResolutionRoundedApexLoss);
   const straightSidedApex =
     baseSinglePeakShape &&
     leftArmSpan >= 5 &&
@@ -1635,7 +1643,12 @@ export function measureChartCurveEvidence(
     continuousCoverage >= 0.08 &&
     verticalVariation >= 0.08 &&
     linearDeviation >= 0.02 &&
-    residualDensity <= 0.1 &&
+    (residualDensity <= 0.1 ||
+      (residualDensity <= 0.17 &&
+        horizontalCoverage >= 0.8 &&
+        curvedSegmentCoverage >= 0.75 &&
+        verticalVariation >= 0.2 &&
+        linearDeviation >= 0.045)) &&
     thinEnough &&
     !sharpSinglePeakArtifact;
   const segmentedWaveformTrace =
@@ -1785,6 +1798,7 @@ export function measureChartCurveEvidence(
     verticalVariation,
     localizedSinglePeak,
     logScaleParabolicPeak,
+    lowResolutionRoundedApexLoss,
     fullWidthTrace,
     segmentedShallowTrace,
     segmentedWaveformTrace,
@@ -1820,6 +1834,256 @@ export function measureChartCurveEvidence(
     residualDensity,
     meanPixelsPerActiveColumn,
   };
+}
+
+/**
+ * A union of two or more overlapping colored traces can look vertically dense
+ * or fragmented to the single-path waveform gate. Measure each chromatic mask
+ * independently and admit the physical plot frame when at least two colors
+ * each form a coherent, near-full-width distribution. Short legend swatches,
+ * differently colored State segments and colored table cells do not satisfy
+ * the full-width continuity constraints.
+ */
+function buildAchromaticCurveResidual(
+  curveEvidenceMask,
+  curveColorMasks,
+  width,
+) {
+  if (
+    !curveEvidenceMask ||
+    !Array.isArray(curveColorMasks) ||
+    !curveColorMasks.length
+  ) {
+    return null;
+  }
+  const height = Math.floor(
+    curveEvidenceMask.length / Math.max(1, width),
+  );
+  const chromaticExclusion = new Uint8Array(
+    curveEvidenceMask.length,
+  );
+  for (const colorMask of curveColorMasks) {
+    if (colorMask.length !== curveEvidenceMask.length) continue;
+    for (let index = 0; index < colorMask.length; index += 1) {
+      if (!colorMask[index]) continue;
+      const x = index % width;
+      const y = Math.floor(index / width);
+      for (
+        let localY = Math.max(0, y - 1);
+        localY <= Math.min(height - 1, y + 1);
+        localY += 1
+      ) {
+        for (
+          let localX = Math.max(0, x - 1);
+          localX <= Math.min(width - 1, x + 1);
+          localX += 1
+        ) {
+          chromaticExclusion[localY * width + localX] = 1;
+        }
+      }
+    }
+  }
+  const residual = new Uint8Array(curveEvidenceMask.length);
+  for (let index = 0; index < residual.length; index += 1) {
+    if (
+      curveEvidenceMask[index] &&
+      !chromaticExclusion[index]
+    ) {
+      residual[index] = 1;
+    }
+  }
+  return residual;
+}
+
+function measureColorSeriesCurveEvidence(
+  candidate,
+  curveColorMasks,
+  achromaticCurveMask,
+  width,
+) {
+  if (!Array.isArray(curveColorMasks)) {
+    return {
+      seriesCount: 0,
+      evidences: [],
+      score: 0,
+    };
+  }
+  const colorEvidences = curveColorMasks
+    .map((mask, sourceIndex) => ({
+      sourceIndex,
+      evidence: measureChartCurveEvidence(
+        candidate,
+        mask,
+        width,
+      ),
+    }))
+    .filter(
+      ({ evidence }) =>
+        evidence.valid &&
+        !evidence.tableGridArtifact &&
+        evidence.horizontalCoverage >= 0.62 &&
+        evidence.continuousCoverage >= 0.5 &&
+        evidence.verticalVariation >= 0.045 &&
+        evidence.thinEnough,
+    );
+  const chromaticUnionMask = new Uint8Array(
+    curveColorMasks[0]?.length ?? 0,
+  );
+  for (const colorMask of curveColorMasks) {
+    if (colorMask.length !== chromaticUnionMask.length) continue;
+    for (let index = 0; index < colorMask.length; index += 1) {
+      if (colorMask[index]) chromaticUnionMask[index] = 1;
+    }
+  }
+  const chromaticUnionEvidence =
+    !colorEvidences.length && chromaticUnionMask.length
+      ? measureChartCurveEvidence(
+          candidate,
+          chromaticUnionMask,
+          width,
+        )
+      : null;
+  const validChromaticUnionEvidence =
+    chromaticUnionEvidence?.valid &&
+    !chromaticUnionEvidence.tableGridArtifact &&
+    chromaticUnionEvidence.horizontalCoverage >= 0.62 &&
+    chromaticUnionEvidence.continuousCoverage >= 0.5 &&
+    chromaticUnionEvidence.verticalVariation >= 0.045 &&
+    chromaticUnionEvidence.thinEnough
+      ? chromaticUnionEvidence
+      : null;
+  const chromaticEvidences = validChromaticUnionEvidence
+    ? [
+        {
+          sourceIndex: 0,
+          separationMode: "chromatic-union",
+          evidence: validChromaticUnionEvidence,
+        },
+      ]
+    : colorEvidences;
+  const achromaticEvidence = achromaticCurveMask
+    ? measureChartCurveEvidence(
+        candidate,
+        achromaticCurveMask,
+        width,
+      )
+    : null;
+  const validAchromaticEvidence =
+    chromaticEvidences.length >= 1 &&
+    achromaticEvidence?.valid &&
+    !achromaticEvidence.tableGridArtifact &&
+    achromaticEvidence.horizontalCoverage >= 0.62 &&
+    achromaticEvidence.continuousCoverage >= 0.5 &&
+    achromaticEvidence.verticalVariation >= 0.045 &&
+    achromaticEvidence.thinEnough
+      ? achromaticEvidence
+      : null;
+  const evidences = validAchromaticEvidence
+    ? [
+        ...chromaticEvidences,
+        {
+          sourceIndex: curveColorMasks.length,
+          separationMode: "achromatic",
+          evidence: validAchromaticEvidence,
+        },
+      ]
+    : chromaticEvidences;
+  return {
+    seriesCount: evidences.length,
+    evidences,
+    score: evidences.length
+      ? evidences.reduce(
+          (sum, { evidence }) => sum + evidence.score,
+          0,
+        ) / evidences.length
+      : 0,
+  };
+}
+
+function measureWholeImageSeriesEvidence(
+  broadMask,
+  salientMask,
+  curveEvidenceMask,
+  curveColorMasks,
+  width,
+  height,
+) {
+  if (
+    !curveEvidenceMask ||
+    !Array.isArray(curveColorMasks) ||
+    !curveColorMasks.length
+  ) {
+    return null;
+  }
+  const wholeImageCandidate = {
+    left: 0,
+    top: 0,
+    right: width - 1,
+    bottom: height - 1,
+    axisMode: "content",
+  };
+  const originalAchromaticCurveMask =
+    buildAchromaticCurveResidual(
+      curveEvidenceMask,
+      curveColorMasks,
+      width,
+    );
+  const originalEvidence =
+    measureColorSeriesCurveEvidence(
+      wholeImageCandidate,
+      curveColorMasks,
+      originalAchromaticCurveMask,
+      width,
+    );
+  const deskewed = deskewForegroundMasks(
+    broadMask,
+    salientMask ?? broadMask,
+    width,
+    height,
+    curveEvidenceMask,
+  );
+  if (!deskewed.applied) {
+    return originalEvidence.seriesCount >= 2
+      ? {
+          ...originalEvidence,
+          angle: 0,
+          applied: false,
+        }
+      : null;
+  }
+  const rotatedColorMasks = curveColorMasks.map((mask) =>
+    rotateBinaryMask(
+      mask,
+      width,
+      height,
+      deskewed.angle,
+    ),
+  );
+  const achromaticCurveMask =
+    buildAchromaticCurveResidual(
+      deskewed.rawCurveSalientMask,
+      rotatedColorMasks,
+      width,
+    );
+  const deskewedEvidence = {
+    ...measureColorSeriesCurveEvidence(
+      wholeImageCandidate,
+      rotatedColorMasks,
+      achromaticCurveMask,
+      width,
+    ),
+    angle: deskewed.angle,
+    applied: true,
+  };
+  return deskewedEvidence.seriesCount >= 2
+    ? deskewedEvidence
+    : originalEvidence.seriesCount >= 2
+      ? {
+          ...originalEvidence,
+          angle: 0,
+          applied: false,
+        }
+      : null;
 }
 
 function dominantLineBands(
@@ -3480,6 +3744,10 @@ export function detectChartPanelsFromMask(
   ) {
     throw new Error("패널 검출용 이미지 크기 또는 마스크가 올바르지 않습니다.");
   }
+  let foregroundPixelCount = 0;
+  for (let index = 0; index < width * height; index += 1) {
+    if (mask[index]) foregroundPixelCount += 1;
+  }
   const minimumAreaRatio =
     options.minimumPanelAreaRatio ??
     DEFAULT_MINIMUM_PANEL_AREA_RATIO;
@@ -3490,11 +3758,11 @@ export function detectChartPanelsFromMask(
     options.minimumPanelHeightRatio ??
     DEFAULT_MINIMUM_PANEL_HEIGHT_RATIO;
   const minimumWidth = Math.max(
-    20,
+    4,
     Math.round(width * minimumWidthRatio),
   );
   const minimumHeight = Math.max(
-    16,
+    4,
     Math.round(height * minimumHeightRatio),
   );
   const compactMinimumAreaRatio =
@@ -3504,7 +3772,7 @@ export function detectChartPanelsFromMask(
       COMPACT_MINIMUM_PANEL_AREA_RATIO,
     );
   const compactMinimumWidth = Math.max(
-    16,
+    3,
     Math.round(
       width *
         (options.compactMinimumPanelWidthRatio ??
@@ -3515,7 +3783,7 @@ export function detectChartPanelsFromMask(
     ),
   );
   const compactMinimumHeight = Math.max(
-    12,
+    3,
     Math.round(
       height *
         (options.compactMinimumPanelHeightRatio ??
@@ -3668,14 +3936,47 @@ export function detectChartPanelsFromMask(
     height,
     compactMinimumAreaRatio,
   );
+  const achromaticCurveMask =
+    buildAchromaticCurveResidual(
+      curveEvidenceMask,
+      options.curveColorMasks,
+      width,
+    );
   const measuredCandidates = geometricCandidates.map((candidate) => {
-    const curveEvidence =
+    const broadCurveEvidence =
       candidate.curveEvidence ??
       measureChartCurveEvidence(
         candidate,
         curveEvidenceMask,
         width,
       );
+    const colorSeriesEvidence =
+      measureColorSeriesCurveEvidence(
+        candidate,
+        options.curveColorMasks,
+        achromaticCurveMask,
+        width,
+      );
+    const colorSeriesRescue =
+      colorSeriesEvidence.seriesCount >= 2 ||
+      (colorSeriesEvidence.seriesCount >= 1 &&
+        candidate.axisMode !== "content" &&
+        !axisAlignedDocumentLattice.tableGridArtifact &&
+        !sharedFrameGridArtifact);
+    const curveEvidence = colorSeriesRescue
+      ? {
+          ...broadCurveEvidence,
+          valid: true,
+          score: Math.max(
+            broadCurveEvidence.score,
+            colorSeriesEvidence.score,
+          ),
+          colorSeriesCount:
+            colorSeriesEvidence.seriesCount,
+          colorSeriesEvidence:
+            colorSeriesEvidence.evidences,
+        }
+      : broadCurveEvidence;
     return {
       ...candidate,
       confidence: clamp(
@@ -3754,6 +4055,7 @@ export function detectChartPanelsFromMask(
         (candidate.top + candidate.bottom) / 2;
       const coveredByAxisAlignedTable =
         axisAlignedDocumentLattice.tableGridArtifact &&
+        (candidate.curveEvidence.colorSeriesCount ?? 0) < 2 &&
         latticeBounds &&
         ((centerX >= latticeBounds.left &&
           centerX <= latticeBounds.right &&
@@ -3780,6 +4082,111 @@ export function detectChartPanelsFromMask(
     (framelessUsed
       ? framelessDetection.rejectedComponentCount
       : 0);
+  const detectionDiagnostics = () => {
+    const validMeasuredCandidates = measuredCandidates.filter(
+      (candidate) => candidate.curveEvidence.valid,
+    );
+    const ambiguousCandidateCount =
+      validMeasuredCandidates.filter(
+        (candidate) => !candidates.includes(candidate),
+      ).length;
+    return {
+      foregroundPixelCount,
+      foregroundRatio:
+        foregroundPixelCount / Math.max(1, width * height),
+      geometricCandidateCount: measuredCandidates.length,
+      validCandidateCount: candidates.length,
+      rejectedCandidateCount:
+        measuredCandidates.length - candidates.length,
+      ambiguousCandidateCount,
+      candidateSummaries: candidates
+        .slice(0, MAXIMUM_CHART_PANELS)
+        .map((candidate) => ({
+          areaRatio:
+            area(candidate) / Math.max(1, width * height),
+          confidence: candidate.confidence,
+          axisMode: candidate.axisMode,
+          detectionReason: candidate.detectionReason,
+        })),
+      tableLatticeDominant: {
+        axisAligned:
+          axisAlignedDocumentLattice.tableGridArtifact,
+        sharedFrame: sharedFrameGridArtifact,
+        rotated: Boolean(
+          rotatedDocumentTableGridArtifact,
+        ),
+      },
+      lowResolutionRecoveryApplied:
+        recovered.repairedPixelCount > 0,
+      sourceScale: Math.max(
+        1,
+        Number(options.sourceScale) || 1,
+      ),
+    };
+  };
+  const maximumCandidateAreaRatio = candidates.reduce(
+    (maximum, candidate) =>
+      Math.max(
+        maximum,
+        area(candidate) / Math.max(1, width * height),
+      ),
+    0,
+  );
+  const wholeImageSeriesEvidence =
+    maximumCandidateAreaRatio < 0.22
+      ? measureWholeImageSeriesEvidence(
+          mask,
+          edgeEvidenceMask ?? mask,
+          curveEvidenceMask,
+          options.curveColorMasks,
+          width,
+          height,
+        )
+      : null;
+  if (
+    wholeImageSeriesEvidence?.applied === true &&
+    wholeImageSeriesEvidence.seriesCount >= 2
+  ) {
+    // Mild rotation can fragment a full plot frame into several tiny L-axis
+    // false candidates. Multiple independently coherent full-width series are
+    // stronger evidence for one physical chart, so retain the source image and
+    // let the shared analysis core deskew and separate its traces.
+    return {
+      panels: [
+        {
+          index: 0,
+          left: 0,
+          top: 0,
+          right: width - 1,
+          bottom: height - 1,
+          x: 0,
+          y: 0,
+          width,
+          height,
+          confidence: clamp(
+            0.24 + wholeImageSeriesEvidence.score * 0.3,
+            0.24,
+            0.55,
+          ),
+          detectionReason: "whole-image-fallback",
+          mode: "content",
+          axisMode: "content",
+        },
+      ],
+      layout: { rows: 1, columns: 1 },
+      fallbackUsed: true,
+      detectedPanelCount: candidates.length,
+      rejectedNonChartCount,
+      truncated: false,
+      maxPanels: MAXIMUM_CHART_PANELS,
+      diagnostics: detectionDiagnostics(),
+      lowResolutionRecovery: {
+        applied: recovered.repairedPixelCount > 0,
+        maximumGap: recovered.maximumGap,
+        repairedPixelCount: recovered.repairedPixelCount,
+      },
+    };
+  }
 
   if (!candidates.length && options.fallbackToWholeImage !== false) {
     // A slightly rotated plot can hide its waveform behind a long diagonal
@@ -3852,6 +4259,7 @@ export function detectChartPanelsFromMask(
         rejectedNonChartCount,
         truncated: false,
         maxPanels: MAXIMUM_CHART_PANELS,
+        diagnostics: detectionDiagnostics(),
         lowResolutionRecovery: {
           applied: recovered.repairedPixelCount > 0,
           maximumGap: recovered.maximumGap,
@@ -3878,11 +4286,105 @@ export function detectChartPanelsFromMask(
     rejectedNonChartCount,
     truncated: candidates.length > selected.length,
     maxPanels: MAXIMUM_CHART_PANELS,
+    diagnostics: detectionDiagnostics(),
     lowResolutionRecovery: {
       applied: recovered.repairedPixelCount > 0,
       maximumGap: recovered.maximumGap,
       repairedPixelCount: recovered.repairedPixelCount,
     },
+  };
+}
+
+function adaptivePanelDetectionScale(width, height) {
+  // Preserve native topology for ordinary screenshots: enlarging an already
+  // readable 600–900 px document can thicken two-pixel gutters until adjacent
+  // plots merge. Multiscale enlargement is reserved for true thumbnails.
+  if (width >= 480 || height >= 270) return 1;
+  const requestedScale = Math.max(
+    1,
+    960 / Math.max(1, width),
+    540 / Math.max(1, height),
+  );
+  const pixelSafeScale = Math.sqrt(
+    2_100_000 / Math.max(1, width * height),
+  );
+  return Math.max(
+    1,
+    Math.min(16, requestedScale, pixelSafeScale),
+  );
+}
+
+function upscaleInterleavedNearest(
+  pixels,
+  width,
+  height,
+  channels,
+  scale,
+) {
+  const targetWidth = Math.max(1, Math.round(width * scale));
+  const targetHeight = Math.max(1, Math.round(height * scale));
+  const output = new Uint8Array(
+    targetWidth * targetHeight * channels,
+  );
+  for (let y = 0; y < targetHeight; y += 1) {
+    const sourceY = Math.min(
+      height - 1,
+      Math.floor(y / scale),
+    );
+    for (let x = 0; x < targetWidth; x += 1) {
+      const sourceX = Math.min(
+        width - 1,
+        Math.floor(x / scale),
+      );
+      const sourceOffset =
+        (sourceY * width + sourceX) * channels;
+      const targetOffset =
+        (y * targetWidth + x) * channels;
+      for (let channel = 0; channel < channels; channel += 1) {
+        output[targetOffset + channel] =
+          pixels[sourceOffset + channel];
+      }
+    }
+  }
+  return {
+    pixels: output,
+    width: targetWidth,
+    height: targetHeight,
+  };
+}
+
+function panelBoundsAtSourceScale(
+  panel,
+  scale,
+  width,
+  height,
+) {
+  const left = Math.max(
+    0,
+    Math.floor(panel.left / scale),
+  );
+  const top = Math.max(
+    0,
+    Math.floor(panel.top / scale),
+  );
+  const right = Math.min(
+    width - 1,
+    Math.ceil((panel.right + 1) / scale) - 1,
+  );
+  const bottom = Math.min(
+    height - 1,
+    Math.ceil((panel.bottom + 1) / scale) - 1,
+  );
+  return {
+    ...panel,
+    left,
+    top,
+    right,
+    bottom,
+    x: left,
+    y: top,
+    width: right - left + 1,
+    height: bottom - top + 1,
   };
 }
 
@@ -3899,7 +4401,7 @@ export function detectChartPanelsFromMask(
  * @param {number} width
  * @param {number} height
  * @param {3 | 4} [channels]
- * @param {{sourceScale?: number; maximumLineGap?: number}} [options]
+ * @param {{sourceScale?: number; maximumLineGap?: number; adaptiveUpscale?: boolean}} [options]
  * @returns {{
  *   panels: Array<{
  *     index: number;
@@ -3938,6 +4440,108 @@ export function detectChartPanels(
   if (![3, 4].includes(inferredChannels)) {
     throw new Error("패널 검출에는 RGB 또는 RGBA 픽셀이 필요합니다.");
   }
+  const adaptiveScale =
+    options.adaptiveUpscale === false
+      ? 1
+      : adaptivePanelDetectionScale(width, height);
+  if (adaptiveScale > 1.05) {
+    const sourceScaleResult = detectChartPanels(
+      rgb,
+      width,
+      height,
+      inferredChannels,
+      {
+        ...options,
+        adaptiveUpscale: false,
+        sourceScale:
+          Math.max(
+            1,
+            Number(options.sourceScale) || 1,
+          ) * adaptiveScale,
+      },
+    );
+    const enlarged = upscaleInterleavedNearest(
+      rgb,
+      width,
+      height,
+      inferredChannels,
+      adaptiveScale,
+    );
+    const enlargedResult = detectChartPanels(
+      enlarged.pixels,
+      enlarged.width,
+      enlarged.height,
+      inferredChannels,
+      {
+        ...options,
+        adaptiveUpscale: false,
+        sourceScale:
+          Math.max(
+            1,
+            Number(options.sourceScale) || 1,
+          ) * adaptiveScale,
+      },
+    );
+    const mappedEnlargedResult = {
+      ...enlargedResult,
+      panels: enlargedResult.panels.map((panel) =>
+        panelBoundsAtSourceScale(
+          panel,
+          adaptiveScale,
+          width,
+          height,
+        ),
+      ),
+      diagnostics: {
+        ...(enlargedResult.diagnostics ?? {}),
+        adaptiveUpscaleApplied: true,
+        adaptiveScale,
+        sourceSize: [width, height],
+        analysisSize: [
+          enlarged.width,
+          enlarged.height,
+        ],
+      },
+    };
+    const sourceIndependentPanelCount =
+      sourceScaleResult.panels.filter(
+        (panel) =>
+          panel.detectionReason !== "whole-image-fallback",
+      ).length;
+    const enlargedIndependentPanelCount =
+      mappedEnlargedResult.panels.filter(
+        (panel) =>
+          panel.detectionReason !== "whole-image-fallback",
+      ).length;
+    const selectedResult =
+      sourceIndependentPanelCount >= 2 &&
+      sourceIndependentPanelCount >
+        enlargedIndependentPanelCount
+        ? sourceScaleResult
+        : mappedEnlargedResult;
+    return {
+      ...selectedResult,
+      diagnostics: {
+        ...(selectedResult.diagnostics ?? {}),
+        adaptiveUpscaleApplied:
+          selectedResult === mappedEnlargedResult,
+        adaptiveScale,
+        sourceSize: [width, height],
+        analysisSize:
+          selectedResult === mappedEnlargedResult
+            ? [enlarged.width, enlarged.height]
+            : [width, height],
+        multiScaleSelection:
+          selectedResult === mappedEnlargedResult
+            ? "adaptive"
+            : "source",
+        sourceScalePanelCount:
+          sourceScaleResult.panels.length,
+        adaptiveScalePanelCount:
+          mappedEnlargedResult.panels.length,
+      },
+    };
+  }
   const {
     broadMask,
     salientMask,
@@ -3952,13 +4556,44 @@ export function detectChartPanels(
       sourceScale: options.sourceScale,
     },
   );
-  return detectChartPanelsFromMask(broadMask, width, height, {
-    edgeEvidenceMask: salientMask,
-    curveEvidenceMask: curveSalientMask,
-    curveColorMasks,
-    maximumLineGap: options.maximumLineGap,
-    sourceScale: options.sourceScale,
-  });
+  const detected = detectChartPanelsFromMask(
+    broadMask,
+    width,
+    height,
+    {
+      edgeEvidenceMask: salientMask,
+      curveEvidenceMask: curveSalientMask,
+      curveColorMasks,
+      maximumLineGap: options.maximumLineGap,
+      sourceScale: options.sourceScale,
+    },
+  );
+  const detectorDiagnostics = detected.diagnostics ?? {};
+  return {
+    ...detected,
+    diagnostics: {
+      ...detectorDiagnostics,
+      noForeground:
+        detectorDiagnostics.foregroundPixelCount === 0,
+      measuredCandidateCount:
+        detectorDiagnostics.geometricCandidateCount ??
+        detectorDiagnostics.measuredCandidateCount ??
+        (detected.detectedPanelCount ?? 0) +
+          (detected.rejectedNonChartCount ?? 0),
+      lowResolutionRecoveryApplied:
+        detectorDiagnostics.lowResolutionRecoveryApplied ??
+        detected.lowResolutionRecovery?.applied ??
+        false,
+      repairedPixelCount:
+        detectorDiagnostics.repairedPixelCount ??
+        detected.lowResolutionRecovery?.repairedPixelCount ??
+        0,
+      adaptiveUpscaleApplied: false,
+      adaptiveScale: 1,
+      sourceSize: [width, height],
+      analysisSize: [width, height],
+    },
+  };
 }
 
 /**

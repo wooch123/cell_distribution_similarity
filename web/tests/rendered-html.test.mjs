@@ -126,7 +126,7 @@ test("server-renders the VTH similarity product", async () => {
   assert.match(html, /WINDOWS X64 · FULL OFFLINE/);
   assert.match(html, /UBUNTU X64 · WEB SERVER/);
   assert.match(html, /외부 Web 서버 다운로드/);
-  assert.match(html, /ENGINE V3\.5/);
+  assert.match(html, /ENGINE V3\.6/);
   assert.match(html, /WAVEFORM-ONLY/);
   assert.match(html, /30-PANEL MAX/);
   assert.match(
@@ -207,6 +207,15 @@ test("public shared ready ingestion rejects a non-waveform source before storage
     payload.error.code,
     "distribution_waveform_not_found",
   );
+  assert.equal(
+    payload.error.reasonCode,
+    "table_lattice_dominant",
+  );
+  assert.equal(
+    payload.error.details.diagnosticCode,
+    "VTH-DETECT-TABLE-LATTICE",
+  );
+  assert.ok(payload.error.details.action);
 });
 
 test("stacks the source panel above a wide, shallow normalized Curve", async () => {
@@ -336,24 +345,24 @@ async function verifyStandalonePackageDownload({
 
 test("ships the verified Windows standalone package as a web download", async () => {
   await verifyStandalonePackageDownload({
-    manifestFileName: "windows-package-v1.35.0.json",
+    manifestFileName: "windows-package-v1.36.0.json",
     checksumFileName: "vth-similarity-windows-x64.sha256",
-    expectedVersion: "1.35.0",
+    expectedVersion: "1.36.0",
     expectedFileName: "vth-similarity-windows-x64.zip",
     expectedDownloadFileName:
-      "vth-similarity-windows-x64-v1.35.0.zip",
+      "vth-similarity-windows-x64-v1.36.0.zip",
     assemble: assembleWindowsPackage,
   });
 });
 
 test("ships the verified Ubuntu external Web server package as a web download", async () => {
   await verifyStandalonePackageDownload({
-    manifestFileName: "ubuntu-package-v1.35.0.json",
+    manifestFileName: "ubuntu-package-v1.36.0.json",
     checksumFileName: "vth-similarity-ubuntu-x64.sha256",
-    expectedVersion: "1.35.0",
+    expectedVersion: "1.36.0",
     expectedFileName: "vth-similarity-ubuntu-x64.tar.gz",
     expectedDownloadFileName:
-      "vth-similarity-ubuntu-x64-v1.35.0.tar.gz",
+      "vth-similarity-ubuntu-x64-v1.36.0.tar.gz",
     assemble: assembleUbuntuPackage,
   });
 });
@@ -626,7 +635,7 @@ test("shares standardized candidates and anonymous relevance labels centrally", 
   assert.match(source, /boundedRasterScale/);
   assert.match(source, /무작위 배치·저해상도/);
   assert.match(source, /비차트 자동 제외/);
-  assert.match(source, /텍스트·표·빈 좌표계·사각형 및 설명 도형/);
+  assert.match(source, /텍스트.*표.*빈 좌표계.*설명 도형/s);
   assert.match(source, /analyzeForegroundMasks/);
   assert.match(source, /detectChartPanels/);
   assert.match(source, /extractChartProfiles/);
@@ -644,7 +653,17 @@ test("shares standardized candidates and anonymous relevance labels centrally", 
   assert.match(source, /Curve 검증/);
   assert.match(source, /panelExtractionQuality/);
   assert.match(source, /분리 차트.*개 모두/s);
-  assert.match(source, /각각 독립 후보로 저장합니다/);
+  assert.match(
+    source,
+    /차트 내부의 색상별 시리즈.*각각 독립\s+후보로 저장합니다/s,
+  );
+  assert.match(source, /seriesCount/);
+  assert.match(source, /selectedSeriesIndex/);
+  assert.match(source, /색상별 시리즈 분리/);
+  assert.match(source, /픽셀 크기 자동 정규화/);
+  assert.match(source, /VTH_DIAGNOSTIC_CODES/);
+  assert.match(source, /원인별 오류 코드 안내/);
+  assert.match(source, /diagnosticDisplayMessage/);
   assert.match(source, /analysisBusyRef/);
   assert.match(source, /learningBusyRef/);
   assert.match(source, /feedbackSubmissionRef/);
@@ -676,7 +695,10 @@ test("shares standardized candidates and anonymous relevance labels centrally", 
   assert.match(source, /coreSearchCorpus/);
   assert.match(source, /LABEL×/);
   assert.match(source, /범례·주석 라벨 제거 후 Curve 복원/);
-  assert.match(source, /URL\.createObjectURL\(extracted\.previewBlob\)/);
+  assert.match(
+    source,
+    /URL\.createObjectURL\(\s*extracted\.previewBlob,\s*\)/s,
+  );
   assert.match(source, /addEventListener\("paste", handlePaste\)/);
   assert.match(source, /clipboardData\?\.items/);
   assert.match(source, /fetch\("\/corpus-index\.json"\)/);

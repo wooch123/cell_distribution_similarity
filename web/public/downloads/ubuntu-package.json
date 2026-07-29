@@ -1,92 +1,92 @@
 {
   "schemaVersion": 1,
   "name": "유사 산포 검색 Ubuntu Linux x64 독립판",
-  "version": "1.35.0",
+  "version": "1.36.0",
   "platform": "ubuntu-linux-x64",
   "fileName": "vth-similarity-ubuntu-x64.tar.gz",
   "mediaType": "application/gzip",
   "delivery": "browser-assembled",
-  "bytes": 50503516,
-  "sha256": "d48992bb46459b2f33e5b0f32486bb518d1182d16f63f2aa7eaadae7a28e536e",
-  "generatedAt": "2026-07-29T08:08:23.736Z",
+  "bytes": 50531362,
+  "sha256": "44f014ebeec1b877413198577a68edec59da37ecaceeceaa633863f1cb76f11a",
+  "generatedAt": "2026-07-29T09:35:44.985Z",
   "parts": [
     {
       "index": 0,
-      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.35.0.tar.gz.part-000",
+      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.36.0.tar.gz.part-000",
       "bytes": 4194304,
-      "sha256": "c029f4de417748aa1de518422b2354171071c92b2952699a7e7793b03d54d0e7"
+      "sha256": "d19068ed504dcdffb641fa9f14246441e8552ebcb692eab6da56a85326a6c48f"
     },
     {
       "index": 1,
-      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.35.0.tar.gz.part-001",
+      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.36.0.tar.gz.part-001",
       "bytes": 4194304,
-      "sha256": "51472b7f99e1a26de1fbddfa6c66e7f62ca9be64ed5f591bcf8dff2f267e25f5"
+      "sha256": "c8a933ce140260bbb05ba1137c616572e0c54635bb620e7553c2a2d8f070ec6d"
     },
     {
       "index": 2,
-      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.35.0.tar.gz.part-002",
+      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.36.0.tar.gz.part-002",
       "bytes": 4194304,
-      "sha256": "15c69b723e3c6e8f0df384494a6751b147601dfb5c2178224de44fefedfbd613"
+      "sha256": "a1519c2a72a3440d773378091c6f123df3efb72df5c89baf62d389bd9717e096"
     },
     {
       "index": 3,
-      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.35.0.tar.gz.part-003",
+      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.36.0.tar.gz.part-003",
       "bytes": 4194304,
-      "sha256": "87c576befac967ccfcb839fd8e8f23f69c80e8a3d67048db8d9acf2a4519fac4"
+      "sha256": "49b0d70cf83f6cc51326c7a6d7285381501b98afaef3af0e86024858814f3dea"
     },
     {
       "index": 4,
-      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.35.0.tar.gz.part-004",
+      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.36.0.tar.gz.part-004",
       "bytes": 4194304,
-      "sha256": "1a8c80dcb0e1d760ab77ee33d3b0e0ab38cc72516c2561c901bb3cf8868a22a9"
+      "sha256": "b931ab71639777d3cf736e0d4e9cf3d383fb1bc9bda37a1ef3a8fe93668ce120"
     },
     {
       "index": 5,
-      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.35.0.tar.gz.part-005",
+      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.36.0.tar.gz.part-005",
       "bytes": 4194304,
-      "sha256": "46be4e1bdbbdb11500528f43540adcd2277e36c317fee903707070f6bfbfd8bd"
+      "sha256": "4500a83328eb58791dfee1aebb0d7baf617f6292324db846ad7c4f71da36e15c"
     },
     {
       "index": 6,
-      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.35.0.tar.gz.part-006",
+      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.36.0.tar.gz.part-006",
       "bytes": 4194304,
-      "sha256": "0254e65c492a97d61398d35bd70ae85babae7c964304f25c84720dfd5261fbae"
+      "sha256": "8a4da768ff86a25fdeca9f477686313562714dfe82fe96b7cbdc972b8294132a"
     },
     {
       "index": 7,
-      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.35.0.tar.gz.part-007",
+      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.36.0.tar.gz.part-007",
       "bytes": 4194304,
-      "sha256": "6acdc9392c4d0b09ffdff47804ac71e88e27a20ec7b9bdf4e4a74c5b5f0e63c8"
+      "sha256": "7f8a078fd978440298cbba0cde58ac002b41c72bde98deeab7a4fc7bb305c748"
     },
     {
       "index": 8,
-      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.35.0.tar.gz.part-008",
+      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.36.0.tar.gz.part-008",
       "bytes": 4194304,
-      "sha256": "aa4d25302af18912673b02edac0a74ced1d64f429d69a871f9999482e80aa115"
+      "sha256": "049166bb6c1b16595131dc14380d9f7fdb5630fb0adff67322125b79e0053a75"
     },
     {
       "index": 9,
-      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.35.0.tar.gz.part-009",
+      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.36.0.tar.gz.part-009",
       "bytes": 4194304,
-      "sha256": "e9ab9ac4a27bda7c6f1c509a788203ca14cabaeb27d958fce5fd4686c3a6c937"
+      "sha256": "04118e310827a0833f87442da83b838ca1cbcbacb56b9c1054430b097b1a9746"
     },
     {
       "index": 10,
-      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.35.0.tar.gz.part-010",
+      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.36.0.tar.gz.part-010",
       "bytes": 4194304,
-      "sha256": "513569bb946fff233964f93b1bbd5d97715d53fcf1457d62225163d0d0114255"
+      "sha256": "7031c7630653e12bd5994d2f03a674a02821280412bf1b727c548ff51fa68f18"
     },
     {
       "index": 11,
-      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.35.0.tar.gz.part-011",
+      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.36.0.tar.gz.part-011",
       "bytes": 4194304,
-      "sha256": "b92845b3825593dcf753abe33c01ea2079e14641342832d31233f02664314209"
+      "sha256": "09c9de4ba6f67e7d6b5c55e53c4aaa744148f6d96f6a4a12e668871f48f7e2e4"
     },
     {
       "index": 12,
-      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.35.0.tar.gz.part-012",
-      "bytes": 171868,
-      "sha256": "c335573fb97ab81e971ddfe48f6d8f73597e6a0be113f67d104f14321343ac8b"
+      "path": "/downloads/chunks/vth-similarity-ubuntu-x64-v1.36.0.tar.gz.part-012",
+      "bytes": 199714,
+      "sha256": "267f0a995bbcf8f4f63cf02a9fc79c5b17443bd09ac354fa475df5754b3b6b66"
     }
   ]
 }

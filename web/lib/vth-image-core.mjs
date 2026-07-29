@@ -143,10 +143,10 @@ export function buildForegroundMasks(
   const colorBins = Array(12).fill(null);
   const sourceScale = Math.max(
     1,
-    Math.min(4, Number(options.sourceScale) || 1),
+    Math.min(16, Number(options.sourceScale) || 1),
   );
   const lowResolutionRecoveryStrength =
-    (sourceScale - 1) / 3;
+    (Math.min(4, sourceScale) - 1) / 3;
   const strictLuminanceMinimum = Math.round(
     145 - 27 * lowResolutionRecoveryStrength,
   );

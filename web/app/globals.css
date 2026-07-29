@@ -447,6 +447,43 @@ button:disabled {
   padding: 10px 12px;
 }
 
+.error-message > p {
+  margin: 0;
+  white-space: pre-line;
+}
+
+.error-message details {
+  border-top: 1px solid rgba(117, 35, 23, 0.2);
+  margin-top: 8px;
+  padding-top: 7px;
+}
+
+.error-message summary {
+  cursor: pointer;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.error-message ul {
+  display: grid;
+  gap: 3px;
+  list-style: none;
+  margin: 7px 0 0;
+  padding: 0;
+}
+
+.error-message li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.error-message code {
+  font-size: 9px;
+  font-weight: 800;
+}
+
 .analysis-document {
   height: 100%;
   position: relative;

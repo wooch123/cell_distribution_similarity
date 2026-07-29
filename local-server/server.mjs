@@ -238,6 +238,12 @@ function errorResponse(error, status = 400) {
               ? "payload_too_large"
               : "invalid_request"),
         message: error?.message ?? String(error),
+        ...(error?.details?.reason
+          ? { reasonCode: error.details.reason }
+          : {}),
+        ...(error?.details
+          ? { details: error.details }
+          : {}),
       },
     },
     status,
@@ -270,13 +276,19 @@ function similarityErrorResponse(error) {
         message: expected
           ? error?.message ?? String(error)
           : "유사 산포 검색을 처리하지 못했습니다.",
+        ...(expected && error?.details?.reason
+          ? { reasonCode: error.details.reason }
+          : {}),
+        ...(expected && error?.details
+          ? { details: error.details }
+          : {}),
       },
     },
     status,
   );
 }
 
-function readNodeBody(request, limit) {
+function readNodeBody(request, limit, details = undefined) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
@@ -298,7 +310,11 @@ function readNodeBody(request, limit) {
             new Error(
               `요청 본문은 ${Math.round(limit / 1024 / 1024)}MB 이하여야 합니다.`,
             ),
-            { status: 413, code: "payload_too_large" },
+            {
+              status: 413,
+              code: "payload_too_large",
+              ...(details ? { details } : {}),
+            },
           ),
         );
         return;
@@ -307,6 +323,17 @@ function readNodeBody(request, limit) {
     });
     request.on("error", reject);
   });
+}
+
+function similarityRequestResourceDiagnostic(diagnostics = {}) {
+  return {
+    category: "input",
+    diagnosticCode: "VTH-IN-RESOURCE-LIMIT",
+    reason: "resource_limit",
+    action:
+      "검색 요청 본문은 20MB 이하, 실제 이미지 데이터는 12MB·800만 픽셀 이하로 입력해 주세요.",
+    diagnostics,
+  };
 }
 
 function requestHeaders(nodeRequest) {
@@ -609,13 +636,19 @@ export async function createVthServer(options = {}) {
             maxResults: 10,
             multiChart: {
               supported: true,
-              ranking: "per-panel",
+              ranking: "per-panel-per-series",
               placement: "arbitrary-non-overlapping",
               readingOrder: "top-to-bottom-left-to-right",
               lowResolutionRecovery: true,
               nonChartRejection: true,
               maxPanels: MAXIMUM_CHART_PANELS,
               overflowPolicy: "highest-confidence-then-reading-order",
+              colorSeries: {
+                supported: true,
+                ranking: "per-series",
+                styleInvariant: true,
+                representative: "most-irregular",
+              },
             },
             inputHandling: {
               stored: false,
@@ -655,9 +688,19 @@ export async function createVthServer(options = {}) {
             status: 413,
             code: "payload_too_large",
             message: "검색 요청 본문은 20MB 이하여야 합니다.",
+            details: similarityRequestResourceDiagnostic({
+              contentLength: declaredLength,
+              maximumRequestBytes: JSON_BODY_LIMIT,
+            }),
           });
         }
-        const bytes = await readNodeBody(nodeRequest, JSON_BODY_LIMIT);
+        const bytes = await readNodeBody(
+          nodeRequest,
+          JSON_BODY_LIMIT,
+          similarityRequestResourceDiagnostic({
+            maximumRequestBytes: JSON_BODY_LIMIT,
+          }),
+        );
         const engine = await loadSimilarityEngine();
         const apiRequest = new Request(requestUrl, {
           method: "POST",

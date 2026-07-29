@@ -13,6 +13,7 @@ import {
   MAX_SHARED_CANDIDATE_PAGE_SIZE,
   MAX_SHARED_CANDIDATES,
 } from "../../../../lib/vth-shared-training-core.mjs";
+import { inputDiagnostic } from "../../../../lib/vth-diagnostics-core.mjs";
 
 const API_NAME = "vth-similarity-search-api";
 const API_VERSION = 1;
@@ -45,6 +46,12 @@ function errorResponse(error: unknown) {
         error: {
           code: error.code,
           message: error.message,
+          ...(error.details?.reason
+            ? { reasonCode: error.details.reason }
+            : {}),
+          ...(error.details
+            ? { details: error.details }
+            : {}),
         },
       },
       error.status,
@@ -128,13 +135,19 @@ export async function GET() {
     maxResults: MAX_SIMILARITY_RESULTS,
     multiChart: {
       supported: true,
-      ranking: "per-panel",
+      ranking: "per-panel-per-series",
       placement: "arbitrary-non-overlapping",
       readingOrder: "top-to-bottom-left-to-right",
       lowResolutionRecovery: true,
       nonChartRejection: true,
       maxPanels: MAXIMUM_CHART_PANELS,
       overflowPolicy: "highest-confidence-then-reading-order",
+      colorSeries: {
+        supported: true,
+        ranking: "per-series",
+        styleInvariant: true,
+        representative: "most-irregular",
+      },
     },
     inputHandling: {
       stored: false,
@@ -152,6 +165,10 @@ export async function POST(request: Request) {
         "검색 요청 본문은 20MB 이하여야 합니다.",
         413,
         "payload_too_large",
+        inputDiagnostic("resource_limit", {
+          contentLength,
+          maximumRequestBytes: MAX_REQUEST_BODY_BYTES,
+        }),
       );
     }
 
@@ -162,6 +179,10 @@ export async function POST(request: Request) {
         "검색 요청 본문은 20MB 이하여야 합니다.",
         413,
         "payload_too_large",
+        inputDiagnostic("resource_limit", {
+          byteLength: requestBody.byteLength,
+          maximumRequestBytes: MAX_REQUEST_BODY_BYTES,
+        }),
       );
     }
     const parsed = await parseSimilarityImageRequest(

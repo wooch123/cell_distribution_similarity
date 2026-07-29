@@ -22,6 +22,12 @@ import {
 } from "../lib/vth-batch-learning-core.mjs";
 import { buildFeedbackPayload } from "../lib/vth-feedback-core.mjs";
 import {
+  diagnosticDisplayMessage,
+  inputDiagnostic,
+  VTH_DIAGNOSTIC_CODES,
+  waveformFailureDiagnostic,
+} from "../lib/vth-diagnostics-core.mjs";
+import {
   buildLearnedCandidate,
   buildSharedTrainingApiPayload,
   buildTrainingApiPayload,
@@ -172,8 +178,33 @@ type Analysis = {
   curveHypothesisCount: number;
   distributionCount: number;
   selectedDistributionIndex: number;
+  seriesIndex: number;
+  seriesCount: number;
+  selectedSeriesIndex: number;
+  seriesSeparationMode:
+    | "color"
+    | "achromatic"
+    | "geometry"
+    | "chromatic-union"
+    | "single";
   irregularityScore: number;
   removedLabelCount: number;
+};
+
+type ExtractedSeries = {
+  seriesIndex: number;
+  sourceIndex: number;
+  profile: number[];
+  descriptor: Descriptor;
+  irregularityScore: number;
+  observedColumnRatio: number;
+  separationMode:
+    | "color"
+    | "achromatic"
+    | "geometry"
+    | "chromatic-union"
+    | "single";
+  selected: boolean;
 };
 
 type ExpandedImage = {
@@ -186,6 +217,46 @@ type ShapeHypothesis = {
   profile: number[];
   descriptor: Descriptor;
 };
+
+type DiagnosticDetails = {
+  category: string;
+  diagnosticCode: string;
+  reason: string;
+  message?: string;
+  action?: string;
+  diagnostics?: Record<string, string | number | boolean>;
+};
+
+type DiagnosticError = Error & {
+  details: DiagnosticDetails;
+};
+
+function diagnosticError(
+  message: string,
+  details: DiagnosticDetails,
+): DiagnosticError {
+  const error = new Error(message) as DiagnosticError;
+  error.name = "VthAnalysisError";
+  error.details = details;
+  return error;
+}
+
+function inputErrorMessage(
+  message: string,
+  kind:
+    | "image_required"
+    | "unsupported"
+    | "decode_failed"
+    | "resource_limit",
+  diagnostics: Record<string, string | number | boolean> = {},
+) {
+  return diagnosticDisplayMessage(
+    diagnosticError(
+      message,
+      inputDiagnostic(kind, diagnostics) as DiagnosticDetails,
+    ),
+  );
+}
 
 type SearchResult = Candidate & {
   rank: number;
@@ -257,6 +328,17 @@ const RANDOM_MULTICHART_SAMPLES = [
 const CONTRIBUTOR_TOKEN_KEY = "vth-shared-contributor-token";
 const RELEVANCE_CONTRIBUTOR_TOKEN_KEY =
   "vth-shared-relevance-contributor-token";
+const ANALYSIS_ERROR_GUIDE = [
+  [VTH_DIAGNOSTIC_CODES.noForeground, "전경·대비 부족"],
+  [VTH_DIAGNOSTIC_CODES.lowResolution, "저해상도 복원 후 증거 부족"],
+  [VTH_DIAGNOSTIC_CODES.tableLattice, "표·격자 구조 우세"],
+  [VTH_DIAGNOSTIC_CODES.noWaveform, "peak·valley·tail 연속성 부족"],
+  [VTH_DIAGNOSTIC_CODES.candidatesRejected, "차트 후보 검증 탈락"],
+  [VTH_DIAGNOSTIC_CODES.candidatesAmbiguous, "후보 충돌·겹침"],
+  [VTH_DIAGNOSTIC_CODES.decodeFailed, "이미지 디코딩 실패"],
+  [VTH_DIAGNOSTIC_CODES.unsupported, "지원하지 않는 이미지 형식"],
+  [VTH_DIAGNOSTIC_CODES.resourceLimit, "안전 리소스 한도 초과"],
+] as const;
 
 function isStandaloneRuntime() {
   return (
@@ -287,8 +369,11 @@ function boundedRasterScale(
   maximumWidth: number,
   maximumHeight: number,
   maximumPixels: number,
-  maximumScale = 4,
+  maximumScale = 16,
 ) {
+  // Small PPT screenshots are enlarged only inside the bounded analysis
+  // raster. The source pixel dimensions themselves never exclude a chart;
+  // width, height and pixel-budget caps below only limit working memory.
   const allowedScale =
     Math.min(width, height) < 360 ? maximumScale : 1;
   return Math.min(
@@ -300,7 +385,25 @@ function boundedRasterScale(
 }
 
 async function extractChartProfiles(file: Blob) {
-  const bitmap = await createImageBitmap(file);
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    throw diagnosticError(
+      "이미지 픽셀을 읽지 못했습니다.",
+      inputDiagnostic(
+        "decode_failed",
+        {
+          byteLength: file.size,
+          mimeType: file.type,
+        },
+        {
+          action:
+            "손상되지 않은 PNG, JPG 또는 WEBP로 다시 저장한 뒤 입력해 주세요.",
+        },
+      ) as DiagnosticDetails,
+    );
+  }
   try {
     const documentScale = boundedRasterScale(
       bitmap.width,
@@ -362,8 +465,17 @@ async function extractChartProfiles(file: Blob) {
       maxPanels: number;
     };
     if (!detection.panels.length) {
-      throw new Error(
-        "분포 파형을 찾지 못했습니다. 텍스트·표·빈 좌표계·사각형 및 설명 도형은 검색과 학습에서 제외됩니다.",
+      const details = waveformFailureDiagnostic(detection, {
+        sourceWidth: bitmap.width,
+        sourceHeight: bitmap.height,
+        processedWidth: documentWidth,
+        processedHeight: documentHeight,
+        sourceScale: documentScale,
+      }) as DiagnosticDetails;
+      throw diagnosticError(
+        details.message ??
+          "분포 파형의 연속 형상을 확인하지 못했습니다.",
+        details,
       );
     }
     const multiplePanels = detection.panels.length > 1;
@@ -491,8 +603,11 @@ async function extractChartProfiles(file: Blob) {
           mode: "single" | "most-irregular";
           distributionCount: number;
           selectedIndex: number;
+          selectedSeriesIndex: number;
           irregularityScore: number;
         };
+        series: ExtractedSeries[];
+        selectedSeriesIndex: number;
         preprocessing: {
           primaryMask: {
             removedLabelComponents?: number;
@@ -740,6 +855,30 @@ function panelExtractionQuality(analysis: Analysis) {
     return "형상 일치";
   }
   return "확인 필요";
+}
+
+function chartSeriesSuffix({
+  panelIndex,
+  panelCount,
+  seriesIndex,
+  seriesCount,
+}: Pick<
+  Analysis,
+  "panelIndex" | "panelCount" | "seriesIndex" | "seriesCount"
+>) {
+  const parts = [];
+  if (panelCount > 1) {
+    parts.push(`차트 ${panelIndex + 1}/${panelCount}`);
+  }
+  if (seriesCount > 1) {
+    parts.push(`시리즈 ${seriesIndex + 1}/${seriesCount}`);
+  }
+  return parts.join(" · ");
+}
+
+function chartSeriesLabel(baseLabel: string, analysis: Analysis) {
+  const suffix = chartSeriesSuffix(analysis);
+  return suffix ? `${baseLabel} · ${suffix}` : baseLabel;
 }
 
 export function VthSearchApp() {
@@ -1080,11 +1219,26 @@ export function VthSearchApp() {
         return;
       }
       if (!isSupportedBatchImage(file)) {
-        setError("PNG, JPG 또는 WEBP 이미지 한 장을 선택해 주세요.");
+        setError(
+          inputErrorMessage(
+            "PNG, JPG 또는 WEBP 이미지 한 장을 선택해 주세요.",
+            "unsupported",
+            { mimeType: file.type || "unknown" },
+          ),
+        );
         return;
       }
       if (file.size > MAX_FILE_SIZE) {
-        setError("이미지는 12MB 이하만 분석할 수 있습니다.");
+        setError(
+          inputErrorMessage(
+            "안전한 디코딩 한도를 초과한 이미지입니다.",
+            "resource_limit",
+            {
+              byteLength: file.size,
+              maximumBytes: MAX_FILE_SIZE,
+            },
+          ),
+        );
         return;
       }
       if (!corpus) {
@@ -1105,52 +1259,80 @@ export function VthSearchApp() {
         const documentAnalysis = await extractChartProfiles(file);
         for (const [panelIndex, extracted] of
           documentAnalysis.panels.entries()) {
-          const analysisId = crypto.randomUUID();
-          const ranked = searchCorpus(
-            extracted.profile,
-            extracted.descriptor,
-            allCandidates,
-            corpus.reranker,
-            extracted.alternatives,
-            corpus.dualEncoder,
-          );
-          const imageUrl = URL.createObjectURL(extracted.previewBlob);
-          createdImageUrls.push(imageUrl);
-          nextPanelQueries.push({
-            analysis: {
-              id: analysisId,
-              fileName:
-                documentAnalysis.panels.length > 1
-                  ? `${file.name} · 차트 ${panelIndex + 1}/${documentAnalysis.panels.length}`
-                  : file.name,
-              imageUrl,
+          const series = extracted.series.length
+            ? extracted.series
+            : [
+                {
+                  seriesIndex: 0,
+                  sourceIndex: 0,
+                  profile: extracted.profile,
+                  descriptor: extracted.descriptor,
+                  irregularityScore:
+                    extracted.distributionSelection.irregularityScore,
+                  observedColumnRatio: 1,
+                  separationMode: "geometry" as const,
+                  selected: true,
+                },
+              ];
+          for (const extractedSeries of series) {
+            const analysisId = crypto.randomUUID();
+            const alternatives =
+              series.length === 1 ? extracted.alternatives : [];
+            const ranked = searchCorpus(
+              extractedSeries.profile,
+              extractedSeries.descriptor,
+              allCandidates,
+              corpus.reranker,
+              alternatives,
+              corpus.dualEncoder,
+            );
+            const imageUrl = URL.createObjectURL(
+              extracted.previewBlob,
+            );
+            createdImageUrls.push(imageUrl);
+            const suffix = chartSeriesSuffix({
               panelIndex,
               panelCount: documentAnalysis.panels.length,
-              detectedPanelCount: documentAnalysis.detectedPanelCount,
-              rejectedNonChartCount:
-                documentAnalysis.rejectedNonChartCount,
-              panelSelectionTruncated: documentAnalysis.truncated,
-              maxPanelCount: documentAnalysis.maxPanels,
-              panelBounds: extracted.panelBounds,
-              panelConfidence: extracted.panelConfidence,
-              panelMode: extracted.panelMode,
-              profile: extracted.profile,
-              descriptor: extracted.descriptor,
-              axesDetected: extracted.axesDetected,
-              processingMs: extracted.processingMs,
-              curveHypothesisCount: 1 + extracted.alternatives.length,
-              distributionCount:
-                extracted.distributionSelection.distributionCount,
-              selectedDistributionIndex:
-                extracted.distributionSelection.selectedIndex,
-              irregularityScore:
-                extracted.distributionSelection.irregularityScore,
-              removedLabelCount:
-                extracted.preprocessing.primaryMask.removedLabelComponents ??
-                0,
-            },
-            results: ranked,
-          });
+              seriesIndex: extractedSeries.seriesIndex,
+              seriesCount: series.length,
+            });
+            nextPanelQueries.push({
+              analysis: {
+                id: analysisId,
+                fileName: suffix ? `${file.name} · ${suffix}` : file.name,
+                imageUrl,
+                panelIndex,
+                panelCount: documentAnalysis.panels.length,
+                detectedPanelCount: documentAnalysis.detectedPanelCount,
+                rejectedNonChartCount:
+                  documentAnalysis.rejectedNonChartCount,
+                panelSelectionTruncated: documentAnalysis.truncated,
+                maxPanelCount: documentAnalysis.maxPanels,
+                panelBounds: extracted.panelBounds,
+                panelConfidence: extracted.panelConfidence,
+                panelMode: extracted.panelMode,
+                profile: extractedSeries.profile,
+                descriptor: extractedSeries.descriptor,
+                axesDetected: extracted.axesDetected,
+                processingMs: extracted.processingMs,
+                curveHypothesisCount: 1 + alternatives.length,
+                distributionCount: series.length,
+                selectedDistributionIndex:
+                  extracted.distributionSelection.selectedIndex,
+                seriesIndex: extractedSeries.seriesIndex,
+                seriesCount: series.length,
+                selectedSeriesIndex: extracted.selectedSeriesIndex,
+                seriesSeparationMode:
+                  extractedSeries.separationMode,
+                irregularityScore:
+                  extractedSeries.irregularityScore,
+                removedLabelCount:
+                  extracted.preprocessing.primaryMask
+                    .removedLabelComponents ?? 0,
+              },
+              results: ranked,
+            });
+          }
         }
         panelInteractionsRef.current = new Map(
           nextPanelQueries.map((panelQuery) => [
@@ -1188,7 +1370,7 @@ export function VthSearchApp() {
         }
         setError(
           caught instanceof Error
-            ? caught.message
+            ? diagnosticDisplayMessage(caught)
             : "그래프를 분석하지 못했습니다. 다른 이미지를 시도해 주세요.",
         );
       } finally {
@@ -1493,7 +1675,12 @@ export function VthSearchApp() {
       event.preventDefault();
       const blob = imageItem.getAsFile();
       if (!blob) {
-        setError("클립보드의 이미지를 읽지 못했습니다.");
+        setError(
+          inputErrorMessage(
+            "클립보드의 이미지를 읽지 못했습니다.",
+            "decode_failed",
+          ),
+        );
         return;
       }
       const extension =
@@ -1633,8 +1820,15 @@ export function VthSearchApp() {
       });
       const payload = await response.json();
       if (!response.ok || !payload?.sample) {
+        const failure =
+          payload?.error?.details?.diagnosticCode
+            ? diagnosticDisplayMessage({
+                message: payload.error.message,
+                details: payload.error.details,
+              })
+            : payload?.error?.message;
         throw new Error(
-          payload?.error?.message ||
+          failure ||
             `로컬 학습 저장에 실패했습니다 (${response.status}).`,
         );
       }
@@ -1698,8 +1892,15 @@ export function VthSearchApp() {
     );
     const payload = await response.json();
     if (!response.ok || !payload?.candidate) {
+      const failure =
+        payload?.error?.details?.diagnosticCode
+          ? diagnosticDisplayMessage({
+              message: payload.error.message,
+              details: payload.error.details,
+            })
+          : payload?.error?.message;
       throw new Error(
-        payload?.error?.message ||
+        failure ||
           `공용 학습 저장에 실패했습니다 (${response.status}).`,
       );
     }
@@ -1755,26 +1956,24 @@ export function VthSearchApp() {
         (isStandaloneRuntime() ? "내 VTH 분포" : "공용 VTH 분포");
       const outcomes = [];
       const failures: string[] = [];
-      for (const [panelIndex, panelQuery] of panelQueries.entries()) {
+      for (const [unitIndex, panelQuery] of panelQueries.entries()) {
         setLearningStatus(
           panelQueries.length > 1
-            ? `분리 차트 ${panelIndex + 1}/${panelQueries.length} 저장 중…`
+            ? `분리 데이터 ${unitIndex + 1}/${panelQueries.length} 저장 중…`
             : "현재 차트 저장 중…",
         );
         try {
           outcomes.push(
             await storeTrainingAnalysis(
               panelQuery.analysis,
-              panelQueries.length > 1
-                ? `${baseLabel} · 차트 ${panelIndex + 1}/${panelQueries.length}`
-                : baseLabel,
+              chartSeriesLabel(baseLabel, panelQuery.analysis),
             ),
           );
         } catch (caught) {
           failures.push(
             caught instanceof Error
               ? caught.message
-              : `차트 ${panelIndex + 1} 저장 실패`,
+              : `분리 데이터 ${unitIndex + 1} 저장 실패`,
           );
         }
       }
@@ -1799,7 +1998,7 @@ export function VthSearchApp() {
       }
       setLearningStatus(
         panelQueries.length > 1
-          ? `${panelQueries.length}개 차트를 개별 후보로 처리했습니다 · 신규 ${added}개` +
+          ? `${panelQueries.length}개 차트/색상 시리즈를 개별 후보로 처리했습니다 · 신규 ${added}개` +
               `${deduplicated ? ` · 중복 연결 ${deduplicated}개` : ""}` +
               `${failures.length ? ` · 실패 ${failures.length}개` : ""}`
           : deduplicated
@@ -1858,6 +2057,7 @@ export function VthSearchApp() {
           const documentAnalysis = await extractChartProfiles(file);
           const outcomes = [];
           const panelFailures: string[] = [];
+          let separatedSeriesCount = 0;
           const baseLabel = buildBatchTrainingLabel(
             trainingLabel,
             index,
@@ -1866,58 +2066,87 @@ export function VthSearchApp() {
           );
           for (const [panelIndex, extracted] of
             documentAnalysis.panels.entries()) {
-            const imageUrl = URL.createObjectURL(extracted.previewBlob);
-            try {
-              outcomes.push(
-                await storeTrainingAnalysis(
+            const series = extracted.series.length
+              ? extracted.series
+              : [
                   {
-                    id: crypto.randomUUID(),
-                    fileName:
-                      documentAnalysis.panels.length > 1
-                        ? `${file.name} · 차트 ${panelIndex + 1}/${documentAnalysis.panels.length}`
-                        : file.name,
-                    imageUrl,
-                    panelIndex,
-                    panelCount: documentAnalysis.panels.length,
-                    detectedPanelCount:
-                      documentAnalysis.detectedPanelCount,
-                    rejectedNonChartCount:
-                      documentAnalysis.rejectedNonChartCount,
-                    panelSelectionTruncated:
-                      documentAnalysis.truncated,
-                    maxPanelCount: documentAnalysis.maxPanels,
-                    panelBounds: extracted.panelBounds,
-                    panelConfidence: extracted.panelConfidence,
-                    panelMode: extracted.panelMode,
+                    seriesIndex: 0,
+                    sourceIndex: 0,
                     profile: extracted.profile,
                     descriptor: extracted.descriptor,
-                    axesDetected: extracted.axesDetected,
-                    processingMs: extracted.processingMs,
-                    curveHypothesisCount:
-                      1 + extracted.alternatives.length,
-                    distributionCount:
-                      extracted.distributionSelection.distributionCount,
-                    selectedDistributionIndex:
-                      extracted.distributionSelection.selectedIndex,
                     irregularityScore:
                       extracted.distributionSelection.irregularityScore,
-                    removedLabelCount:
-                      extracted.preprocessing.primaryMask
-                        .removedLabelComponents ?? 0,
+                    observedColumnRatio: 1,
+                    separationMode: "geometry" as const,
+                    selected: true,
                   },
-                  documentAnalysis.panels.length > 1
-                    ? `${baseLabel} · 차트 ${panelIndex + 1}/${documentAnalysis.panels.length}`
-                    : baseLabel,
-                ),
+                ];
+            separatedSeriesCount += series.length;
+            for (const extractedSeries of series) {
+              const imageUrl = URL.createObjectURL(
+                extracted.previewBlob,
               );
-            } catch (caught) {
-              panelFailures.push(
-                caught instanceof Error
-                  ? caught.message
-                  : `차트 ${panelIndex + 1} 저장 실패`,
-              );
-            } finally {
-              URL.revokeObjectURL(imageUrl);
+              const suffix = chartSeriesSuffix({
+                panelIndex,
+                panelCount: documentAnalysis.panels.length,
+                seriesIndex: extractedSeries.seriesIndex,
+                seriesCount: series.length,
+              });
+              const trainingAnalysis: Analysis = {
+                id: crypto.randomUUID(),
+                fileName: suffix ? `${file.name} · ${suffix}` : file.name,
+                imageUrl,
+                panelIndex,
+                panelCount: documentAnalysis.panels.length,
+                detectedPanelCount:
+                  documentAnalysis.detectedPanelCount,
+                rejectedNonChartCount:
+                  documentAnalysis.rejectedNonChartCount,
+                panelSelectionTruncated:
+                  documentAnalysis.truncated,
+                maxPanelCount: documentAnalysis.maxPanels,
+                panelBounds: extracted.panelBounds,
+                panelConfidence: extracted.panelConfidence,
+                panelMode: extracted.panelMode,
+                profile: extractedSeries.profile,
+                descriptor: extractedSeries.descriptor,
+                axesDetected: extracted.axesDetected,
+                processingMs: extracted.processingMs,
+                curveHypothesisCount:
+                  1 +
+                  (series.length === 1
+                    ? extracted.alternatives.length
+                    : 0),
+                distributionCount: series.length,
+                selectedDistributionIndex:
+                  extracted.distributionSelection.selectedIndex,
+                seriesIndex: extractedSeries.seriesIndex,
+                seriesCount: series.length,
+                selectedSeriesIndex: extracted.selectedSeriesIndex,
+                seriesSeparationMode:
+                  extractedSeries.separationMode,
+                irregularityScore:
+                  extractedSeries.irregularityScore,
+                removedLabelCount:
+                  extracted.preprocessing.primaryMask
+                    .removedLabelComponents ?? 0,
+              };
+              try {
+                outcomes.push(
+                  await storeTrainingAnalysis(
+                    trainingAnalysis,
+                    chartSeriesLabel(baseLabel, trainingAnalysis),
+                  ),
+                );
+              } catch (caught) {
+                panelFailures.push(
+                  caught instanceof Error
+                    ? caught.message
+                    : `${suffix || `차트 ${panelIndex + 1}`} 저장 실패`,
+                );
+              } finally {
+                URL.revokeObjectURL(imageUrl);
+              }
             }
           }
           if (!outcomes.length) {
@@ -1930,6 +2159,7 @@ export function VthSearchApp() {
             outcomes,
             panelFailures,
             panelCount: documentAnalysis.panels.length,
+            seriesCount: separatedSeriesCount,
             detectedPanelCount: documentAnalysis.detectedPanelCount,
             truncated: documentAnalysis.truncated,
           };
@@ -1950,6 +2180,7 @@ export function VthSearchApp() {
         }>;
         panelFailures: string[];
         panelCount: number;
+        seriesCount: number;
         detectedPanelCount: number;
         truncated: boolean;
       }>;
@@ -1967,6 +2198,10 @@ export function VthSearchApp() {
       ).length;
       const analyzedPanels = fileSuccesses.reduce(
         (sum, fileOutcome) => sum + fileOutcome.panelCount,
+        0,
+      );
+      const analyzedSeries = fileSuccesses.reduce(
+        (sum, fileOutcome) => sum + fileOutcome.seriesCount,
         0,
       );
       const detectedPanels = fileSuccesses.reduce(
@@ -1989,6 +2224,7 @@ export function VthSearchApp() {
       }
       setLearningStatus(
         `${selection.accepted.length}개 파일 처리 · 차트 ${analyzedPanels}개 분리` +
+          `${analyzedSeries > analyzedPanels ? ` · 색상 시리즈 ${analyzedSeries}개 분리` : ""}` +
           `${truncatedFiles ? ` (총 ${detectedPanels}개 감지 · ${truncatedFiles}개 파일에 상한 적용)` : ""}` +
           ` · 후보 성공 ${panelOutcomes.length}개` +
           ` (신규 ${added}개${deduplicated ? `, 중복 ${deduplicated}개` : ""})` +
@@ -2255,6 +2491,9 @@ export function VthSearchApp() {
 
   const visibleResults = results.slice(0, topK);
   const feedbackCount = Object.keys(feedback).length;
+  const hasSeparatedColorSeries = panelQueries.some(
+    (panelQuery) => panelQuery.analysis.seriesCount > 1,
+  );
 
   return (
     <main>
@@ -2363,11 +2602,15 @@ export function VthSearchApp() {
                   <div
                     className="chart-panel-tabs"
                     role="tablist"
-                    aria-label={`분리된 차트 ${panelQueries.length}개`}
+                    aria-label={`분리된 차트와 색상 시리즈 ${panelQueries.length}개`}
                     data-testid="chart-panel-tabs"
                   >
                     <span>
-                      MULTI CHART · {panelQueries.length}개 분석
+                      {analysis.panelCount > 1 && hasSeparatedColorSeries
+                        ? `MULTI CHART / SERIES · 차트 ${analysis.panelCount}개 · 데이터 ${panelQueries.length}개`
+                        : hasSeparatedColorSeries
+                          ? `MULTI SERIES · ${panelQueries.length}개 색상 파형`
+                          : `MULTI CHART · ${analysis.panelCount}개 분석`}
                       {analysis.panelSelectionTruncated
                         ? ` / ${analysis.detectedPanelCount}개 감지`
                         : ""}
@@ -2428,7 +2671,14 @@ export function VthSearchApp() {
                             alt=""
                             aria-hidden="true"
                           />
-                          <span>차트 {panelIndex + 1}</span>
+                          <span>
+                            {panelQuery.analysis.panelCount > 1
+                              ? `차트 ${panelQuery.analysis.panelIndex + 1}`
+                              : "차트 1"}
+                            {panelQuery.analysis.seriesCount > 1
+                              ? ` · 시리즈 ${panelQuery.analysis.seriesIndex + 1}`
+                              : ""}
+                          </span>
                           <small>
                             {panelQuery.analysis.descriptor.stateCount} State
                           </small>
@@ -2439,7 +2689,9 @@ export function VthSearchApp() {
                 )}
                 {panelQueries.length > 1 && (
                   <span className="visually-hidden" aria-live="polite">
-                    차트 {activePanelIndex + 1}/{panelQueries.length} 선택됨
+                    {chartSeriesSuffix(analysis) ||
+                      `데이터 ${activePanelIndex + 1}/${panelQueries.length}`}{" "}
+                    선택됨
                   </span>
                 )}
                 <div
@@ -2457,12 +2709,15 @@ export function VthSearchApp() {
                   <figure
                     className="source-panel-view"
                     data-testid="source-panel-crop"
-                    aria-label={`선택된 원본 패널 크롭, 차트 ${analysis.panelIndex + 1}/${analysis.panelCount}`}
+                    aria-label={`선택된 원본 패널 크롭, ${chartSeriesSuffix(analysis) || "차트 1/1"}`}
                   >
                     <figcaption className="analysis-view-label">
                       <span>선택 원본 패널</span>
                       <strong>
                         CHART {analysis.panelIndex + 1}/{analysis.panelCount}
+                        {analysis.seriesCount > 1
+                          ? ` · SERIES ${analysis.seriesIndex + 1}/${analysis.seriesCount}`
+                          : ""}
                       </strong>
                     </figcaption>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -2474,24 +2729,28 @@ export function VthSearchApp() {
                   <section
                     className="normalized-curve-view"
                     data-testid="normalized-curve-view"
-                    aria-label={`차트 ${analysis.panelIndex + 1}의 정규화 Curve와 추출 근거`}
+                    aria-label={`${chartSeriesSuffix(analysis) || "차트 1"}의 정규화 Curve와 추출 근거`}
                   >
                     <header className="analysis-view-label">
                       <span>정규화 추출 Curve</span>
-                      <strong>AXIS / LABEL REMOVED</strong>
+                      <strong>
+                        {analysis.seriesCount > 1
+                          ? `COLOR SERIES ${analysis.seriesIndex + 1}/${analysis.seriesCount}`
+                          : "AXIS / LABEL REMOVED"}
+                      </strong>
                     </header>
                     <ProfileCanvas
                       profile={analysis.profile}
                       label={`축을 제거하고 표준화한 VTH Curve${
-                        analysis.panelCount > 1
-                          ? `, 차트 ${analysis.panelIndex + 1}/${analysis.panelCount}`
+                        chartSeriesSuffix(analysis)
+                          ? `, ${chartSeriesSuffix(analysis)}`
                           : ""
                       }`}
                     />
                     <dl
                       className="panel-extraction-evidence"
                       data-testid="panel-extraction-evidence"
-                      aria-label={`차트 ${analysis.panelIndex + 1} 추출 근거`}
+                      aria-label={`${chartSeriesSuffix(analysis) || "차트 1"} 추출 근거`}
                     >
                       <div>
                         <dt>검출 State</dt>
@@ -2512,6 +2771,18 @@ export function VthSearchApp() {
                         <dt>축 방식</dt>
                         <dd>{panelAxisModeLabel(analysis.panelMode)}</dd>
                       </div>
+                      {analysis.seriesCount > 1 && (
+                        <div>
+                          <dt>색상 시리즈</dt>
+                          <dd>
+                            {analysis.seriesIndex + 1}/{analysis.seriesCount}
+                            {analysis.seriesIndex ===
+                            analysis.selectedSeriesIndex ? (
+                              <small>대표 파형</small>
+                            ) : null}
+                          </dd>
+                        </div>
+                      )}
                       <div>
                         <dt>제거 라벨</dt>
                         <dd>{analysis.removedLabelCount}개</dd>
@@ -2545,7 +2816,7 @@ export function VthSearchApp() {
                 <strong>그래프를 놓거나 붙여넣으세요</strong>
                 <span>클릭하여 파일 선택 · Ctrl+V / ⌘V</span>
                 <small>
-                  PNG · JPG · WEBP / 무작위 배치·저해상도·FHD 밀집 / 비차트 자동 제외 / 최대 30차트
+                  PNG · JPG · WEBP / 픽셀 크기 자동 정규화 / 색상별 시리즈 분리 / 무작위 배치·저해상도·FHD 밀집 / 비차트 자동 제외 / 최대 30차트
                 </small>
               </button>
             )}
@@ -2688,9 +2959,20 @@ export function VthSearchApp() {
             </p>
           )}
           {error && (
-            <p className="error-message" role="alert">
-              {error}
-            </p>
+            <div className="error-message" role="alert">
+              <p>{error}</p>
+              <details>
+                <summary>원인별 오류 코드 안내</summary>
+                <ul>
+                  {ANALYSIS_ERROR_GUIDE.map(([code, cause]) => (
+                    <li key={code}>
+                      <code>{code}</code>
+                      <span>{cause}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            </div>
           )}
         </div>
         </section>
@@ -2707,12 +2989,14 @@ export function VthSearchApp() {
                 {analysis.panelSelectionTruncated
                   ? `${analysis.detectedPanelCount}개를 감지해 품질 상위 ${analysis.panelCount}개를 분석했습니다.`
                   : analysis.panelCount > 1
-                    ? `${analysis.panelCount}개 차트를 좌표별로 분리했습니다.${
+                    ? `${analysis.panelCount}개 차트를 좌표별로 분리하고 색상 시리즈를 각각 분석했습니다.${
                         analysis.rejectedNonChartCount
                           ? ` 비차트 후보 ${analysis.rejectedNonChartCount}개는 제외했습니다.`
                           : ""
                       }`
-                    : "형상 분석이 완료되었습니다."}
+                    : analysis.seriesCount > 1
+                      ? `한 차트의 색상 시리즈 ${analysis.seriesCount}개를 각각 독립 파형으로 분리했습니다.`
+                      : "형상 분석이 완료되었습니다."}
               </h2>
             </div>
             <div className="top-k-control" aria-label="추천 개수">
@@ -2747,10 +3031,12 @@ export function VthSearchApp() {
             <div>
               <span>FRAME</span>
               <strong>
-                {analysis.panelCount > 1
+                {analysis.panelCount > 1 && analysis.seriesCount > 1
+                  ? `C${analysis.panelIndex + 1}/${analysis.panelCount} · S${analysis.seriesIndex + 1}/${analysis.seriesCount}`
+                  : analysis.panelCount > 1
                   ? `CHART ${analysis.panelIndex + 1}/${analysis.panelCount}`
-                  : analysis.distributionCount > 1
-                  ? `MULTI×${analysis.distributionCount}`
+                  : analysis.seriesCount > 1
+                  ? `SERIES ${analysis.seriesIndex + 1}/${analysis.seriesCount}`
                   : analysis.removedLabelCount > 0
                     ? `LABEL×${analysis.removedLabelCount}`
                   : analysis.axesDetected
@@ -2758,14 +3044,15 @@ export function VthSearchApp() {
                     : "CLEAN"}
               </strong>
               <small>
-                {analysis.panelCount > 1
-                  ? `독립 패널로 분리 · ${
-                      analysis.distributionCount > 1
-                        ? `내부 Curve ${analysis.distributionCount}개 중 비정규성 최상 선택`
-                        : "패널 내부 축·격자·라벨 별도 제거"
+                {analysis.seriesCount > 1
+                  ? `${analysis.panelCount > 1 ? "좌표별 차트 분리 · " : ""}색상별 파형 독립 분석 · ${
+                      analysis.seriesIndex ===
+                      analysis.selectedSeriesIndex
+                        ? "비정규성 대표 시리즈"
+                        : `시리즈 ${analysis.seriesIndex + 1}`
                     }`
-                  : analysis.distributionCount > 1
-                  ? `${analysis.removedLabelCount > 0 ? `라벨 ${analysis.removedLabelCount}개 제거 · ` : ""}비정규성 최상 Curve 자동 선택 · ${Math.round(analysis.irregularityScore * 100)}%`
+                  : analysis.panelCount > 1
+                  ? "독립 패널로 분리 · 패널 내부 축·격자·라벨 별도 제거"
                   : analysis.removedLabelCount > 0
                     ? "범례·주석 라벨 제거 후 Curve 복원"
                   : analysis.axesDetected
@@ -2838,7 +3125,8 @@ export function VthSearchApp() {
                     패키지의 data 폴더에만 저장합니다. 인터넷이나 dove9999.com으로
                     전송하지 않습니다. 선택한 여러 파일 또는 폴더 안의 지원
                     이미지를 빠짐없이 순차 학습하며, 한 이미지에서 좌표별로
-                    분리한 차트는 각각 독립 후보로 저장합니다.
+                    분리한 차트와 차트 내부의 색상별 시리즈는 각각 독립
+                    후보로 저장합니다.
                   </>
                 ) : (
                   <>
@@ -2847,7 +3135,8 @@ export function VthSearchApp() {
                     사용자에게도 검색 후보로 노출되며 추천 카드에 원본이 함께
                     표시됩니다. 선택한 여러 파일 또는 폴더 안의 지원 이미지를
                     빠짐없이 순차 학습하며, 한 이미지에서 좌표별로 분리한
-                    차트는 각각 독립 후보로 저장합니다.
+                    차트와 차트 내부의 색상별 시리즈는 각각 독립 후보로
+                    저장합니다.
                     모델 가중치는 복수 전문가 합의와 회귀 게이트를 통과한 뒤에만
                     갱신됩니다.{" "}
                     <a
@@ -2898,10 +3187,10 @@ export function VthSearchApp() {
               >
                 {isLearning
                   ? "학습 처리 중…"
-                  : analysis.panelCount > 1
+                  : panelQueries.length > 1
                     ? standaloneMode
-                      ? `분리 차트 ${analysis.panelCount}개 모두 학습`
-                      : `분리 차트 ${analysis.panelCount}개 모두 공용 등록`
+                      ? `분리 데이터 ${panelQueries.length}개 모두 학습`
+                      : `분리 데이터 ${panelQueries.length}개 모두 공용 등록`
                     : standaloneMode
                       ? "현재 그림 학습"
                       : "현재 그림 공용 등록"}
@@ -3391,7 +3680,7 @@ export function VthSearchApp() {
             <article>
               <span>01</span>
               <h2>프레임 정규화</h2>
-              <p>분포 파형만 찾아 텍스트, 표, 빈 좌표계와 설명 도형을 제외한 뒤 축·격자·기울기를 제거합니다.</p>
+              <p>분포 파형만 찾아 텍스트, 표, 빈 좌표계와 설명 도형을 제외한 뒤 축·격자·기울기를 제거하고 한 차트의 색상별 시리즈를 나눕니다.</p>
             </article>
             <article>
               <span>02</span>
@@ -3456,7 +3745,7 @@ export function VthSearchApp() {
           <span>유사 산포 검색</span>
         </div>
         <p>Shape-first retrieval for log-scale V-NAND distributions.</p>
-        <span>ENGINE V3.5 / WAVEFORM-ONLY · 2·4·8·16-STATE · 30-PANEL MAX</span>
+        <span>ENGINE V3.6 / COLOR-SERIES · WAVEFORM-ONLY · 2·4·8·16-STATE · 30-PANEL MAX</span>
       </footer>
     </main>
   );

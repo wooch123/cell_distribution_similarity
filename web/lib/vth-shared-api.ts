@@ -44,7 +44,11 @@ export function sharedApiError(request: Request, error: unknown) {
     error instanceof Error ? error.message : "요청을 처리하지 못했습니다.";
   const typedError =
     error && typeof error === "object"
-      ? (error as { status?: unknown; code?: unknown })
+      ? (error as {
+          status?: unknown;
+          code?: unknown;
+          details?: unknown;
+        })
       : {};
   const explicitStatus = Number(typedError.status);
   const status =
@@ -63,6 +67,12 @@ export function sharedApiError(request: Request, error: unknown) {
     /^[a-z0-9_]{3,64}$/.test(typedError.code)
       ? typedError.code
       : "";
+  const details =
+    typedError.details &&
+    typeof typedError.details === "object" &&
+    !Array.isArray(typedError.details)
+      ? (typedError.details as Record<string, unknown>)
+      : undefined;
   return sharedApiJson(
     request,
     {
@@ -75,6 +85,10 @@ export function sharedApiError(request: Request, error: unknown) {
               ? "storage_unavailable"
               : "invalid_request"),
         message,
+        ...(typeof details?.reason === "string"
+          ? { reasonCode: details.reason }
+          : {}),
+        ...(details ? { details } : {}),
       },
     },
     status,

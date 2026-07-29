@@ -4,6 +4,7 @@ import {
   cropCurveMaskToContent,
   deskewForegroundMasks,
   detectPlotBounds,
+  rotateBinaryMask,
 } from "./vth-image-core.mjs";
 import {
   alignedCurveSimilarity,
@@ -395,6 +396,7 @@ export function extractCurveDistributionCandidates(mask, width, height) {
       ),
       observedColumnRatio: observedColumns / width,
       sourceIndex: trackIndex,
+      separationMode: "geometry",
     });
   }
   if (candidates.length < 2) {
@@ -425,6 +427,138 @@ function normalizeProfileRange(profile) {
   return profile.map((value) =>
     clamp((value - minimum) / (maximum - minimum)),
   );
+}
+
+/**
+ * Recover one black/gray full-width trace that is absent from hue masks.
+ * Chromatic strokes and their antialiased edge pixels are removed first, then
+ * the established Curve cleaner removes axes, grids and labels. The strict
+ * width, density and State gates prevent neutral chart furniture or table text
+ * from becoming a distribution series.
+ */
+export function extractAchromaticDistributionCandidate(
+  curveSalientMask,
+  colorMasks,
+  width,
+  height,
+  bounds,
+  chromaticExclusionRadius = 1,
+) {
+  if (
+    !curveSalientMask ||
+    !Array.isArray(colorMasks) ||
+    !colorMasks.length
+  ) {
+    return null;
+  }
+  const chromaticExclusion = new Uint8Array(width * height);
+  for (const colorMask of colorMasks) {
+    if (colorMask.length !== chromaticExclusion.length) continue;
+    for (let index = 0; index < colorMask.length; index += 1) {
+      if (!colorMask[index]) continue;
+      const x = index % width;
+      const y = Math.floor(index / width);
+      for (
+        let localY = Math.max(
+          0,
+          y - chromaticExclusionRadius,
+        );
+        localY <=
+        Math.min(
+          height - 1,
+          y + chromaticExclusionRadius,
+        );
+        localY += 1
+      ) {
+        for (
+          let localX = Math.max(
+            0,
+            x - chromaticExclusionRadius,
+          );
+          localX <=
+          Math.min(
+            width - 1,
+            x + chromaticExclusionRadius,
+          );
+          localX += 1
+        ) {
+          chromaticExclusion[localY * width + localX] = 1;
+        }
+      }
+    }
+  }
+  const residual = new Uint8Array(width * height);
+  for (let index = 0; index < residual.length; index += 1) {
+    if (
+      curveSalientMask[index] &&
+      !chromaticExclusion[index]
+    ) {
+      residual[index] = 1;
+    }
+  }
+  const curve = buildCurveMask(
+    residual,
+    width,
+    height,
+    bounds,
+  );
+  const occupiedColumns = [];
+  let activePixelCount = 0;
+  for (let x = 0; x < curve.width; x += 1) {
+    let occupied = false;
+    for (let y = 0; y < curve.height; y += 1) {
+      if (!curve.mask[y * curve.width + x]) continue;
+      occupied = true;
+      activePixelCount += 1;
+    }
+    if (occupied) occupiedColumns.push(x);
+  }
+  const occupiedColumnRatio =
+    occupiedColumns.length / Math.max(1, curve.width);
+  const horizontalSpanRatio = occupiedColumns.length
+    ? (occupiedColumns.at(-1) - occupiedColumns[0] + 1) /
+      Math.max(1, curve.width)
+    : 0;
+  const residualDensity =
+    activePixelCount /
+    Math.max(1, curve.width * curve.height);
+  const meanPixelsPerOccupiedColumn =
+    activePixelCount / Math.max(1, occupiedColumns.length);
+  if (
+    occupiedColumnRatio < 0.72 ||
+    horizontalSpanRatio < 0.86 ||
+    residualDensity > 0.08 ||
+    meanPixelsPerOccupiedColumn >
+      Math.max(12, curve.height * 0.12)
+  ) {
+    return null;
+  }
+  const canonical = canonicalProfileFromCurveMask(
+    curve.mask,
+    curve.width,
+    curve.height,
+  );
+  const profile = normalizeProfileRange(canonical.profile);
+  if (!profile) return null;
+  const descriptor = descriptorFromProfile(profile);
+  if (
+    !VALID_STATE_COUNTS.has(descriptor.stateCount) ||
+    descriptor.observedStateCount < 2
+  ) {
+    return null;
+  }
+  return {
+    profile,
+    descriptor,
+    irregularityScore: distributionIrregularityScore(
+      profile,
+      descriptor,
+    ),
+    observedColumnRatio: occupiedColumnRatio,
+    horizontalSpanRatio,
+    sourceIndex: colorMasks.length,
+    separationMode: "achromatic",
+  };
 }
 
 /**
@@ -566,6 +700,7 @@ export function extractColorDistributionCandidates(
       distributionCount: 1,
       selectedIndex: 0,
       candidates: [],
+      detectedCandidates: candidates,
     };
   }
   candidates.sort(
@@ -579,6 +714,7 @@ export function extractColorDistributionCandidates(
     selectedIndex: candidates[0].sourceIndex,
     selected: candidates[0],
     candidates,
+    detectedCandidates: candidates,
   };
 }
 
@@ -671,6 +807,16 @@ export function analyzeForegroundMasks(
   );
   const analysisBroadMask = deskewed.broadMask;
   const analysisSalientMask = deskewed.salientMask;
+  const analysisCurveColorMasks = deskewed.applied
+    ? curveColorMasks.map((mask) =>
+        rotateBinaryMask(
+          mask,
+          width,
+          height,
+          deskewed.angle,
+        ),
+      )
+    : curveColorMasks;
   const bounds = detectPlotBounds(
     deskewed.boundsMask,
     width,
@@ -913,19 +1059,166 @@ export function analyzeForegroundMasks(
   }
   const colorDistributionCandidates =
     extractColorDistributionCandidates(
-      curveColorMasks,
+      analysisCurveColorMasks,
       width,
       height,
       bounds,
     );
-  const chromaticUnionCandidate = deskewed.applied
-    ? null
-    : extractChromaticUnionCandidate(
-        curveColorMasks,
-        width,
-        height,
-        bounds,
+  const detectedColorCandidates =
+    colorDistributionCandidates.detectedCandidates ?? [];
+  const achromaticCandidates = [
+    extractAchromaticDistributionCandidate(
+      deskewed.rawSalientMask,
+      analysisCurveColorMasks,
+      width,
+      height,
+      bounds,
+      deskewed.applied ? 2 : 1,
+    ),
+  ].filter(Boolean);
+  const nearestHalfDegree =
+    Math.round(deskewed.angle * 2) / 2;
+  if (
+    deskewed.applied &&
+    Math.abs(deskewed.angle - nearestHalfDegree) >= 0.2
+  ) {
+    for (const angle of [
+      deskewed.angle - 0.25,
+      deskewed.angle + 0.25,
+    ]) {
+      const rotatedColorMasks = curveColorMasks.map((mask) =>
+        rotateBinaryMask(mask, width, height, angle),
       );
+      const candidate =
+        extractAchromaticDistributionCandidate(
+          rotateBinaryMask(
+            salientMask,
+            width,
+            height,
+            angle,
+          ),
+          rotatedColorMasks,
+          width,
+          height,
+          bounds,
+          2,
+        );
+      if (candidate) achromaticCandidates.push(candidate);
+    }
+  }
+  const dominantColorStateCount =
+    detectedColorCandidates.length
+      ? detectedColorCandidates
+          .map((candidate) => candidate.descriptor.stateCount)
+          .sort(
+            (left, right) =>
+              detectedColorCandidates.filter(
+                (candidate) =>
+                  candidate.descriptor.stateCount === right,
+              ).length -
+                detectedColorCandidates.filter(
+                  (candidate) =>
+                    candidate.descriptor.stateCount === left,
+                ).length ||
+              left - right,
+          )[0]
+      : null;
+  const achromaticCandidateQuality = (candidate) => {
+    const maximumColorSimilarity = Math.max(
+      0,
+      ...detectedColorCandidates.map((colorCandidate) =>
+        alignedCurveSimilarity(
+          colorCandidate.profile,
+          candidate.profile,
+        ),
+      ),
+    );
+    return (
+      (dominantColorStateCount === null ||
+      candidate.descriptor.stateCount === dominantColorStateCount
+        ? 2
+        : 0) +
+      (1 - maximumColorSimilarity) +
+      candidate.observedColumnRatio * 0.1
+    );
+  };
+  const achromaticDistributionCandidate =
+    achromaticCandidates.reduce(
+      (best, candidate) =>
+        !best ||
+        achromaticCandidateQuality(candidate) >
+          achromaticCandidateQuality(best)
+          ? candidate
+          : best,
+      null,
+    );
+  const chromaticUnionCandidate =
+    extractChromaticUnionCandidate(
+      analysisCurveColorMasks,
+      width,
+      height,
+      bounds,
+    );
+  const segmentedChromaticCandidate =
+    !detectedColorCandidates.length &&
+    chromaticUnionCandidate
+      ? {
+          ...chromaticUnionCandidate,
+          irregularityScore:
+            distributionIrregularityScore(
+              chromaticUnionCandidate.profile,
+              chromaticUnionCandidate.descriptor,
+            ),
+          observedColumnRatio:
+            chromaticUnionCandidate.occupiedColumnRatio,
+          sourceIndex: 0,
+        }
+      : null;
+  const independentChromaticCandidates =
+    detectedColorCandidates.length
+      ? detectedColorCandidates
+      : segmentedChromaticCandidate
+        ? [segmentedChromaticCandidate]
+        : [];
+  const includeAchromaticCandidate =
+    achromaticDistributionCandidate &&
+    independentChromaticCandidates.length >= 1 &&
+    !independentChromaticCandidates.some(
+      (candidate) =>
+        alignedCurveSimilarity(
+          candidate.profile,
+          achromaticDistributionCandidate.profile,
+        ) >= 0.995,
+    );
+  const colorAndAchromaticCandidates =
+    includeAchromaticCandidate
+      ? [
+          ...independentChromaticCandidates,
+          achromaticDistributionCandidate,
+        ]
+      : independentChromaticCandidates;
+  const mixedDistributionCandidates =
+    includeAchromaticCandidate &&
+    colorAndAchromaticCandidates.length >= 2
+      ? (() => {
+          const candidates = [
+            ...colorAndAchromaticCandidates,
+          ].sort(
+            (left, right) =>
+              right.irregularityScore -
+                left.irregularityScore ||
+              right.observedColumnRatio -
+                left.observedColumnRatio ||
+              left.sourceIndex - right.sourceIndex,
+          );
+          return {
+            distributionCount: candidates.length,
+            selectedIndex: candidates[0].sourceIndex,
+            selected: candidates[0],
+            candidates,
+          };
+        })()
+      : colorDistributionCandidates;
   const geometricDistributionCandidates = heavyArtifactEvidence
     ? {
         // Residual grids can look like several vertically ordered traces.
@@ -941,8 +1234,8 @@ export function analyzeForegroundMasks(
         primaryMask.height,
       );
   const distributionCandidates =
-    colorDistributionCandidates.selected
-      ? colorDistributionCandidates
+    mixedDistributionCandidates.selected
+      ? mixedDistributionCandidates
       : geometricDistributionCandidates;
   const selectedDistribution = distributionCandidates.selected;
   if (selectedDistribution) {
@@ -1044,16 +1337,63 @@ export function analyzeForegroundMasks(
     );
   }
 
+  // Keep every independently detected full-width distribution available to
+  // downstream search and training. The legacy profile/descriptor pair above
+  // remains the most-irregular representative, while series[] preserves a
+  // stable source order so one colored chart can be expanded into independent
+  // retrieval records without changing physical panel coordinates.
+  const orderedDistributionCandidates = selectedDistribution
+    ? [...distributionCandidates.candidates].sort(
+        (left, right) => left.sourceIndex - right.sourceIndex,
+      )
+    : [];
+  const selectedSeriesIndex = selectedDistribution
+    ? orderedDistributionCandidates.findIndex(
+        (candidate) => candidate === selectedDistribution,
+      )
+    : 0;
+  const series = selectedDistribution
+    ? orderedDistributionCandidates.map((candidate, seriesIndex) => ({
+        seriesIndex,
+        sourceIndex: candidate.sourceIndex,
+        profile: candidate.profile,
+        descriptor: candidate.descriptor,
+        irregularityScore: candidate.irregularityScore,
+        observedColumnRatio: candidate.observedColumnRatio,
+        separationMode:
+          candidate.separationMode ?? "geometry",
+        selected: seriesIndex === selectedSeriesIndex,
+      }))
+    : [
+        {
+          seriesIndex: 0,
+          sourceIndex: 0,
+          profile: selectedProfile,
+          descriptor,
+          irregularityScore: distributionIrregularityScore(
+            selectedProfile,
+            descriptor,
+          ),
+          observedColumnRatio: 1,
+          separationMode:
+            chromaticUnionCandidate?.separationMode ?? "single",
+          selected: true,
+        },
+      ];
+
   return {
     profile: selectedProfile,
     descriptor,
     alternatives,
+    series,
+    selectedSeriesIndex,
     distributionSelection: selectedDistribution
       ? {
           mode: "most-irregular",
           distributionCount:
             distributionCandidates.distributionCount,
           selectedIndex: distributionCandidates.selectedIndex,
+          selectedSeriesIndex,
           irregularityScore:
             selectedDistribution.irregularityScore,
         }
@@ -1061,6 +1401,7 @@ export function analyzeForegroundMasks(
           mode: "single",
           distributionCount: 1,
           selectedIndex: 0,
+          selectedSeriesIndex: 0,
           irregularityScore: distributionIrregularityScore(
             selectedProfile,
             descriptor,

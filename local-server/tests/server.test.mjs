@@ -199,7 +199,19 @@ test("serves the web app and persists ready and pending training images", async 
       `${running.baseUrl}/api/v1/similarity-search`,
     ).then((response) => response.json());
     assert.equal(similarityCapability.multiChart.supported, true);
-    assert.equal(similarityCapability.multiChart.ranking, "per-panel");
+    assert.equal(
+      similarityCapability.multiChart.ranking,
+      "per-panel-per-series",
+    );
+    assert.deepEqual(
+      similarityCapability.multiChart.colorSeries,
+      {
+        supported: true,
+        ranking: "per-series",
+        styleInvariant: true,
+        representative: "most-irregular",
+      },
+    );
     assert.equal(
       similarityCapability.multiChart.placement,
       "arbitrary-non-overlapping",
@@ -374,6 +386,20 @@ test("rejects unverified ready sources while preserving raw pending ingestion", 
         "distribution_waveform_not_found",
       );
       assert.match(payload.error.message, /분포 파형/);
+      assert.equal(
+        payload.error.reasonCode,
+        "table_lattice_dominant",
+      );
+      assert.equal(
+        payload.error.details?.diagnosticCode,
+        "VTH-DETECT-TABLE-LATTICE",
+      );
+      assert.equal(
+        payload.error.details?.diagnostics
+          ?.tableLatticeDominant,
+        true,
+      );
+      assert.ok(payload.error.details?.action);
     }
 
     const sameStatePoison = trainingPayload(
@@ -484,6 +510,14 @@ test("returns a typed 413 for a chunked oversized similarity body", async () => 
     assert.equal(response.status, 413);
     assert.equal(response.body.error.code, "payload_too_large");
     assert.match(response.body.error.message, /20MB/);
+    assert.equal(
+      response.body.error.details.diagnosticCode,
+      "VTH-IN-RESOURCE-LIMIT",
+    );
+    assert.equal(
+      response.body.error.details.reason,
+      "resource_limit",
+    );
   } finally {
     await running.close();
   }
@@ -647,6 +681,24 @@ test("protects network-bound training data with a bootstrap cookie", async () =>
     assert.equal(
       panelContract.panelDetection.properties.maxPanels.const,
       30,
+    );
+    const panelResultContract =
+      openApi.components.schemas.PanelSearchResult;
+    assert.ok(panelResultContract.required.includes("series"));
+    assert.equal(
+      panelResultContract.properties.series.items.$ref,
+      "#/components/schemas/SeriesSearchResult",
+    );
+    assert.deepEqual(
+      openApi.components.schemas.SeriesSearchResult.properties
+        .separationMode.enum,
+      [
+        "color",
+        "achromatic",
+        "geometry",
+        "chromatic-union",
+        "single",
+      ],
     );
 
     const unauthorizedList = await fetch(

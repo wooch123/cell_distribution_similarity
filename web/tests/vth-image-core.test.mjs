@@ -19,6 +19,7 @@ import {
   canonicalProfileFromCurveMask,
 } from "../lib/vth-shape-core.mjs";
 import {
+  analyzeForegroundMasks,
   distributionIrregularityScore,
   extractColorDistributionCandidates,
   extractCurveDistributionCandidates,
@@ -865,5 +866,133 @@ test("separates crossing colored distributions before color-independent scoring"
   assert.ok(
     alignedCurveSimilarity(result.selected.profile, irregular) >
       alignedCurveSimilarity(result.selected.profile, regular),
+  );
+});
+
+test("exposes every full-width colored series while keeping the most-irregular representative", () => {
+  const width = 420;
+  const height = 300;
+  const regularMask = new Uint8Array(width * height);
+  const irregularMask = new Uint8Array(width * height);
+  const regular = gaussianProfile(
+    [0.2, 0.4, 0.6, 0.8],
+    [0.055, 0.055, 0.055, 0.055],
+  );
+  const irregular = gaussianProfile(
+    [0.12, 0.32, 0.68, 0.9],
+    [0.045, 0.1, 0.045, 0.12],
+    [0.94, 0.72, 1, 0.61],
+  );
+  drawProfile(regularMask, width, height, regular, 115, 78);
+  drawProfile(irregularMask, width, height, irregular, 245, 92);
+
+  const pixels = new Uint8Array(width * height * 3).fill(255);
+  for (let index = 0; index < regularMask.length; index += 1) {
+    const offset = index * 3;
+    if (regularMask[index]) {
+      pixels[offset] = 224;
+      pixels[offset + 1] = 42;
+      pixels[offset + 2] = 54;
+    }
+    if (irregularMask[index]) {
+      pixels[offset] = 28;
+      pixels[offset + 1] = 96;
+      pixels[offset + 2] = 224;
+    }
+  }
+  const foreground = buildForegroundMasks(
+    pixels,
+    width,
+    height,
+    3,
+  );
+  const analysis = analyzeForegroundMasks(
+    foreground.broadMask,
+    foreground.salientMask,
+    width,
+    height,
+    foreground.curveSalientMask,
+    foreground.curveColorMasks,
+  );
+
+  assert.equal(foreground.curveColorMasks.length, 2);
+  assert.equal(analysis.series.length, 2);
+  assert.equal(analysis.selectedSeriesIndex, 1);
+  assert.equal(
+    analysis.distributionSelection.selectedSeriesIndex,
+    1,
+  );
+  assert.equal(
+    analysis.preprocessing.distributionSeparationMode,
+    "color",
+  );
+  assert.deepEqual(
+    analysis.series.map((series) => series.seriesIndex),
+    [0, 1],
+  );
+  assert.deepEqual(
+    analysis.series.map((series) => series.separationMode),
+    ["color", "color"],
+  );
+  assert.deepEqual(
+    analysis.series.map((series) => series.selected),
+    [false, true],
+  );
+  assert.deepEqual(
+    analysis.profile,
+    analysis.series[analysis.selectedSeriesIndex].profile,
+  );
+  assert.ok(
+    alignedCurveSimilarity(analysis.series[0].profile, regular) >
+      0.98,
+  );
+  assert.ok(
+    alignedCurveSimilarity(analysis.series[1].profile, irregular) >
+      0.98,
+  );
+});
+
+test("keeps consecutive State colors as one distribution series", () => {
+  const width = 420;
+  const height = 240;
+  const fullMask = new Uint8Array(width * height);
+  const profile = gaussianProfile(
+    [0.13, 0.38, 0.63, 0.87],
+    [0.06, 0.055, 0.06, 0.055],
+  );
+  drawProfile(fullMask, width, height, profile, 190, 130);
+  const segmentedColorMasks = Array.from(
+    { length: 4 },
+    () => new Uint8Array(width * height),
+  );
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      if (!fullMask[index]) continue;
+      segmentedColorMasks[
+        Math.min(3, Math.floor((x / width) * 4))
+      ][index] = 1;
+    }
+  }
+
+  const analysis = analyzeForegroundMasks(
+    fullMask,
+    fullMask,
+    width,
+    height,
+    fullMask,
+    segmentedColorMasks,
+  );
+
+  assert.equal(analysis.series.length, 1);
+  assert.equal(analysis.selectedSeriesIndex, 0);
+  assert.equal(
+    analysis.series[0].separationMode,
+    "chromatic-union",
+  );
+  assert.equal(analysis.series[0].selected, true);
+  assert.ok(
+    alignedCurveSimilarity(analysis.series[0].profile, profile) >
+      0.98,
   );
 });

@@ -15,6 +15,10 @@ import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import {
+  colorSeriesVerificationPng,
+  verifyColorSeriesSearch,
+} from "./color-series-verification.mjs";
 import { nonDistributionPng } from "./non-distribution-fixture.mjs";
 
 function run(command, args, options = {}) {
@@ -284,9 +288,31 @@ async function verifyService(packageDirectory, validationDirectory) {
     assert(
       nonDistributionResponse.status === 422 &&
         nonDistribution.error?.code ===
-          "distribution_waveform_not_found",
+          "distribution_waveform_not_found" &&
+        nonDistribution.error?.reasonCode ===
+          "table_lattice_dominant" &&
+        nonDistribution.error?.details?.diagnosticCode ===
+          "VTH-DETECT-TABLE-LATTICE" &&
+        nonDistribution.error?.details?.diagnostics
+          ?.tableLatticeDominant === true,
       "Ubuntu API did not reject table and diagram-only content.",
     );
+    const colorSeriesResponse = await fetch(
+      `${baseUrl}/api/v1/similarity-search?topK=2`,
+      {
+        method: "POST",
+        headers: {
+          ...headers,
+          "content-type": "image/png",
+        },
+        body: colorSeriesVerificationPng(),
+      },
+    );
+    assert(
+      colorSeriesResponse.status === 200,
+      "Ubuntu color-series search did not return 200.",
+    );
+    verifyColorSeriesSearch(await colorSeriesResponse.json(), 2);
 
     const framelessBytes = await readFile(
       path.join(
@@ -613,7 +639,7 @@ async function main() {
       ),
     );
     assert(
-      manifest.version === "1.35.0" &&
+      manifest.version === "1.36.0" &&
         manifest.platform === "ubuntu-linux-x64" &&
         manifest.architecture === "x86_64" &&
         manifest.entrypoint === "start.sh" &&
@@ -651,6 +677,9 @@ async function main() {
         manifest.bundled?.similaritySearchApi === true &&
         manifest.bundled?.multiChartPanelSplitting === true &&
         manifest.bundled?.multiChartMaximumPanels === 30 &&
+        manifest.bundled?.colorSeriesSeparation === true &&
+        manifest.bundled?.similarityRanking ===
+          "per-panel-per-series" &&
         manifest.bundled?.samples?.length === 8 &&
         manifest.bundled.samples.some(
           (sample) =>
@@ -750,7 +779,8 @@ async function main() {
         readme.includes("tar.gz는 start.sh의 실행 권한") &&
         readme.includes("최대") &&
         readme.includes("30개 차트") &&
-        readme.includes("FHD 밀집 샘플"),
+        readme.includes("FHD 밀집 샘플") &&
+        readme.includes("색상 시리즈"),
       "Ubuntu LAN and standalone instructions are incomplete.",
     );
     await assertMissing(

@@ -46,15 +46,15 @@ jobs:
       - name: Verify bundled runtime and start.sh
         run: >-
           node local-server/verify-ubuntu-package.mjs
-          artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.35.0.tar.gz
+          artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.36.0.tar.gz
 
       - name: Upload verified Ubuntu package
         uses: actions/upload-artifact@v4
         with:
-          name: vth-similarity-ubuntu-x64-v1.35.0
+          name: vth-similarity-ubuntu-x64-v1.36.0
           if-no-files-found: error
           retention-days: 14
           path: |
-            artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.35.0.tar.gz
+            artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.36.0.tar.gz
             web/public/downloads/vth-similarity-ubuntu-x64.sha256
-            web/public/downloads/ubuntu-package-v1.35.0.json
+            web/public/downloads/ubuntu-package-v1.36.0.json

@@ -29,7 +29,7 @@
       },
       "post": {
         "summary": "Find V-NAND distribution images with similar shape",
-        "description": "Accepts PNG or JPEG as raw bytes, multipart/form-data, or a Base64 data URL JSON body. Multiple charts at different coordinates are detected, cropped, and ranked independently in reading order. Text, tables, empty axes, rectangles, and explanatory diagrams without a coherent distribution waveform are excluded; a request with no distribution waveform returns 422 `distribution_waveform_not_found`. The legacy top-level `query` and `results` mirror panel 0. `topK` defaults to 8 and is limited to 1–10 per panel. When the deployment configures `VTH_SEARCH_API_KEY`, send it as `Authorization: Bearer <key>` or `X-API-Key`.",
+        "description": "Accepts PNG or JPEG as raw bytes, multipart/form-data, or a Base64 data URL JSON body. Multiple charts at different coordinates are detected and cropped in reading order. Multiple full-width waveform series inside one physical chart are temporarily separated by color, normalized without color/style features, and ranked independently in `panel.series`. Text, tables, empty axes, rectangles, and explanatory diagrams without a coherent distribution waveform are excluded; a request with no distribution waveform returns 422 `distribution_waveform_not_found`. The legacy panel `query` and `results` mirror its representative most-irregular series, and the top-level fields mirror panel 0's representative series. `topK` defaults to 8 and is limited to 1–10 per series. When the deployment configures `VTH_SEARCH_API_KEY`, send it as `Authorization: Bearer <key>` or `X-API-Key`.",
         "parameters": [
           {
             "name": "topK",
@@ -165,10 +165,10 @@
           "maxResults": { "type": "integer" },
           "multiChart": {
             "type": "object",
-            "required": ["supported", "ranking", "placement", "readingOrder", "lowResolutionRecovery", "nonChartRejection", "maxPanels", "overflowPolicy"],
+            "required": ["supported", "ranking", "placement", "readingOrder", "lowResolutionRecovery", "nonChartRejection", "maxPanels", "overflowPolicy", "colorSeries"],
             "properties": {
               "supported": { "type": "boolean", "const": true },
-              "ranking": { "type": "string", "const": "per-panel" },
+              "ranking": { "type": "string", "const": "per-panel-per-series" },
               "placement": { "type": "string", "const": "arbitrary-non-overlapping" },
               "readingOrder": { "type": "string", "const": "top-to-bottom-left-to-right" },
               "lowResolutionRecovery": { "type": "boolean", "const": true },
@@ -182,6 +182,16 @@
                 "type": "string",
                 "const": "highest-confidence-then-reading-order",
                 "description": "When more than 30 credible panels are detected, retain the highest-confidence panels and return them in reading order."
+              },
+              "colorSeries": {
+                "type": "object",
+                "required": ["supported", "ranking", "styleInvariant", "representative"],
+                "properties": {
+                  "supported": { "type": "boolean", "const": true },
+                  "ranking": { "type": "string", "const": "per-series" },
+                  "styleInvariant": { "type": "boolean", "const": true },
+                  "representative": { "type": "string", "const": "most-irregular" }
+                }
               }
             }
           },
@@ -286,7 +296,7 @@
       },
       "PanelSearchResult": {
         "type": "object",
-        "required": ["panelIndex", "bounds", "confidence", "detectionReason", "axisMode", "query", "matchedCandidateCount", "results"],
+        "required": ["panelIndex", "bounds", "confidence", "detectionReason", "axisMode", "seriesCount", "selectedSeriesIndex", "series", "query", "matchedCandidateCount", "results"],
         "properties": {
           "panelIndex": {
             "type": "integer",
@@ -305,6 +315,55 @@
           "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
           "detectionReason": { "type": "string" },
           "axisMode": { "type": "string" },
+          "seriesCount": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Number of independently extracted waveform series inside this physical chart panel."
+          },
+          "selectedSeriesIndex": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Representative most-irregular series mirrored by the compatibility query/results fields."
+          },
+          "series": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/components/schemas/SeriesSearchResult" }
+          },
+          "query": { "type": "object", "additionalProperties": true },
+          "matchedCandidateCount": { "type": "integer" },
+          "results": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/RankedResult" }
+          }
+        }
+      },
+      "SeriesSearchResult": {
+        "type": "object",
+        "required": ["seriesIndex", "sourceIndex", "selected", "separationMode", "irregularityScore", "query", "matchedCandidateCount", "results"],
+        "properties": {
+          "seriesIndex": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Zero-based independent waveform series index inside the panel."
+          },
+          "sourceIndex": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Internal color or geometry candidate index used during extraction."
+          },
+          "selected": {
+            "type": "boolean",
+            "description": "True for the most-irregular representative retained by compatibility fields."
+          },
+          "separationMode": {
+            "type": "string",
+            "enum": ["color", "achromatic", "geometry", "chromatic-union", "single"]
+          },
+          "irregularityScore": {
+            "type": "number",
+            "minimum": 0
+          },
           "query": { "type": "object", "additionalProperties": true },
           "matchedCandidateCount": { "type": "integer" },
           "results": {
@@ -345,12 +404,66 @@
         "type": "object",
         "required": ["error"],
         "properties": {
+          "requestId": { "type": "string" },
           "error": {
             "type": "object",
             "required": ["code", "message"],
             "properties": {
               "code": { "type": "string" },
-              "message": { "type": "string" }
+              "message": { "type": "string" },
+              "reasonCode": {
+                "type": "string",
+                "description": "Machine-readable detailed reason. The legacy error.code remains stable for existing clients."
+              },
+              "details": {
+                "$ref": "#/components/schemas/DiagnosticDetails"
+              }
+            }
+          }
+        }
+      },
+      "DiagnosticDetails": {
+        "type": "object",
+        "required": ["category", "diagnosticCode", "reason", "action", "diagnostics"],
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": ["input", "waveform_detection"]
+          },
+          "legacyCode": {
+            "type": "string",
+            "description": "Compatibility error code retained at error.code."
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "image_required",
+              "unsupported",
+              "decode_failed",
+              "resource_limit",
+              "no_foreground",
+              "low_resolution_insufficient",
+              "table_lattice_dominant",
+              "no_coherent_waveform",
+              "candidates_rejected",
+              "candidates_ambiguous"
+            ]
+          },
+          "diagnosticCode": {
+            "type": "string",
+            "pattern": "^VTH-(IN|DETECT)-[A-Z-]+$",
+            "example": "VTH-DETECT-TABLE-LATTICE"
+          },
+          "message": { "type": "string" },
+          "action": {
+            "type": "string",
+            "description": "Suggested corrective action suitable for displaying directly to the user."
+          },
+          "diagnostics": {
+            "type": "object",
+            "description": "Compact numeric/boolean detector evidence such as input dimensions, foreground ratio, candidate counts, source scale, and table-lattice flags.",
+            "additionalProperties": {
+              "type": ["number", "boolean", "string"]
             }
           }
         }

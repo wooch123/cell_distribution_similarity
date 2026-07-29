@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(moduleDirectory, "..");
-const version = "1.35.0";
+const version = "1.36.0";
 const packageName = `vth-similarity-ubuntu-x64-v${version}`;
 const artifactsDirectory = path.join(projectRoot, "artifacts", "ubuntu");
 const cacheDirectory = path.join(artifactsDirectory, "cache");
@@ -445,6 +445,9 @@ Linux x64 실행 파일과 검색 코퍼스, 모델, 웹 화면, 로컬 학습 A
 - PNG/JPEG 산포 이미지와 클립보드 이미지를 분석합니다.
 - 프레임, 열린 L축, 경계 없는 Curve 군집을 분리하고 FHD 이미지당 최대
   30개 차트를 독립적으로 검색합니다.
+- 한 차트 안에 여러 색상 시리즈가 있으면 색은 분리 과정에서만 사용하고,
+  각 시리즈를 색·선 스타일 없는 Curve로 정규화해 독립적으로 검색합니다.
+  API의 panel.series 배열에서 시리즈별 순위와 점수를 확인할 수 있습니다.
 - 크기가 다른 차트, 단일 봉우리, 저해상도, 표·도형·사진성 방해 요소를
   포함한 기존 네 가지 멀티차트 샘플과 1920×1080 안의 5행×6열 차트
   30개를 검증하는 FHD 밀집 샘플이 함께 들어 있습니다.
@@ -456,6 +459,7 @@ Linux x64 실행 파일과 검색 코퍼스, 모델, 웹 화면, 로컬 학습 A
 로컬 학습
 - 화면에서 한 장, 여러 파일 또는 폴더 전체를 분석해 이 서버의 data/
   폴더에 학습할 수 있습니다.
+- 한 차트에서 색으로 분리된 여러 시리즈도 각각 별도 후보로 검증·저장됩니다.
 - 학습 후보는 서버를 다시 시작해도 유지되고 데이터 관리 탭에서 삭제할 수
   있습니다.
 - LAN 사용자는 같은 서버의 학습 후보와 추천 결과를 공유합니다.
@@ -522,6 +526,8 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
       similaritySearchApi: true,
       multiChartPanelSplitting: true,
       multiChartMaximumPanels: 30,
+      colorSeriesSeparation: true,
+      similarityRanking: "per-panel-per-series",
       samples: sampleFiles.map((fileName) => ({
         path: `site/client/samples/${fileName}`,
       })),

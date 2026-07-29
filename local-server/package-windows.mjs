@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(moduleDirectory, "..");
-const version = "1.35.0";
+const version = "1.36.0";
 const packageName = `vth-similarity-windows-x64-v${version}`;
 const artifactsDirectory = path.join(projectRoot, "artifacts", "windows");
 const cacheDirectory = path.join(artifactsDirectory, "cache");
@@ -326,6 +326,9 @@ Node.js v${nodeVersion} Windows x64 런타임이 압축된 상태로 포함되�
 형상 검색
 - 한 그림에 서로 다른 좌표의 차트가 여러 개 있으면 사각 프레임과 열린
   L축을 찾아 행 우선 순서로 분리하고, 각 차트를 독립적으로 분석·검색합니다.
+- 하나의 차트 안에 여러 분포가 서로 다른 색으로 겹쳐 있으면 색은 분리
+  단계에서만 사용하고, 각 시리즈를 색·선 스타일 없는 표준 Curve로 바꿔
+  독립적으로 검색합니다. 대표 결과는 가장 비정규적인 시리즈입니다.
 - FHD 한 이미지에서 오밀조밀하게 배치된 차트를 최대 30개까지 분석합니다.
   30개를 초과하면 신뢰도가 높은 30개를 행 우선 순서로 반환하고 API 경고와
   truncated 상태를 표시합니다.
@@ -360,6 +363,8 @@ Node.js v${nodeVersion} Windows x64 런타임이 압축된 상태로 포함되�
 이 PC 전용 화면 학습
 - 산포 그림을 분석한 뒤 학습 패널을 열고 저장 동의에 체크합니다.
 - 한 파일에서 분리된 차트는 각각 별도의 학습 후보와 원본 크롭으로 저장됩니다.
+- 한 차트에서 분리된 여러 색상 시리즈도 각각 별도 학습 후보로 저장되며,
+  같은 원본 차트 크롭을 provenance로 검증합니다.
 - "여러 파일 학습" 또는 "폴더 전체 학습"으로 선택한 지원 이미지를 개수
   제한 없이 순차 분석하고 저장할 수 있습니다.
 - "이 PC에 학습"을 누르면 축 없는 표준 Curve, descriptor와
@@ -381,11 +386,13 @@ Invoke-WebRequest -Method Post \`
   -Uri "http://127.0.0.1:4173/api/v1/similarity-search?topK=5" \`
   -ContentType "image/png" -InFile ".\\graph.png"
 
-검색 결과의 panelCount, panelLayout, panels 배열은 분리된 차트의 좌표,
-검출 신뢰도, 차트별 query와 results를 포함합니다. 기존 연동을 위한 최상위
-query와 results는 첫 번째 차트를 가리킵니다. 각 results 배열은 rank,
-score, 세부 형상 scores, 유사 이유, 표준 추천 그림 URL과 학습 원본 그림
-URL을 포함합니다. 검색 입력 그림은 저장하거나 학습에 사용하지 않습니다.
+검색 결과의 panelCount, panelLayout, panels 배열은 분리된 차트의 좌표와
+검출 신뢰도를 포함합니다. 각 panel의 seriesCount, selectedSeriesIndex,
+series 배열에는 색으로 분리된 시리즈별 query와 results가 들어 있습니다.
+하위 호환용 panel query/results는 대표 시리즈를, 최상위 query/results는
+첫 번째 차트의 대표 시리즈를 가리킵니다. 각 results 배열은 rank, score,
+세부 형상 scores, 유사 이유, 표준 추천 그림 URL과 학습 원본 그림 URL을
+포함합니다. 검색 입력 그림은 저장하거나 학습에 사용하지 않습니다.
 
 PowerShell에서 원본 그림 밀어넣기:
 Invoke-WebRequest -Method Post \`
@@ -437,6 +444,8 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
       similaritySearchApi: true,
       multiChartPanelSplitting: true,
       multiChartMaximumPanels: 30,
+      colorSeriesSeparation: true,
+      similarityRanking: "per-panel-per-series",
       multiChartSample: {
         path: "site/client/samples/vnand-ppt-12-chart-sample.png",
         panelCount: 12,
