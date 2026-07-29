@@ -973,11 +973,17 @@ export function measureChartCurveEvidence(
     peakPosition <= 0.88 &&
     peakProminence >= 0.075 &&
     thinEnough;
+  const logScaleParabolicPeak =
+    baseSinglePeakShape &&
+    singlePeakMonotonicity >= 0.97 &&
+    traceSmoothness >= 0.68 &&
+    roundedApexScore >= 0.45;
   const smoothSinglePeakShape =
     baseSinglePeakShape &&
-    singlePeakMonotonicity >= 0.82 &&
-    traceSmoothness >= 0.92 &&
-    roundedApexScore >= 0.1;
+    ((singlePeakMonotonicity >= 0.82 &&
+      traceSmoothness >= 0.92 &&
+      roundedApexScore >= 0.1) ||
+      logScaleParabolicPeak);
   // A single-state plot can occupy only the middle of a wide axis. Requiring
   // the same full-width coverage as a multi-State chain drops these otherwise
   // valid charts, especially on PPT slides. Keep a localized trace only when
@@ -1013,10 +1019,16 @@ export function measureChartCurveEvidence(
     continuousCoverage,
     verticalVariation,
     localizedSinglePeak,
+    logScaleParabolicPeak,
+    fullWidthTrace,
+    peakPosition,
     peakProminence,
     singlePeakMonotonicity,
     traceSmoothness,
     roundedApexScore,
+    thinEnough,
+    residualDensity,
+    meanPixelsPerActiveColumn,
   };
 }
 
@@ -1638,6 +1650,273 @@ function detectGeometricCandidatesAtScale(
   }));
 }
 
+function mergeCurveColorMasks(curveColorMasks, width, height) {
+  if (!Array.isArray(curveColorMasks) || !curveColorMasks.length) {
+    return null;
+  }
+  const merged = new Uint8Array(width * height);
+  let active = 0;
+  for (const colorMask of curveColorMasks) {
+    if (!colorMask || colorMask.length < merged.length) continue;
+    for (let index = 0; index < merged.length; index += 1) {
+      if (!colorMask[index] || merged[index]) continue;
+      merged[index] = 1;
+      active += 1;
+    }
+  }
+  return active >= Math.max(24, width * height * 0.000025)
+    ? merged
+    : null;
+}
+
+function extractFramelessCurveCandidates(
+  mask,
+  width,
+  height,
+  source,
+) {
+  const visited = new Uint8Array(width * height);
+  const queue = new Int32Array(width * height);
+  const columnStamp = new Uint32Array(width);
+  const minimumWidth = Math.max(18, Math.round(width * 0.018));
+  const minimumHeight = Math.max(8, Math.round(height * 0.015));
+  const minimumInk = Math.max(
+    18,
+    Math.round(width * height * 0.000018),
+  );
+  const candidates = [];
+  let rejectedComponentCount = 0;
+  let componentId = 0;
+
+  for (let start = 0; start < mask.length; start += 1) {
+    if (!mask[start] || visited[start]) continue;
+    componentId += 1;
+    let head = 0;
+    let tail = 1;
+    queue[0] = start;
+    visited[start] = 1;
+    let left = start % width;
+    let right = left;
+    let top = Math.floor(start / width);
+    let bottom = top;
+    let pixelCount = 0;
+    let occupiedColumnCount = 0;
+
+    while (head < tail) {
+      const index = queue[head];
+      head += 1;
+      const x = index % width;
+      const y = Math.floor(index / width);
+      pixelCount += 1;
+      left = Math.min(left, x);
+      right = Math.max(right, x);
+      top = Math.min(top, y);
+      bottom = Math.max(bottom, y);
+      if (columnStamp[x] !== componentId) {
+        columnStamp[x] = componentId;
+        occupiedColumnCount += 1;
+      }
+
+      for (
+        let neighborY = Math.max(0, y - 1);
+        neighborY <= Math.min(height - 1, y + 1);
+        neighborY += 1
+      ) {
+        for (
+          let neighborX = Math.max(0, x - 1);
+          neighborX <= Math.min(width - 1, x + 1);
+          neighborX += 1
+        ) {
+          const neighborIndex = neighborY * width + neighborX;
+          if (
+            neighborIndex === index ||
+            !mask[neighborIndex] ||
+            visited[neighborIndex]
+          ) {
+            continue;
+          }
+          visited[neighborIndex] = 1;
+          queue[tail] = neighborIndex;
+          tail += 1;
+        }
+      }
+    }
+
+    const componentWidth = right - left + 1;
+    const componentHeight = bottom - top + 1;
+    if (
+      componentWidth < minimumWidth ||
+      componentHeight < minimumHeight ||
+      pixelCount < minimumInk
+    ) {
+      continue;
+    }
+    const columnContinuity =
+      occupiedColumnCount / Math.max(1, componentWidth);
+    const averageInkPerColumn =
+      pixelCount / Math.max(1, occupiedColumnCount);
+    const density =
+      pixelCount /
+      Math.max(1, componentWidth * componentHeight);
+    if (
+      columnContinuity < 0.45 ||
+      averageInkPerColumn >
+        Math.max(9, componentHeight * 0.22) ||
+      density > 0.24 ||
+      componentWidth / componentHeight < 0.65
+    ) {
+      rejectedComponentCount += 1;
+      continue;
+    }
+
+    // Measure with vertical breathing room so the log-scale tails are not
+    // removed by the normal interior inset. Keep horizontal padding narrow:
+    // two unrelated PPT charts can have only a few blank pixels between them.
+    const horizontalPadding = clamp(
+      Math.round(componentWidth * 0.02),
+      3,
+      8,
+    );
+    const verticalPadding = clamp(
+      Math.round(componentHeight * 0.12),
+      4,
+      Math.max(4, Math.round(height * 0.025)),
+    );
+    const measurementBounds = {
+      left: Math.max(0, left - horizontalPadding),
+      top: Math.max(0, top - verticalPadding),
+      right: Math.min(width - 1, right + horizontalPadding),
+      bottom: Math.min(height - 1, bottom + verticalPadding),
+      axisMode: "content",
+    };
+    const curveEvidence = measureChartCurveEvidence(
+      measurementBounds,
+      mask,
+      width,
+    );
+    const roundedPeak =
+      !curveEvidence.localizedSinglePeak ||
+      curveEvidence.logScaleParabolicPeak ||
+      (curveEvidence.singlePeakMonotonicity >= 0.82 &&
+        curveEvidence.traceSmoothness >= 0.92 &&
+        curveEvidence.roundedApexScore >= 0.1);
+    const validShape =
+      curveEvidence.valid &&
+      curveEvidence.horizontalCoverage >= 0.35 &&
+      curveEvidence.continuousCoverage >= 0.3 &&
+      curveEvidence.verticalVariation >= 0.08 &&
+      curveEvidence.peakPosition >= 0.06 &&
+      curveEvidence.peakPosition <= 0.94 &&
+      curveEvidence.peakProminence >= 0.055 &&
+      curveEvidence.score >= 0.48 &&
+      roundedPeak;
+    if (!validShape) {
+      rejectedComponentCount += 1;
+      continue;
+    }
+    candidates.push({
+      left,
+      top,
+      right,
+      bottom,
+      confidence: clamp(
+        0.45 +
+          curveEvidence.score * 0.46 +
+          (source === "color" ? 0.04 : 0),
+        0,
+        0.96,
+      ),
+      axisMode: "content",
+      detectionScale: "content",
+      detectionReason: "frameless-curve-region",
+      curveEvidence,
+      curveSource: source,
+    });
+  }
+
+  return { candidates, rejectedComponentCount };
+}
+
+function detectFramelessCurveCandidates(
+  curveEvidenceMask,
+  curveColorMasks,
+  width,
+  height,
+) {
+  if (!curveEvidenceMask) {
+    return { candidates: [], rejectedComponentCount: 0 };
+  }
+  const hypotheses = [
+    extractFramelessCurveCandidates(
+      curveEvidenceMask,
+      width,
+      height,
+      "salience",
+    ),
+  ];
+  const colorMask = mergeCurveColorMasks(
+    curveColorMasks,
+    width,
+    height,
+  );
+  if (colorMask) {
+    hypotheses.push(
+      extractFramelessCurveCandidates(
+        colorMask,
+        width,
+        height,
+        "color",
+      ),
+    );
+  }
+
+  // The broader salience hypothesis comes first. It normally joins adjacent
+  // coloured State segments into one distribution, while the colour-only
+  // hypothesis can still recover a Curve that was connected to a dark axis,
+  // label or guide in the broad mask.
+  const ranked = hypotheses
+    .flatMap((hypothesis) => hypothesis.candidates)
+    .sort(
+      (left, right) =>
+        (right.curveSource === "salience") -
+          (left.curveSource === "salience") ||
+        area(right) - area(left) ||
+        right.confidence - left.confidence,
+    );
+  const candidates = [];
+  for (const candidate of ranked) {
+    if (
+      candidates.some(
+        (existing) =>
+          intersectionOverUnion(existing, candidate) >= 0.58 ||
+          contains(existing, candidate, 4) ||
+          contains(candidate, existing, 4),
+      )
+    ) {
+      continue;
+    }
+    candidates.push(candidate);
+  }
+
+  // One unframed Curve is already handled correctly by whole-image fallback.
+  // Requiring two independent regions prevents a logo, arrow or formula from
+  // turning an ordinary single-chart upload into multiple panels.
+  if (candidates.length < 2) {
+    return { candidates: [], rejectedComponentCount: 0 };
+  }
+  return {
+    candidates,
+    rejectedComponentCount: Math.min(
+      99,
+      Math.max(
+        ...hypotheses.map(
+          (hypothesis) => hypothesis.rejectedComponentCount,
+        ),
+      ),
+    ),
+  };
+}
+
 /**
  * Detect independent chart panels from a precomputed foreground mask.
  *
@@ -1658,6 +1937,7 @@ function detectGeometricCandidatesAtScale(
  *   fallbackToWholeImage?: boolean;
  *   edgeEvidenceMask?: Uint8Array;
  *   curveEvidenceMask?: Uint8Array;
+ *   curveColorMasks?: Uint8Array[];
  *   recoverLowResolution?: boolean;
  *   maximumLineGap?: number;
  * }} [options]
@@ -1767,8 +2047,18 @@ export function detectChartPanelsFromMask(
     options.curveEvidenceMask ??
     edgeEvidenceMask ??
     workingMask;
+  const framelessDetection = detectFramelessCurveCandidates(
+    curveEvidenceMask,
+    options.curveColorMasks,
+    width,
+    height,
+  );
   const geometricCandidates = removeDuplicateAndGridCandidates(
-    [...strictCandidates, ...compactCandidates],
+    [
+      ...strictCandidates,
+      ...compactCandidates,
+      ...framelessDetection.candidates,
+    ],
     edgeEvidenceMask ?? workingMask,
     curveEvidenceMask,
     width,
@@ -1794,7 +2084,7 @@ export function detectChartPanelsFromMask(
       curveEvidence,
     };
   });
-  const rejectedNonChartCount = measuredCandidates.reduce(
+  const geometricRejectedNonChartCount = measuredCandidates.reduce(
     (count, candidate) =>
       count + (candidate.curveEvidence.valid ? 0 : 1),
     0,
@@ -1833,6 +2123,15 @@ export function detectChartPanelsFromMask(
       );
     },
   );
+  const framelessUsed = candidates.some(
+    (candidate) =>
+      candidate.detectionReason === "frameless-curve-region",
+  );
+  const rejectedNonChartCount =
+    geometricRejectedNonChartCount +
+    (framelessUsed
+      ? framelessDetection.rejectedComponentCount
+      : 0);
 
   if (!candidates.length && options.fallbackToWholeImage !== false) {
     return {
@@ -1941,6 +2240,7 @@ export function detectChartPanels(
     broadMask,
     salientMask,
     curveSalientMask,
+    curveColorMasks,
   } = buildForegroundMasks(
     rgb,
     width,
@@ -1953,6 +2253,7 @@ export function detectChartPanels(
   return detectChartPanelsFromMask(broadMask, width, height, {
     edgeEvidenceMask: salientMask,
     curveEvidenceMask: curveSalientMask,
+    curveColorMasks,
     maximumLineGap: options.maximumLineGap,
   });
 }

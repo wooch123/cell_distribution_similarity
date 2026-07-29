@@ -6,6 +6,8 @@
       "height": 900,
       "expectedChartCount": 8,
       "singlePeakChartIndexes": [],
+      "boundaryMode": "framed",
+      "chartOnly": false,
       "distractors": [
         "table",
         "diagram",
@@ -21,6 +23,8 @@
       "singlePeakChartIndexes": [
         1
       ],
+      "boundaryMode": "framed",
+      "chartOnly": false,
       "distractors": [
         "table",
         "diagram",
@@ -34,12 +38,29 @@
       "height": 360,
       "expectedChartCount": 7,
       "singlePeakChartIndexes": [],
+      "boundaryMode": "framed",
+      "chartOnly": false,
       "distractors": [
         "table",
         "diagram",
         "photo"
       ],
       "bytes": 14833
+    },
+    {
+      "fileName": "vnand-random-multichart-frameless-04.png",
+      "width": 1440,
+      "height": 820,
+      "expectedChartCount": 8,
+      "singlePeakChartIndexes": [
+        1,
+        3,
+        6
+      ],
+      "boundaryMode": "frameless",
+      "chartOnly": true,
+      "distractors": [],
+      "bytes": 23349
     }
   ]
 }

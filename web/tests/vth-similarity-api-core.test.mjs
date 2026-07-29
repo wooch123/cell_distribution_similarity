@@ -31,6 +31,12 @@ const variableSizeRandomSample = await readFile(
     import.meta.url,
   ),
 );
+const framelessRandomSample = await readFile(
+  new URL(
+    "../public/samples/vnand-random-multichart-frameless-04.png",
+    import.meta.url,
+  ),
+);
 const corpus = JSON.parse(
   await readFile(
     new URL("../public/corpus-index.json", import.meta.url),
@@ -449,6 +455,31 @@ test("API separates all variable-size charts including a compact single peak", a
         panel.bounds.processed.height <= 100,
     ),
     "the compact single-peak chart must survive panel separation",
+  );
+});
+
+test("API independently ranks chart-only curves without visible panel boundaries", async () => {
+  const response = await searchSimilarityImage({
+    bytes: framelessRandomSample,
+    mimeType: "image/png",
+    topK: 1,
+    corpus,
+    origin: "https://dove9999.com",
+  });
+
+  assert.equal(response.panelCount, 8);
+  assert.equal(response.panelDetection.detectedPanelCount, 8);
+  assert.equal(response.panelDetection.analyzedPanelCount, 8);
+  assert.equal(response.panels.length, 8);
+  assert.equal(response.panelDetection.truncated, false);
+  assert.ok(
+    response.panels.every(
+      (panel) =>
+        panel.results.length === 1 &&
+        panel.bounds.processed.width > 100 &&
+        panel.bounds.processed.height > 70,
+    ),
+    "each frameless Curve must retain an independent crop and ranking",
   );
 });
 

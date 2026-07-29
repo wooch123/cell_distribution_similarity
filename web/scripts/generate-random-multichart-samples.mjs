@@ -85,6 +85,51 @@ const SAMPLE_DEFINITIONS = [
     diagram: [470, 130, 625, 220],
     photo: [220, 110, 262, 238],
   },
+  {
+    fileName: "vnand-random-multichart-frameless-04.png",
+    width: 1440,
+    height: 820,
+    background: COLORS.white,
+    frameless: true,
+    charts: [
+      {
+        bounds: [30, 42, 392, 215],
+        peakCenters: [0.16, 0.42, 0.7, 0.88],
+      },
+      {
+        bounds: [430, 20, 680, 155],
+        peakCenters: [0.5],
+        peakWidth: 0.13,
+      },
+      {
+        bounds: [735, 56, 1385, 270],
+        peakCenters: [0.08, 0.2, 0.32, 0.44, 0.56, 0.68, 0.8, 0.92],
+      },
+      {
+        bounds: [55, 310, 250, 430],
+        peakCenters: [0.49],
+        peakWidth: 0.125,
+      },
+      {
+        // A fourteen-pixel gutter is the only boundary between these curves.
+        bounds: [264, 290, 570, 455],
+        peakCenters: [0.15, 0.38, 0.62, 0.85],
+      },
+      {
+        bounds: [650, 350, 915, 650],
+        peakCenters: [0.08, 0.2, 0.32, 0.44, 0.56, 0.68, 0.8, 0.92],
+      },
+      {
+        bounds: [940, 305, 1290, 490],
+        peakCenters: [0.5],
+        peakWidth: 0.13,
+      },
+      {
+        bounds: [105, 555, 500, 765],
+        peakCenters: [0.16, 0.42, 0.69, 0.88],
+      },
+    ],
+  },
 ];
 
 function createCanvas(definition) {
@@ -362,6 +407,53 @@ function createCanvas(definition) {
     }
   };
 
+  const drawFramelessChart = (chartDefinition, chartIndex) => {
+    const [left, top, right, bottom] = chartDefinition.bounds;
+    const plotWidth = right - left;
+    const plotHeight = bottom - top;
+    const stateCount = chartDefinition.peakCenters.length;
+    const curveColors = [
+      COLORS.blue,
+      COLORS.orange,
+      COLORS.green,
+      COLORS.red,
+      COLORS.violet,
+      COLORS.teal,
+      COLORS.gold,
+      COLORS.blue,
+    ];
+    let previous = null;
+
+    for (let localX = 0; localX <= plotWidth; localX += 1) {
+      const progress = localX / Math.max(1, plotWidth);
+      const density = densityAt(
+        progress,
+        chartIndex,
+        chartDefinition,
+      );
+      const logDensity = Math.max(-6, Math.log10(density));
+      const point = {
+        x: left + localX,
+        y: top + ((0 - logDensity) / 6) * plotHeight,
+      };
+      const stateIndex = Math.min(
+        stateCount - 1,
+        Math.floor(progress * stateCount),
+      );
+      if (previous) {
+        drawLine(
+          previous.x,
+          previous.y,
+          point.x,
+          point.y,
+          curveColors[stateIndex],
+          2,
+        );
+      }
+      previous = point;
+    }
+  };
+
   const drawTable = ([left, top, right, bottom]) => {
     fillRect(left, top, right, bottom, COLORS.white);
     drawRect(left, top, right, bottom, COLORS.ink, 2);
@@ -469,18 +561,22 @@ function createCanvas(definition) {
     definition.height - 1,
     definition.background,
   );
-  drawTextBars(
-    Math.round(definition.width * 0.025),
-    Math.round(definition.height * 0.022),
-    Math.round(definition.width * 0.21),
-    2,
-    COLORS.ink,
-    definition.width < 800 ? 1 : 2,
-  );
-  definition.charts.forEach(drawChart);
-  drawTable(definition.table);
-  drawDiagram(definition.diagram);
-  drawPhoto(definition.photo);
+  if (definition.frameless) {
+    definition.charts.forEach(drawFramelessChart);
+  } else {
+    drawTextBars(
+      Math.round(definition.width * 0.025),
+      Math.round(definition.height * 0.022),
+      Math.round(definition.width * 0.21),
+      2,
+      COLORS.ink,
+      definition.width < 800 ? 1 : 2,
+    );
+    definition.charts.forEach(drawChart);
+    drawTable(definition.table);
+    drawDiagram(definition.diagram);
+    drawPhoto(definition.photo);
+  }
 
   return rgb;
 }
@@ -512,7 +608,11 @@ for (const definition of SAMPLE_DEFINITIONS) {
           ? [index]
           : [],
     ),
-    distractors: ["table", "diagram", "photo"],
+    boundaryMode: definition.frameless ? "frameless" : "framed",
+    chartOnly: definition.frameless === true,
+    distractors: definition.frameless
+      ? []
+      : ["table", "diagram", "photo"],
     bytes: encoded.length,
   });
 }

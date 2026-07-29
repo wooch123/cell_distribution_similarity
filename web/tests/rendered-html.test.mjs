@@ -69,6 +69,7 @@ test("server-renders the VTH similarity product", async () => {
   assert.match(html, /샘플 1/);
   assert.match(html, /가변 크기/);
   assert.match(html, /저해상도/);
+  assert.match(html, /경계 없는 Curve/);
   assert.match(
     html,
     /vnand-random-multichart-mixed-01\.png/,
@@ -80,6 +81,10 @@ test("server-renders the VTH similarity product", async () => {
   assert.match(
     html,
     /vnand-random-multichart-lowres-03\.png/,
+  );
+  assert.match(
+    html,
+    /vnand-random-multichart-frameless-04\.png/,
   );
   assert.match(html, /검색 API 문서/);
   assert.match(html, /완전 독립판 다운로드/);
@@ -132,7 +137,7 @@ test("ships the verified Windows standalone package as a web download", async ()
   const [metadataText, checksumText] = await Promise.all([
     readFile(
       new URL(
-        "../public/downloads/windows-package-v1.30.0.json",
+        "../public/downloads/windows-package-v1.31.0.json",
         import.meta.url,
       ),
       "utf8",
@@ -161,7 +166,7 @@ test("ships the verified Windows standalone package as a web download", async ()
 
   assert.deepEqual(deployedParts, sourceParts);
   assert.equal(metadata.schemaVersion, 1);
-  assert.equal(metadata.version, "1.30.0");
+  assert.equal(metadata.version, "1.31.0");
   assert.equal(metadata.fileName, "vth-similarity-windows-x64.zip");
   assert.equal(metadata.delivery, "browser-assembled");
   assert.equal(metadata.bytes, zip.length);
@@ -195,7 +200,7 @@ test("ships the verified Windows standalone package as a web download", async ()
     onProgress: (event) => progress.push(event),
   });
   const downloaded = Buffer.from(await assembled.blob.arrayBuffer());
-  assert.equal(assembled.fileName, "vth-similarity-windows-x64-v1.30.0.zip");
+  assert.equal(assembled.fileName, "vth-similarity-windows-x64-v1.31.0.zip");
   assert.equal(assembled.manifest.sha256, digest);
   assert.equal(downloaded.length, zip.length);
   assert.equal(
@@ -344,7 +349,7 @@ test("ships a complete browser search corpus and no starter preview", async () =
       "utf8",
     ),
   );
-  assert.equal(randomSampleManifest.samples.length, 3);
+  assert.equal(randomSampleManifest.samples.length, 4);
   await Promise.all(
     randomSampleManifest.samples.map(async (sample) => {
       const [source, deployed] = await Promise.all([
@@ -509,6 +514,7 @@ test("shares standardized candidates and anonymous relevance labels centrally", 
   assert.match(source, /vnand-random-multichart-mixed-01\.png/);
   assert.match(source, /vnand-random-multichart-mixed-02\.png/);
   assert.match(source, /vnand-random-multichart-lowres-03\.png/);
+  assert.match(source, /vnand-random-multichart-frameless-04\.png/);
   assert.doesNotMatch(source, /standardizedImageDataUrl/);
   assert.match(source, /\/api\/v1\/shared-training-samples/);
   assert.match(source, /SHARED_TRAINING_CONSENT_VERSION/);

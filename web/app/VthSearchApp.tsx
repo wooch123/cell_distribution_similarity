@@ -240,6 +240,11 @@ const RANDOM_MULTICHART_SAMPLES = [
     fileName: "vnand-random-multichart-lowres-03.png",
     label: "저해상도",
   },
+  {
+    url: "/samples/vnand-random-multichart-frameless-04.png",
+    fileName: "vnand-random-multichart-frameless-04.png",
+    label: "경계 없는 Curve",
+  },
 ] as const;
 const CONTRIBUTOR_TOKEN_KEY = "vth-shared-contributor-token";
 const RELEVANCE_CONTRIBUTOR_TOKEN_KEY =
@@ -2458,7 +2463,7 @@ export function VthSearchApp() {
                 <strong>그래프를 놓거나 붙여넣으세요</strong>
                 <span>클릭하여 파일 선택 · Ctrl+V / ⌘V</span>
                 <small>
-                  PNG · JPG · WEBP / 무작위 배치·저해상도 / 최대 24차트
+                  PNG · JPG · WEBP / 무작위 배치·저해상도·경계 없는 Curve / 최대 24차트
                 </small>
               </button>
             )}

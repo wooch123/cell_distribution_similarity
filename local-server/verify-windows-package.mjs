@@ -315,14 +315,22 @@ async function verifyService(packageDirectory, validationDirectory) {
       {
         fileName: "vnand-random-multichart-mixed-01.png",
         panelCount: 8,
+        hasDistractors: true,
       },
       {
         fileName: "vnand-random-multichart-mixed-02.png",
         panelCount: 8,
+        hasDistractors: true,
       },
       {
         fileName: "vnand-random-multichart-lowres-03.png",
         panelCount: 7,
+        hasDistractors: true,
+      },
+      {
+        fileName: "vnand-random-multichart-frameless-04.png",
+        panelCount: 8,
+        hasDistractors: false,
       },
     ]) {
       const sampleBytes = await readFile(
@@ -353,14 +361,16 @@ async function verifyService(packageDirectory, validationDirectory) {
             sample.panelCount &&
           result.panelDetection?.analyzedPanelCount ===
             sample.panelCount &&
-          result.panelDetection?.rejectedNonChartCount >= 1 &&
+          (!sample.hasDistractors ||
+            result.panelDetection?.rejectedNonChartCount >= 1) &&
           result.panelDetection?.truncated === false &&
           result.panels?.every(
             (panel) =>
               panel.results?.length === 1 &&
-              panel.query?.stateCount >= 4,
+              (!sample.hasDistractors ||
+                panel.query?.stateCount >= 4),
           ),
-        `Packaged random sample retained non-chart content: ${sample.fileName}`,
+        `Packaged random sample panel verification failed: ${sample.fileName}`,
       );
     }
 
@@ -542,13 +552,17 @@ async function main() {
           ]) &&
         manifest.bundled?.multiChartSample?.layout?.rows === 3 &&
         manifest.bundled?.multiChartSample?.layout?.columns === 4 &&
-        manifest.bundled?.randomMultiChartSamples?.length === 3 &&
+        manifest.bundled?.randomMultiChartSamples?.length === 4 &&
         manifest.bundled.randomMultiChartSamples.every(
           (sample) =>
             sample.panelCount >= 7 &&
-            sample.distractors?.includes("table") &&
-            sample.distractors?.includes("diagram") &&
-            sample.distractors?.includes("photo"),
+            (sample.distractors?.length === 0
+              ? sample.path.endsWith(
+                  "vnand-random-multichart-frameless-04.png",
+                )
+              : sample.distractors?.includes("table") &&
+                sample.distractors?.includes("diagram") &&
+                sample.distractors?.includes("photo")),
         ) &&
         manifest.node?.packagedArchive ===
           "runtime/node-runtime.tar.xz",

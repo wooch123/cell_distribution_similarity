@@ -625,8 +625,8 @@ test("prefers dark inner plot frames over pale outer PPT chart cards", () => {
   assert.ok(result.panels[0].y >= 145 && result.panels[0].y <= 155);
 });
 
-test("separates every scattered sample and excludes its non-chart content", async () => {
-  assert.equal(randomSampleManifest.samples.length, 3);
+test("separates every scattered sample and excludes non-chart content only when present", async () => {
+  assert.equal(randomSampleManifest.samples.length, 4);
   for (const sample of randomSampleManifest.samples) {
     const decoded = decodePng(
       await readFile(
@@ -646,10 +646,15 @@ test("separates every scattered sample and excludes its non-chart content", asyn
       `${sample.fileName} should keep only its VTH charts`,
     );
     assert.equal(result.panels.length, sample.expectedChartCount);
-    assert.ok(
-      result.rejectedNonChartCount >= 1,
-      `${sample.fileName} should reject table/photo/diagram candidates`,
-    );
+    if (sample.distractors.length > 0) {
+      assert.ok(
+        result.rejectedNonChartCount >= 1,
+        `${sample.fileName} should reject table/photo/diagram candidates`,
+      );
+    } else {
+      assert.equal(sample.chartOnly, true);
+      assert.equal(sample.boundaryMode, "frameless");
+    }
     assert.equal(result.fallbackUsed, false);
   }
 });
