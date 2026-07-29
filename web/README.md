@@ -33,7 +33,8 @@ curl -X POST \
 Raw 이미지 외에도 `multipart/form-data`의 `image` 파일과
 `application/json`의 Base64 `imageDataUrl`을 받을 수 있습니다. 전체
 계약과 오류 코드는 `/similarity-search-openapi.json`에서 확인합니다.
-동일 엔드포인트와 계약은 Windows 패키지의 로컬 서버에도 포함됩니다.
+동일 엔드포인트와 계약은 Windows 패키지의 로컬 서버와 Ubuntu x64 외부
+Web 서버 패키지에도 포함됩니다.
 
 ## 개인정보 처리
 
@@ -59,8 +60,7 @@ Raw 이미지 외에도 `multipart/form-data`의 `image` 파일과
 임의 배치 혼합 샘플은
 `node scripts/generate-random-multichart-samples.mjs`로 재생성합니다.
 같은 샘플과 무작위 배치·저해상도 복원을 포함한 최대 24차트 분리기는
-Windows v1.31.0 완전 독립판에도
-함께 포함됩니다.
+Windows x64 및 Ubuntu x64 v1.32.0 독립판에도 함께 포함됩니다.
 추출 결과는 함께 배포된 읽기 전용 코퍼스와 로컬로 비교합니다.
 격자는 실선과 점선의 긴 수평·수직 run을 함께 검출하며, 삭제 후 Curve가
 양쪽에서 이어지는 교차 픽셀만 복원해 peak·valley 단절을 줄입니다.
@@ -96,6 +96,17 @@ Windows 완전 독립판은 같은 웹 빌드, 검색 코퍼스, 모델, Node �
 학습을 `data/` 저장소로 전환합니다. 서버 응답의 CSP
 `connect-src 'self' blob:`와 `/api/v1/runtime`의 오프라인 정책으로 외부 통신을
 차단합니다.
+
+Ubuntu x64 패키지는 별도 외부 Web 서버용 배포본입니다. 상단의
+`UBUNTU X64 · WEB SERVER` 버튼으로 내려받으며 Windows 오프라인 실행판과
+용도와 버튼을 분리합니다. 웹 다운로드는 두 운영체제 모두 schema-v1
+매니페스트와 SHA-256 조각 검증을 거쳐 브라우저에서 원본 패키지를
+재조립합니다. v1.32.0의 고정 매니페스트 경로는
+`/downloads/windows-package-v1.32.0.json`과
+`/downloads/ubuntu-package-v1.32.0.json`입니다. Ubuntu 매니페스트의
+`fileName`은 우선 `vth-similarity-ubuntu-x64.tar.gz`를 사용하며, 다운로드
+코어는 검증된 `.tar.gz` 또는 `.zip` 파일명을 그대로 받아 버전이 붙은
+파일명으로 저장합니다.
 
 ## 로컬 실행
 

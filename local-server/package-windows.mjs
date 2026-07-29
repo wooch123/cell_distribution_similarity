@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(moduleDirectory, "..");
-const version = "1.31.0";
+const version = "1.32.0";
 const packageName = `vth-similarity-windows-x64-v${version}`;
 const artifactsDirectory = path.join(projectRoot, "artifacts", "windows");
 const cacheDirectory = path.join(artifactsDirectory, "cache");
@@ -110,6 +110,32 @@ async function walkFiles(directory, prefix = "") {
     }
   }
   return files;
+}
+
+async function cleanPreviousWindowsDownloads() {
+  await mkdir(publicChunksDirectory, { recursive: true });
+  const chunkEntries = await readdir(publicChunksDirectory);
+  await Promise.all(
+    chunkEntries
+      .filter((entry) =>
+        entry.startsWith("vth-similarity-windows-x64-v"),
+      )
+      .map((entry) =>
+        rm(path.join(publicChunksDirectory, entry), { force: true }),
+      ),
+  );
+  const downloadEntries = await readdir(publicDownloadsDirectory);
+  await Promise.all(
+    downloadEntries
+      .filter(
+        (entry) =>
+          /^windows-package(?:-v\d+\.\d+\.\d+)?\.json$/.test(entry) ||
+          entry === "vth-similarity-windows-x64.sha256",
+      )
+      .map((entry) =>
+        rm(path.join(publicDownloadsDirectory, entry), { force: true }),
+      ),
+  );
 }
 
 async function writeChecksums() {
@@ -489,8 +515,7 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
   const generatedAt = new Date().toISOString();
   const zipBytes = await readFile(zipPath);
   const parts = [];
-  await rm(publicDownloadsDirectory, { recursive: true, force: true });
-  await mkdir(publicChunksDirectory, { recursive: true });
+  await cleanPreviousWindowsDownloads();
   for (let offset = 0, index = 0; offset < zipBytes.length; index += 1) {
     const bytes = zipBytes.subarray(offset, offset + publicChunkSize);
     const fileName = `${publicZipName.replace(

@@ -52,9 +52,9 @@ descriptor, 파일명·메타데이터를 제거하고 JPEG로 다시 만든 원
 있습니다. Query와 평가자 코드는 서버에서 해시하고, 복수 평가자의 합의
 판정만 재학습 데이터로 집계합니다.
 
-## Windows 무설치 서비스와 학습 API
+## Windows 무설치판과 Ubuntu 외부 Web 서버판
 
-`artifacts/windows/vth-similarity-windows-x64-v1.31.0.zip`은 공식
+`artifacts/windows/vth-similarity-windows-x64-v1.32.0.zip`은 공식
 Windows x64 Node 런타임, 웹 빌드, 로컬 학습 API를 함께 담습니다. 다른
 Windows PC에서 압축을 푼 뒤 `start.bat`을 실행하면 설치 없이
 `http://127.0.0.1:4173`에서 동작합니다. 코퍼스, 모델, 웹 화면, 런타임이
@@ -81,10 +81,31 @@ Windows PC에서 압축을 푼 뒤 `start.bat`을 실행하면 설치 없이
 `가변 크기` 샘플에는 면적 차이가 큰 차트와 소형 단일 봉우리 차트를 함께
 넣어 동일 이미지에서도 크기나 봉우리 수와 무관하게 패널을 분리합니다.
 
-모든 운영 배포에는 화면 상단의 `단독 실행판 다운로드` 버튼을 포함합니다.
-패키징 스크립트는 버전 ZIP을 만든 뒤 웹 배포용 분할 자산·SHA-256·
-메타데이터를 자동 갱신합니다. 다운로드 버튼은 분할 자산을 원본 ZIP 바이트
-순서로 조립하고 각 조각과 완성 ZIP의 SHA-256을 확인한 뒤 저장합니다.
+Ubuntu x64는 여러 사용자가 접속하는 외부 Web 서버용 독립 배포본입니다.
+운영 페이지 상단에서 Windows의 `WINDOWS X64 · FULL OFFLINE` 버튼과
+Ubuntu의 `UBUNTU X64 · WEB SERVER` 버튼을 구분해 제공합니다.
+Node.js나 npm을 설치하지 않고 `.tar.gz`를 풀어 `./start.sh`를 실행하면
+기본적으로 `0.0.0.0:4173`에서 수신합니다. 서버가 표시한
+`http://<Ubuntu 서버 IP>:4173/?access_token=...` URL을 다른 PC에서
+처음 한 번 열면 접근 키를 HttpOnly·SameSite 쿠키로 전환하고 주소창에서는
+즉시 제거합니다. `VTH_API_KEY`로 고정 키를 지정한 API 클라이언트는
+`x-api-key` 또는 Bearer 헤더를 사용할 수 있습니다.
+
+패키지에는 `vth.env.example`과 선택형 `install-systemd.sh`도 포함합니다.
+인터넷에 공개할 때는 4173 포트를 직접 노출하지 말고 UFW와 TLS 리버스
+프록시를 사용하며, 실제 브라우저 주소는
+`VTH_PUBLIC_URL=https://...`로 지정합니다. 접속한 사용자는 같은
+`data/` 학습 저장소와 추천 후보를 공유하지만 외부 공용 서버로 원본이나
+학습 데이터를 전송하지 않습니다.
+
+v1.32.0 웹 배포는
+`/downloads/windows-package-v1.32.0.json`과
+`/downloads/ubuntu-package-v1.32.0.json`을 고정 매니페스트 경로로
+사용합니다. 두 매니페스트 모두 schema-v1 `browser-assembled` 계약과
+SHA-256 조각 목록을 제공하며 브라우저는 각 조각과 완성 파일을 검증한 뒤
+저장합니다. Windows 결과물은 ZIP이고 Ubuntu는
+`vth-similarity-ubuntu-x64.tar.gz`를 우선 사용합니다. 매니페스트가 검증된
+Ubuntu ZIP을 선언하는 경우에도 같은 공통 조립기가 확장자를 보존합니다.
 Windows 패키지 내부에는 다운로드 자산을 다시 넣지 않아 재귀 패키징을
 방지합니다.
 

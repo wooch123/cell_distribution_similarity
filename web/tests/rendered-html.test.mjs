@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { access, readFile, readdir } from "node:fs/promises";
 import test from "node:test";
-import { assembleWindowsPackage } from "../lib/vth-download-core.mjs";
+import {
+  assembleUbuntuPackage,
+  assembleWindowsPackage,
+} from "../lib/vth-download-core.mjs";
 
 const projectRoot = new URL("../", import.meta.url);
 const distClientRoot = new URL("../dist/client/", import.meta.url);
@@ -88,6 +91,9 @@ test("server-renders the VTH similarity product", async () => {
   );
   assert.match(html, /검색 API 문서/);
   assert.match(html, /완전 독립판 다운로드/);
+  assert.match(html, /WINDOWS X64 · FULL OFFLINE/);
+  assert.match(html, /UBUNTU X64 · WEB SERVER/);
+  assert.match(html, /외부 Web 서버 다운로드/);
   assert.match(html, /ENGINE V3\.2/);
   assert.match(
     html,
@@ -133,18 +139,25 @@ test("stacks the source panel above a wide, shallow normalized Curve", async () 
   );
 });
 
-test("ships the verified Windows standalone package as a web download", async () => {
+async function verifyStandalonePackageDownload({
+  manifestFileName,
+  checksumFileName,
+  expectedVersion,
+  expectedFileName,
+  expectedDownloadFileName,
+  assemble,
+}) {
   const [metadataText, checksumText] = await Promise.all([
     readFile(
       new URL(
-        "../public/downloads/windows-package-v1.31.0.json",
+        `../public/downloads/${manifestFileName}`,
         import.meta.url,
       ),
       "utf8",
     ),
     readFile(
       new URL(
-        "../public/downloads/vth-similarity-windows-x64.sha256",
+        `../public/downloads/${checksumFileName}`,
         import.meta.url,
       ),
       "utf8",
@@ -166,8 +179,8 @@ test("ships the verified Windows standalone package as a web download", async ()
 
   assert.deepEqual(deployedParts, sourceParts);
   assert.equal(metadata.schemaVersion, 1);
-  assert.equal(metadata.version, "1.31.0");
-  assert.equal(metadata.fileName, "vth-similarity-windows-x64.zip");
+  assert.equal(metadata.version, expectedVersion);
+  assert.equal(metadata.fileName, expectedFileName);
   assert.equal(metadata.delivery, "browser-assembled");
   assert.equal(metadata.bytes, zip.length);
   assert.equal(metadata.sha256, digest);
@@ -186,11 +199,11 @@ test("ships the verified Windows standalone package as a web download", async ()
   });
   assert.equal(
     checksumText,
-    `${digest} *vth-similarity-windows-x64.zip\n`,
+    `${digest} *${expectedFileName}\n`,
   );
 
   const progress = [];
-  const assembled = await assembleWindowsPackage({
+  const assembled = await assemble({
     fetchImpl: async (input) => {
       const url = new URL(String(input), "http://localhost");
       return assetsFromDist().fetch(
@@ -200,7 +213,7 @@ test("ships the verified Windows standalone package as a web download", async ()
     onProgress: (event) => progress.push(event),
   });
   const downloaded = Buffer.from(await assembled.blob.arrayBuffer());
-  assert.equal(assembled.fileName, "vth-similarity-windows-x64-v1.31.0.zip");
+  assert.equal(assembled.fileName, expectedDownloadFileName);
   assert.equal(assembled.manifest.sha256, digest);
   assert.equal(downloaded.length, zip.length);
   assert.equal(
@@ -212,6 +225,30 @@ test("ships the verified Windows standalone package as a web download", async ()
     metadata.parts.length,
   );
   assert.equal(progress.at(-1).phase, "verify");
+}
+
+test("ships the verified Windows standalone package as a web download", async () => {
+  await verifyStandalonePackageDownload({
+    manifestFileName: "windows-package-v1.32.0.json",
+    checksumFileName: "vth-similarity-windows-x64.sha256",
+    expectedVersion: "1.32.0",
+    expectedFileName: "vth-similarity-windows-x64.zip",
+    expectedDownloadFileName:
+      "vth-similarity-windows-x64-v1.32.0.zip",
+    assemble: assembleWindowsPackage,
+  });
+});
+
+test("ships the verified Ubuntu external Web server package as a web download", async () => {
+  await verifyStandalonePackageDownload({
+    manifestFileName: "ubuntu-package-v1.32.0.json",
+    checksumFileName: "vth-similarity-ubuntu-x64.sha256",
+    expectedVersion: "1.32.0",
+    expectedFileName: "vth-similarity-ubuntu-x64.tar.gz",
+    expectedDownloadFileName:
+      "vth-similarity-ubuntu-x64-v1.32.0.tar.gz",
+    assemble: assembleUbuntuPackage,
+  });
 });
 
 test("ships a complete browser search corpus and no starter preview", async () => {
@@ -496,6 +533,9 @@ test("shares standardized candidates and anonymous relevance labels centrally", 
   assert.doesNotMatch(source, /https:\/\/dove9999\.com/);
   assert.match(source, /\/api\/v1\/runtime/);
   assert.match(source, /externalNetworkAllowed/);
+  assert.match(source, /data-testid="windows-download"/);
+  assert.match(source, /data-testid="ubuntu-download"/);
+  assert.match(source, /assembleUbuntuPackage/);
   assert.match(source, /buildTrainingApiPayload/);
   assert.match(source, /standardizedProfilePngDataUrl/);
   assert.match(source, /blobToDataUrl/);

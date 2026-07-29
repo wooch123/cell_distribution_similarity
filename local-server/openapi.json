@@ -2,12 +2,26 @@
   "openapi": "3.1.0",
   "info": {
     "title": "VTH Training API",
-    "version": "2.0.0",
-    "description": "V-NAND VTH graph images, separate standardized/source previews, and browser-extracted shape descriptors for incremental similarity retrieval."
+    "version": "2.1.0",
+    "description": "V-NAND VTH graph images, separate standardized/source previews, and browser-extracted shape descriptors for incremental similarity retrieval. Loopback mode works without authentication by default. A non-loopback bind automatically enables an access key; use x-api-key or Bearer authentication for API clients, or open the server-provided access_token URL once to establish the HttpOnly browser cookie."
   },
   "servers": [
     {
-      "url": "http://127.0.0.1:4173"
+      "url": "http://127.0.0.1:4173",
+      "description": "Default Windows/Linux loopback service"
+    },
+    {
+      "url": "http://{host}:{port}",
+      "description": "Ubuntu LAN or externally routed service",
+      "variables": {
+        "host": {
+          "default": "192.168.1.10",
+          "description": "Concrete LAN/public host. Never use 0.0.0.0 as a client URL."
+        },
+        "port": {
+          "default": "4173"
+        }
+      }
     }
   ],
   "paths": {
@@ -22,7 +36,19 @@
       },
       "post": {
         "summary": "Return ranked VTH shape matches for every chart in one PNG or JPEG image",
-        "description": "Charts at different coordinates are detected, cropped, and ranked independently in reading order. The legacy top-level query/results mirror panel 0. The query image is processed in memory only and is not saved or used for training. Results include normalized score components and loopback URLs for the standardized curve and, when available, its original source preview.",
+        "description": "Charts at different coordinates are detected, cropped, and ranked independently in reading order. The legacy top-level query/results mirror panel 0. The query image is processed in memory only and is not saved or used for training. Results include normalized score components and request-origin URLs for the standardized curve and, when available, its original source preview. Authentication is required when VTH_API_KEY is configured or the service is bound to a non-loopback host.",
+        "security": [
+          {},
+          {
+            "apiKeyHeader": []
+          },
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserCookie": []
+          }
+        ],
         "parameters": [
           {
             "name": "topK",
@@ -101,7 +127,7 @@
             "description": "Invalid image, request, or topK"
           },
           "401": {
-            "description": "API key is required when VTH_API_KEY is configured"
+            "description": "An API key or bootstrap browser cookie is required for a configured key or network-accessible bind"
           },
           "413": {
             "description": "Request exceeds 20 MB, image exceeds 12 MB, or image exceeds 8 million pixels"
@@ -141,14 +167,42 @@
     "/api/v1/training-samples": {
       "get": {
         "summary": "List search-ready learned candidates",
+        "description": "Authentication is required when the server is bound to a non-loopback host.",
+        "security": [
+          {},
+          {
+            "apiKeyHeader": []
+          },
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserCookie": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Ready candidates"
+          },
+          "401": {
+            "description": "Network-accessible training storage requires an API key or bootstrap browser cookie"
           }
         }
       },
       "post": {
         "summary": "Add an image with a 256-point profile and descriptor",
+        "security": [
+          {},
+          {
+            "apiKeyHeader": []
+          },
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserCookie": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -162,6 +216,9 @@
         "responses": {
           "201": {
             "description": "Immediately search-ready sample"
+          },
+          "401": {
+            "description": "A configured or automatically generated API key is required"
           }
         }
       }
@@ -169,6 +226,18 @@
     "/api/v1/training-images": {
       "post": {
         "summary": "Push a raw PNG/JPEG/WEBP image for later feature extraction",
+        "security": [
+          {},
+          {
+            "apiKeyHeader": []
+          },
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserCookie": []
+          }
+        ],
         "parameters": [
           {
             "name": "id",
@@ -218,6 +287,9 @@
           },
           "201": {
             "description": "Search-ready when profile and descriptor are also provided"
+          },
+          "401": {
+            "description": "A configured or automatically generated API key is required"
           }
         }
       }
@@ -225,6 +297,19 @@
     "/api/v1/training-samples/{id}": {
       "get": {
         "summary": "Get one learned or pending sample",
+        "description": "Authentication is required when the server is bound to a non-loopback host.",
+        "security": [
+          {},
+          {
+            "apiKeyHeader": []
+          },
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserCookie": []
+          }
+        ],
         "parameters": [
           {
             "$ref": "#/components/parameters/SampleId"
@@ -233,11 +318,26 @@
         "responses": {
           "200": {
             "description": "Sample metadata"
+          },
+          "401": {
+            "description": "Network-accessible training storage requires authentication"
           }
         }
       },
       "delete": {
         "summary": "Delete a learned sample and its image",
+        "security": [
+          {},
+          {
+            "apiKeyHeader": []
+          },
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserCookie": []
+          }
+        ],
         "parameters": [
           {
             "$ref": "#/components/parameters/SampleId"
@@ -246,6 +346,9 @@
         "responses": {
           "200": {
             "description": "Deleted"
+          },
+          "401": {
+            "description": "A configured or automatically generated API key is required"
           }
         }
       }
@@ -253,6 +356,19 @@
     "/api/v1/training-samples/{id}/source-image": {
       "get": {
         "summary": "Get the stored original preview for a learned sample",
+        "description": "Authentication is required when the server is bound to a non-loopback host.",
+        "security": [
+          {},
+          {
+            "apiKeyHeader": []
+          },
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserCookie": []
+          }
+        ],
         "parameters": [
           {
             "$ref": "#/components/parameters/SampleId"
@@ -264,12 +380,35 @@
           },
           "404": {
             "description": "Source preview not found"
+          },
+          "401": {
+            "description": "Network-accessible training storage requires authentication"
           }
         }
       }
     }
   },
   "components": {
+    "securitySchemes": {
+      "apiKeyHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key",
+        "description": "Preferred for scripts and service integrations. Use VTH_API_KEY or the key printed when a non-loopback server starts."
+      },
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "VTH API key",
+        "description": "Send Authorization: Bearer <API key>."
+      },
+      "browserCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "vth_access",
+        "description": "HttpOnly SameSite=Strict cookie established by opening a server-provided ?access_token=<API key> URL. The server immediately removes the token with a 303 redirect."
+      }
+    },
     "parameters": {
       "SampleId": {
         "name": "id",

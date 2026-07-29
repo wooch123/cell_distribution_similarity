@@ -143,6 +143,11 @@ a:focus-visible {
   color: var(--mint-dark);
 }
 
+.standalone-downloads {
+  display: flex;
+  gap: 6px;
+}
+
 .windows-download {
   align-items: center;
   background: var(--mint);
@@ -183,6 +188,10 @@ a:focus-visible {
 .windows-download strong {
   font-size: 9px;
   white-space: nowrap;
+}
+
+.ubuntu-download {
+  background: var(--paper-deep);
 }
 
 .live-dot {
@@ -2052,6 +2061,10 @@ footer > span {
 }
 
 @media (max-width: 1050px) {
+  .header-meta {
+    display: none;
+  }
+
   .hero {
     padding-top: 72px;
   }
@@ -2084,7 +2097,15 @@ footer > span {
 
   .windows-download {
     min-height: 38px;
-    padding: 5px 10px;
+    padding: 5px 7px;
+  }
+
+  .standalone-downloads {
+    gap: 4px;
+  }
+
+  .windows-download strong {
+    font-size: 8px;
   }
 
   .hero {
@@ -2320,6 +2341,12 @@ footer > span {
   footer p,
   footer > span {
     justify-self: start;
+  }
+}
+
+@media (max-width: 480px) {
+  .brand > span:last-child {
+    display: none;
   }
 }
 

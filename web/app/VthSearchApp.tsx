@@ -45,7 +45,10 @@ import {
   clamp,
   searchCorpus as coreSearchCorpus,
 } from "../lib/vth-shape-core.mjs";
-import { assembleWindowsPackage } from "../lib/vth-download-core.mjs";
+import {
+  assembleUbuntuPackage,
+  assembleWindowsPackage,
+} from "../lib/vth-download-core.mjs";
 
 type Candidate = {
   id: string;
@@ -775,6 +778,8 @@ export function VthSearchApp() {
   );
   const [isDownloadingWindows, setIsDownloadingWindows] = useState(false);
   const [windowsDownloadStatus, setWindowsDownloadStatus] = useState("");
+  const [isDownloadingUbuntu, setIsDownloadingUbuntu] = useState(false);
+  const [ubuntuDownloadStatus, setUbuntuDownloadStatus] = useState("");
   const [error, setError] = useState("");
   const [expandedImage, setExpandedImage] =
     useState<ExpandedImage | null>(null);
@@ -2191,6 +2196,49 @@ export function VthSearchApp() {
     }
   };
 
+  const downloadUbuntuStandalone = async () => {
+    setIsDownloadingUbuntu(true);
+    setUbuntuDownloadStatus("패키지 확인 중");
+    setError("");
+    try {
+      const download = await assembleUbuntuPackage({
+        onProgress: ({
+          phase,
+          completed,
+          total,
+        }: {
+          phase: string;
+          completed: number;
+          total: number;
+        }) => {
+          setUbuntuDownloadStatus(
+            phase === "verify"
+              ? "무결성 확인 중"
+              : `다운로드 ${completed + 1}/${total}`,
+          );
+        },
+      });
+      const downloadUrl = URL.createObjectURL(download.blob);
+      const anchor = document.createElement("a");
+      anchor.href = downloadUrl;
+      anchor.download = download.fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 0);
+      setUbuntuDownloadStatus(`v${download.manifest.version} 저장 완료`);
+    } catch (caught) {
+      setUbuntuDownloadStatus("다운로드 실패");
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Ubuntu 서버 패키지를 다운로드하지 못했습니다.",
+      );
+    } finally {
+      setIsDownloadingUbuntu(false);
+    }
+  };
+
   const visibleResults = results.slice(0, topK);
   const feedbackCount = Object.keys(feedback).length;
 
@@ -2222,21 +2270,41 @@ export function VthSearchApp() {
             <strong>검색 API 문서</strong>
           </a>
           {!standaloneMode && (
-            <button
-              type="button"
-              className="windows-download"
-              onClick={() => void downloadWindowsStandalone()}
-              disabled={isDownloadingWindows}
-              data-testid="windows-download"
-              aria-label="Windows x64 완전 독립 실행판 ZIP 다운로드"
+            <div
+              className="standalone-downloads"
+              aria-label="운영체제별 단독 실행 패키지 다운로드"
             >
-              <span aria-live="polite">
-                {windowsDownloadStatus || "WINDOWS X64 · FULL OFFLINE"}
-              </span>
-              <strong>
-                {isDownloadingWindows ? "패키지 준비 중…" : "완전 독립판 다운로드"}
-              </strong>
-            </button>
+              <button
+                type="button"
+                className="windows-download"
+                onClick={() => void downloadWindowsStandalone()}
+                disabled={isDownloadingWindows || isDownloadingUbuntu}
+                data-testid="windows-download"
+                aria-label="Windows x64 완전 독립 실행판 ZIP 다운로드"
+              >
+                <span aria-live="polite">
+                  {windowsDownloadStatus || "WINDOWS X64 · FULL OFFLINE"}
+                </span>
+                <strong>
+                  {isDownloadingWindows ? "패키지 준비 중…" : "완전 독립판 다운로드"}
+                </strong>
+              </button>
+              <button
+                type="button"
+                className="windows-download ubuntu-download"
+                onClick={() => void downloadUbuntuStandalone()}
+                disabled={isDownloadingWindows || isDownloadingUbuntu}
+                data-testid="ubuntu-download"
+                aria-label="Ubuntu x64 외부 Web 서버 독립판 다운로드"
+              >
+                <span aria-live="polite">
+                  {ubuntuDownloadStatus || "UBUNTU X64 · WEB SERVER"}
+                </span>
+                <strong>
+                  {isDownloadingUbuntu ? "패키지 준비 중…" : "외부 Web 서버 다운로드"}
+                </strong>
+              </button>
+            </div>
           )}
           <div className="header-meta">
             <span className="live-dot" />

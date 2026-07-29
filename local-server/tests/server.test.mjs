@@ -6,7 +6,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { createVthServer } from "../server.mjs";
+import {
+  buildAccessUrls,
+  createVthServer,
+  parseArguments,
+  startVthServer,
+} from "../server.mjs";
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(testDirectory, "../..");
@@ -51,7 +56,7 @@ async function startServer(options = {}) {
   const dataDirectory = await mkdtemp(
     path.join(os.tmpdir(), "vth-training-api-"),
   );
-  const { server } = await createVthServer({
+  const { server, access } = await createVthServer({
     rootDirectory: projectRoot,
     siteDirectory,
     dataDirectory,
@@ -65,6 +70,7 @@ async function startServer(options = {}) {
   const baseUrl = `http://127.0.0.1:${address.port}`;
   return {
     baseUrl,
+    access,
     dataDirectory,
     close: async () => {
       await new Promise((resolve) => server.close(resolve));
@@ -95,6 +101,31 @@ function postChunkedOversize(url) {
     request.once("error", reject);
     const chunk = Buffer.alloc(1024 * 1024, 0x20);
     for (let index = 0; index < 21; index += 1) request.write(chunk);
+    request.end();
+  });
+}
+
+function getWithHost(url, host) {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(
+      url,
+      {
+        method: "GET",
+        headers: { host },
+      },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("end", () =>
+          resolve({
+            status: response.statusCode,
+            headers: response.headers,
+            body: Buffer.concat(chunks),
+          }),
+        );
+      },
+    );
+    request.once("error", reject);
     request.end();
   });
 }
@@ -317,5 +348,301 @@ test("returns a typed 413 for a chunked oversized similarity body", async () => 
     assert.match(response.body.error.message, /20MB/);
   } finally {
     await running.close();
+  }
+});
+
+test("parses safe Ubuntu bind and public URL arguments", () => {
+  const options = parseArguments([
+    "--host",
+    "0.0.0.0",
+    "--port",
+    "8080",
+    "--public-url",
+    "https://vth.example.test/",
+    "--api-key",
+    "fixed-key",
+  ]);
+  assert.equal(options.host, "0.0.0.0");
+  assert.equal(options.port, 8080);
+  assert.equal(options.publicUrl, "https://vth.example.test");
+  assert.equal(options.apiKey, "fixed-key");
+
+  assert.throws(
+    () => parseArguments(["--host", "https://example.test"]),
+    /유효한 IP 주소 또는 호스트 이름/,
+  );
+  assert.throws(
+    () => parseArguments(["--public-url", "ftp://example.test"]),
+    /http 또는 https/,
+  );
+  assert.throws(
+    () => parseArguments(["--public-url"]),
+    /뒤에 값/,
+  );
+});
+
+test("builds concrete LAN and explicit public URLs for a wildcard bind", () => {
+  const urls = buildAccessUrls(
+    "0.0.0.0",
+    4173,
+    "https://vth.example.test",
+    {
+      lo: [
+        {
+          address: "127.0.0.1",
+          family: "IPv4",
+          internal: true,
+        },
+      ],
+      eth0: [
+        {
+          address: "192.168.10.24",
+          family: "IPv4",
+          internal: false,
+        },
+        {
+          address: "2001:db8::24",
+          family: "IPv6",
+          internal: false,
+        },
+      ],
+    },
+  );
+
+  assert.deepEqual(urls.local, ["http://127.0.0.1:4173"]);
+  assert.deepEqual(urls.lan, [
+    "http://192.168.10.24:4173",
+    "http://[2001:db8::24]:4173",
+  ]);
+  assert.deepEqual(urls.public, ["https://vth.example.test"]);
+
+  const specificInterfaceUrls = buildAccessUrls(
+    "192.168.10.24",
+    4173,
+    "",
+    {},
+  );
+  assert.deepEqual(specificInterfaceUrls.local, []);
+  assert.deepEqual(specificInterfaceUrls.lan, [
+    "http://192.168.10.24:4173",
+  ]);
+});
+
+test("protects network-bound training data with a bootstrap cookie", async () => {
+  const running = await startServer({
+    host: "0.0.0.0",
+    apiKey: "lan-secret",
+    publicUrl: "https://vth.example.test",
+  });
+  try {
+    assert.equal(running.access.accessMode, "offline-network-accessible");
+    assert.equal(running.access.networkAccessible, true);
+    assert.equal(running.access.apiKeyRequired, true);
+    assert.equal(running.access.apiKeyGenerated, false);
+
+    const runtimeResponse = await fetch(
+      `${running.baseUrl}/api/v1/runtime`,
+    );
+    assert.equal(
+      runtimeResponse.headers.get("x-vth-network-mode"),
+      "offline-network-accessible",
+    );
+    assert.equal(
+      runtimeResponse.headers.get("x-vth-access-mode"),
+      "network-accessible",
+    );
+    const runtime = await runtimeResponse.json();
+    assert.equal(runtime.mode, "standalone-offline");
+    assert.equal(runtime.externalNetworkAllowed, false);
+    assert.equal(runtime.accessMode, "offline-network-accessible");
+    assert.equal(runtime.bindHost, "0.0.0.0");
+    assert.equal(runtime.inboundNetworkAccess, true);
+    assert.equal(runtime.apiKeyRequired, true);
+    assert.equal(runtime.publicUrl, "https://vth.example.test");
+
+    const openApi = await fetch(
+      `${running.baseUrl}/api/v1/openapi.json`,
+    ).then((response) => response.json());
+    assert.equal(openApi.servers[0].url, "https://vth.example.test");
+    assert.equal(
+      openApi.components.securitySchemes.apiKeyHeader.name,
+      "x-api-key",
+    );
+    assert.equal(
+      openApi.components.securitySchemes.bearerAuth.scheme,
+      "bearer",
+    );
+    assert.equal(
+      openApi.components.securitySchemes.browserCookie.name,
+      "vth_access",
+    );
+    assert.ok(
+      openApi.paths["/api/v1/similarity-search"].post.responses["401"],
+    );
+    assert.ok(
+      openApi.paths["/api/v1/training-samples"].get.responses["401"],
+    );
+
+    const unauthorizedList = await fetch(
+      `${running.baseUrl}/api/v1/training-samples`,
+    );
+    assert.equal(unauthorizedList.status, 401);
+    assert.equal(
+      (await unauthorizedList.json()).error.code,
+      "unauthorized",
+    );
+
+    const invalidBootstrap = await fetch(
+      `${running.baseUrl}/?access_token=incorrect`,
+      { redirect: "manual" },
+    );
+    assert.equal(invalidBootstrap.status, 401);
+    assert.equal(invalidBootstrap.headers.get("set-cookie"), null);
+
+    const bootstrap = await fetch(
+      `${running.baseUrl}/?view=search&access_token=lan-secret`,
+      { redirect: "manual" },
+    );
+    assert.equal(bootstrap.status, 303);
+    assert.equal(bootstrap.headers.get("location"), "/?view=search");
+    const setCookie = bootstrap.headers.get("set-cookie") ?? "";
+    assert.match(setCookie, /^vth_access=[^;]+;/);
+    assert.match(setCookie, /Path=\//);
+    assert.match(setCookie, /HttpOnly/);
+    assert.match(setCookie, /SameSite=Strict/);
+    assert.doesNotMatch(setCookie, /Secure/);
+    assert.doesNotMatch(
+      bootstrap.headers.get("location") ?? "",
+      /access_token/,
+    );
+    const cookie = setCookie.split(";")[0];
+
+    const publicBootstrap = await getWithHost(
+      `${running.baseUrl}/?access_token=lan-secret`,
+      "vth.example.test",
+    );
+    assert.equal(publicBootstrap.status, 303);
+    assert.match(
+      String(publicBootstrap.headers["set-cookie"] ?? ""),
+      /Secure/,
+    );
+
+    const authorizedList = await fetch(
+      `${running.baseUrl}/api/v1/training-samples`,
+      { headers: { cookie } },
+    );
+    assert.equal(authorizedList.status, 200);
+    assert.deepEqual((await authorizedList.json()).samples, []);
+
+    const created = await fetch(
+      `${running.baseUrl}/api/v1/training-samples`,
+      {
+        method: "POST",
+        headers: {
+          cookie,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(trainingPayload("lan-protected")),
+      },
+    );
+    assert.equal(created.status, 201);
+
+    const unauthorizedImage = await fetch(
+      `${running.baseUrl}/api/v1/training-samples/lan-protected/source-image`,
+    );
+    assert.equal(unauthorizedImage.status, 401);
+    const authorizedImage = await fetch(
+      `${running.baseUrl}/api/v1/training-samples/lan-protected/source-image`,
+      { headers: { cookie } },
+    );
+    assert.equal(authorizedImage.status, 200);
+  } finally {
+    await running.close();
+  }
+});
+
+test("automatically generates an access key only for network binds", async () => {
+  const networkRunning = await startServer({ host: "0.0.0.0" });
+  try {
+    assert.equal(networkRunning.access.apiKeyGenerated, true);
+    assert.equal(networkRunning.access.apiKeyRequired, true);
+    assert.match(networkRunning.access.apiKey, /^[A-Za-z0-9_-]{32}$/);
+  } finally {
+    await networkRunning.close();
+  }
+
+  const loopbackRunning = await startServer();
+  try {
+    assert.equal(loopbackRunning.access.accessMode, "offline-loopback-only");
+    assert.equal(loopbackRunning.access.apiKeyGenerated, false);
+    assert.equal(loopbackRunning.access.apiKeyRequired, false);
+    assert.equal(loopbackRunning.access.apiKey, "");
+  } finally {
+    await loopbackRunning.close();
+  }
+});
+
+test("startVthServer returns browser-safe URLs instead of a wildcard URL", async () => {
+  const dataDirectory = await mkdtemp(
+    path.join(os.tmpdir(), "vth-network-start-"),
+  );
+  const running = await startVthServer({
+    host: "127.0.0.1",
+    port: 0,
+    rootDirectory: projectRoot,
+    siteDirectory,
+    dataDirectory,
+  });
+  try {
+    assert.equal(running.accessMode, "offline-loopback-only");
+    assert.match(running.url, /^http:\/\/127\.0\.0\.1:\d+$/);
+    assert.deepEqual(running.accessUrls.lan, []);
+    assert.deepEqual(running.accessUrls.public, []);
+    assert.deepEqual(running.accessUrls.local, [running.url]);
+  } finally {
+    await new Promise((resolve) => running.server.close(resolve));
+    await rm(dataDirectory, { recursive: true, force: true });
+  }
+});
+
+test("startVthServer bootstraps a fixed API key for browser UI requests", async () => {
+  const dataDirectory = await mkdtemp(
+    path.join(os.tmpdir(), "vth-fixed-key-start-"),
+  );
+  const running = await startVthServer({
+    host: "127.0.0.1",
+    port: 0,
+    apiKey: "fixed-browser-key",
+    rootDirectory: projectRoot,
+    siteDirectory,
+    dataDirectory,
+  });
+  try {
+    const browserUrl = new URL(running.url);
+    assert.equal(
+      browserUrl.searchParams.get("access_token"),
+      "fixed-browser-key",
+    );
+    assert.equal(
+      running.accessUrls.local[0],
+      running.url,
+    );
+
+    const bootstrap = await fetch(running.url, {
+      redirect: "manual",
+    });
+    assert.equal(bootstrap.status, 303);
+    assert.equal(bootstrap.headers.get("location"), "/");
+    const cookie = (bootstrap.headers.get("set-cookie") ?? "").split(";")[0];
+    assert.match(cookie, /^vth_access=/);
+
+    const uiTrainingRequest = await fetch(
+      `${browserUrl.origin}/api/v1/training-samples`,
+      { headers: { cookie } },
+    );
+    assert.equal(uiTrainingRequest.status, 200);
+  } finally {
+    await new Promise((resolve) => running.server.close(resolve));
+    await rm(dataDirectory, { recursive: true, force: true });
   }
 });
