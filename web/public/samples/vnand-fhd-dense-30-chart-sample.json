@@ -1,0 +1,445 @@
+{
+  "fileName": "vnand-fhd-dense-30-chart-sample.png",
+  "width": 1920,
+  "height": 1080,
+  "seed": 200477,
+  "expectedChartCount": 30,
+  "layout": {
+    "rows": 5,
+    "columns": 6
+  },
+  "minimumHorizontalGapPixels": 3,
+  "minimumVerticalGapPixels": 22,
+  "singlePeakChartIndexes": [
+    1,
+    7,
+    11,
+    16,
+    19,
+    24,
+    29
+  ],
+  "charts": [
+    {
+      "index": 0,
+      "row": 0,
+      "column": 0,
+      "bounds": {
+        "left": 20,
+        "top": 28,
+        "right": 320,
+        "bottom": 206
+      },
+      "peakCount": 4,
+      "singlePeak": false
+    },
+    {
+      "index": 1,
+      "row": 0,
+      "column": 1,
+      "bounds": {
+        "left": 331,
+        "top": 31,
+        "right": 625,
+        "bottom": 213
+      },
+      "peakCount": 1,
+      "singlePeak": true
+    },
+    {
+      "index": 2,
+      "row": 0,
+      "column": 2,
+      "bounds": {
+        "left": 641,
+        "top": 33,
+        "right": 929,
+        "bottom": 203
+      },
+      "peakCount": 8,
+      "singlePeak": false
+    },
+    {
+      "index": 3,
+      "row": 0,
+      "column": 3,
+      "bounds": {
+        "left": 944,
+        "top": 28,
+        "right": 1244,
+        "bottom": 212
+      },
+      "peakCount": 8,
+      "singlePeak": false
+    },
+    {
+      "index": 4,
+      "row": 0,
+      "column": 4,
+      "bounds": {
+        "left": 1257,
+        "top": 31,
+        "right": 1539,
+        "bottom": 207
+      },
+      "peakCount": 4,
+      "singlePeak": false
+    },
+    {
+      "index": 5,
+      "row": 0,
+      "column": 5,
+      "bounds": {
+        "left": 1561,
+        "top": 33,
+        "right": 1859,
+        "bottom": 213
+      },
+      "peakCount": 6,
+      "singlePeak": false
+    },
+    {
+      "index": 6,
+      "row": 1,
+      "column": 0,
+      "bounds": {
+        "left": 23,
+        "top": 234,
+        "right": 315,
+        "bottom": 414
+      },
+      "peakCount": 8,
+      "singlePeak": false
+    },
+    {
+      "index": 7,
+      "row": 1,
+      "column": 1,
+      "bounds": {
+        "left": 333,
+        "top": 237,
+        "right": 508,
+        "bottom": 347
+      },
+      "peakCount": 1,
+      "singlePeak": true
+    },
+    {
+      "index": 8,
+      "row": 1,
+      "column": 2,
+      "bounds": {
+        "left": 636,
+        "top": 239,
+        "right": 936,
+        "bottom": 423
+      },
+      "peakCount": 4,
+      "singlePeak": false
+    },
+    {
+      "index": 9,
+      "row": 1,
+      "column": 3,
+      "bounds": {
+        "left": 949,
+        "top": 234,
+        "right": 1235,
+        "bottom": 402
+      },
+      "peakCount": 6,
+      "singlePeak": false
+    },
+    {
+      "index": 10,
+      "row": 1,
+      "column": 4,
+      "bounds": {
+        "left": 1253,
+        "top": 237,
+        "right": 1547,
+        "bottom": 415
+      },
+      "peakCount": 8,
+      "singlePeak": false
+    },
+    {
+      "index": 11,
+      "row": 1,
+      "column": 5,
+      "bounds": {
+        "left": 1560,
+        "top": 239,
+        "right": 1860,
+        "bottom": 421
+      },
+      "peakCount": 1,
+      "singlePeak": true
+    },
+    {
+      "index": 12,
+      "row": 2,
+      "column": 0,
+      "bounds": {
+        "left": 25,
+        "top": 440,
+        "right": 309,
+        "bottom": 606
+      },
+      "peakCount": 4,
+      "singlePeak": false
+    },
+    {
+      "index": 13,
+      "row": 2,
+      "column": 1,
+      "bounds": {
+        "left": 328,
+        "top": 443,
+        "right": 628,
+        "bottom": 627
+      },
+      "peakCount": 6,
+      "singlePeak": false
+    },
+    {
+      "index": 14,
+      "row": 2,
+      "column": 2,
+      "bounds": {
+        "left": 641,
+        "top": 445,
+        "right": 931,
+        "bottom": 619
+      },
+      "peakCount": 8,
+      "singlePeak": false
+    },
+    {
+      "index": 15,
+      "row": 2,
+      "column": 3,
+      "bounds": {
+        "left": 945,
+        "top": 440,
+        "right": 1243,
+        "bottom": 620
+      },
+      "peakCount": 8,
+      "singlePeak": false
+    },
+    {
+      "index": 16,
+      "row": 2,
+      "column": 4,
+      "bounds": {
+        "left": 1252,
+        "top": 443,
+        "right": 1532,
+        "bottom": 613
+      },
+      "peakCount": 1,
+      "singlePeak": true
+    },
+    {
+      "index": 17,
+      "row": 2,
+      "column": 5,
+      "bounds": {
+        "left": 1563,
+        "top": 445,
+        "right": 1863,
+        "bottom": 629
+      },
+      "peakCount": 6,
+      "singlePeak": false
+    },
+    {
+      "index": 18,
+      "row": 3,
+      "column": 0,
+      "bounds": {
+        "left": 20,
+        "top": 646,
+        "right": 320,
+        "bottom": 828
+      },
+      "peakCount": 8,
+      "singlePeak": false
+    },
+    {
+      "index": 19,
+      "row": 3,
+      "column": 1,
+      "bounds": {
+        "left": 333,
+        "top": 649,
+        "right": 521,
+        "bottom": 782
+      },
+      "peakCount": 1,
+      "singlePeak": true
+    },
+    {
+      "index": 20,
+      "row": 3,
+      "column": 2,
+      "bounds": {
+        "left": 637,
+        "top": 651,
+        "right": 923,
+        "bottom": 819
+      },
+      "peakCount": 4,
+      "singlePeak": false
+    },
+    {
+      "index": 21,
+      "row": 3,
+      "column": 3,
+      "bounds": {
+        "left": 944,
+        "top": 646,
+        "right": 1244,
+        "bottom": 830
+      },
+      "peakCount": 6,
+      "singlePeak": false
+    },
+    {
+      "index": 22,
+      "row": 3,
+      "column": 4,
+      "bounds": {
+        "left": 1255,
+        "top": 649,
+        "right": 1547,
+        "bottom": 825
+      },
+      "peakCount": 8,
+      "singlePeak": false
+    },
+    {
+      "index": 23,
+      "row": 3,
+      "column": 5,
+      "bounds": {
+        "left": 1565,
+        "top": 651,
+        "right": 1849,
+        "bottom": 821
+      },
+      "peakCount": 8,
+      "singlePeak": false
+    },
+    {
+      "index": 24,
+      "row": 4,
+      "column": 0,
+      "bounds": {
+        "left": 25,
+        "top": 852,
+        "right": 315,
+        "bottom": 1028
+      },
+      "peakCount": 1,
+      "singlePeak": true
+    },
+    {
+      "index": 25,
+      "row": 4,
+      "column": 1,
+      "bounds": {
+        "left": 329,
+        "top": 855,
+        "right": 629,
+        "bottom": 1039
+      },
+      "peakCount": 6,
+      "singlePeak": false
+    },
+    {
+      "index": 26,
+      "row": 4,
+      "column": 2,
+      "bounds": {
+        "left": 636,
+        "top": 857,
+        "right": 918,
+        "bottom": 1023
+      },
+      "peakCount": 8,
+      "singlePeak": false
+    },
+    {
+      "index": 27,
+      "row": 4,
+      "column": 3,
+      "bounds": {
+        "left": 947,
+        "top": 852,
+        "right": 1243,
+        "bottom": 1032
+      },
+      "peakCount": 8,
+      "singlePeak": false
+    },
+    {
+      "index": 28,
+      "row": 4,
+      "column": 4,
+      "bounds": {
+        "left": 1257,
+        "top": 855,
+        "right": 1557,
+        "bottom": 1027
+      },
+      "peakCount": 4,
+      "singlePeak": false
+    },
+    {
+      "index": 29,
+      "row": 4,
+      "column": 5,
+      "bounds": {
+        "left": 1560,
+        "top": 857,
+        "right": 1753,
+        "bottom": 965
+      },
+      "peakCount": 1,
+      "singlePeak": true
+    }
+  ],
+  "distractors": [
+    {
+      "type": "table",
+      "bounds": {
+        "left": 514,
+        "top": 246,
+        "right": 623,
+        "bottom": 350
+      }
+    },
+    {
+      "type": "diagram",
+      "bounds": {
+        "left": 528,
+        "top": 665,
+        "right": 623,
+        "bottom": 792
+      }
+    },
+    {
+      "type": "photo",
+      "bounds": {
+        "left": 1764,
+        "top": 862,
+        "right": 1856,
+        "bottom": 968
+      }
+    }
+  ],
+  "bytes": 122296,
+  "sha256": "240dd0884c128b56597576159ebf6956b3dadfdcd7234d30b4be72b9dd105123"
+}

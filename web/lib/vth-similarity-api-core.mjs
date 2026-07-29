@@ -407,11 +407,11 @@ async function decodeSimilarityImage(bytes, mimeType) {
     decoded.data,
     decoded.width,
     decoded.height,
-    1600,
+    1920,
     1200,
     {
       maximumScale: 4,
-      maximumPixels: 2_000_000,
+      maximumPixels: 2_100_000,
     },
   );
   return {

@@ -351,6 +351,36 @@ test("rejects a dense 20 by 15 table without quadratic container scanning", () =
   );
 });
 
+test("hard-bounds a FHD 160 by 99 dense grid without returning cells", () => {
+  const width = 1920;
+  const height = 1080;
+  const mask = new Uint8Array(width * height);
+
+  // Two-pixel strokes with ten or fewer blank pixels reproduce a dense
+  // spreadsheet/table screenshot. This creates enough line bands to make an
+  // unbounded top/bottom × vertical-line scan combinatorial.
+  for (let y = 0; y < height; y += 11) {
+    drawLine(mask, width, 0, y, width - 1, y, 2);
+  }
+  for (let x = 0; x < width; x += 12) {
+    drawLine(mask, width, x, 0, x, height - 1, 2);
+  }
+
+  const startedAt = performance.now();
+  const result = detectChartPanelsFromMask(mask, width, height, {
+    fallbackToWholeImage: false,
+  });
+  const elapsedMs = performance.now() - startedAt;
+
+  assert.equal(result.fallbackUsed, false);
+  assert.equal(result.detectedPanelCount, 0);
+  assert.equal(result.panels.length, 0);
+  assert.ok(
+    elapsedMs < 1500,
+    `FHD dense-grid detection took ${elapsedMs.toFixed(1)} ms`,
+  );
+});
+
 test("rejects a compact framed chevron while preserving a Gaussian chart", () => {
   const width = 1400;
   const height = 800;

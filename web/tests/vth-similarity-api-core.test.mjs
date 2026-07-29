@@ -293,7 +293,7 @@ test("searches the public corpus and returns ordered absolute-URL results", asyn
   assert.equal(response.panelDetection.detectedPanelCount, 0);
   assert.ok(response.panelDetection.rejectedNonChartCount >= 1);
   assert.equal(response.panelDetection.analyzedPanelCount, 1);
-  assert.equal(response.panelDetection.maxPanels, 24);
+  assert.equal(response.panelDetection.maxPanels, 30);
   assert.equal(response.panelDetection.truncated, false);
   assert.equal(response.panels.length, 1);
   assert.deepEqual(response.panels[0].query, response.query);
@@ -342,7 +342,7 @@ test("separates a multi-chart image and ranks every chart independently", async 
   assert.equal(response.panelDetection.detectedPanelCount, 2);
   assert.equal(response.panelDetection.rejectedNonChartCount, 0);
   assert.equal(response.panelDetection.analyzedPanelCount, 2);
-  assert.equal(response.panelDetection.maxPanels, 24);
+  assert.equal(response.panelDetection.maxPanels, 30);
   assert.equal(response.panelDetection.truncated, false);
   assert.equal(response.panels.length, 2);
   assert.deepEqual(response.query, response.panels[0].query);
@@ -497,7 +497,7 @@ test("returns independent rankings for twelve charts on one PPT slide", async ()
   assert.equal(response.panelDetection.detectedPanelCount, 12);
   assert.equal(response.panelDetection.rejectedNonChartCount, 0);
   assert.equal(response.panelDetection.analyzedPanelCount, 12);
-  assert.equal(response.panelDetection.maxPanels, 24);
+  assert.equal(response.panelDetection.maxPanels, 30);
   assert.equal(response.panelDetection.truncated, false);
   assert.equal(response.panels.length, 12);
   assert.deepEqual(

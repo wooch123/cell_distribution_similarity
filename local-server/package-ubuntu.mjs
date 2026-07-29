@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(moduleDirectory, "..");
-const version = "1.32.0";
+const version = "1.33.0";
 const packageName = `vth-similarity-ubuntu-x64-v${version}`;
 const artifactsDirectory = path.join(projectRoot, "artifacts", "ubuntu");
 const cacheDirectory = path.join(artifactsDirectory, "cache");
@@ -58,6 +58,8 @@ const sampleFiles = [
   "vnand-random-multichart-mixed-02.png",
   "vnand-random-multichart-lowres-03.png",
   "vnand-random-multichart-frameless-04.png",
+  "vnand-fhd-dense-30-chart-sample.png",
+  "vnand-fhd-dense-30-chart-sample.json",
   "random-multichart-samples.json",
 ];
 
@@ -441,10 +443,13 @@ Linux x64 실행 파일과 검색 코퍼스, 모델, 웹 화면, 로컬 학습 A
 
 형상 검색
 - PNG/JPEG 산포 이미지와 클립보드 이미지를 분석합니다.
-- 프레임, 열린 L축, 경계 없는 Curve 군집을 분리하고 이미지당 최대 24개
-  차트를 독립적으로 검색합니다.
+- 프레임, 열린 L축, 경계 없는 Curve 군집을 분리하고 FHD 이미지당 최대
+  30개 차트를 독립적으로 검색합니다.
 - 크기가 다른 차트, 단일 봉우리, 저해상도, 표·도형·사진성 방해 요소를
-  포함한 네 가지 멀티차트 샘플이 함께 들어 있습니다.
+  포함한 기존 네 가지 멀티차트 샘플과 1920×1080 안의 5행×6열 차트
+  30개를 검증하는 FHD 밀집 샘플이 함께 들어 있습니다.
+- 1920×1080 FHD 입력은 1600×900으로 축소하지 않아 3–4px의 좁은 차트
+  간격과 가는 프레임을 원본 분석 크기에서 보존합니다.
 - 실선·점선 격자, 눈금선, 가이드선, 라벨과 배경 잡음을 제거한 뒤 로그
   스케일 Curve 형상을 비교합니다.
 
@@ -516,7 +521,7 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
       model: true,
       similaritySearchApi: true,
       multiChartPanelSplitting: true,
-      multiChartMaximumPanels: 24,
+      multiChartMaximumPanels: 30,
       samples: sampleFiles.map((fileName) => ({
         path: `site/client/samples/${fileName}`,
       })),

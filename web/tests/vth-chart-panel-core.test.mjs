@@ -303,7 +303,7 @@ test("separates twelve staggered PPT charts with titles, labels, and gridlines",
   assert.equal(result.panels.length, 12);
   assert.equal(result.detectedPanelCount, 12);
   assert.equal(result.truncated, false);
-  assert.equal(result.maxPanels, 24);
+  assert.equal(result.maxPanels, 30);
   assert.deepEqual(result.layout, { rows: 3, columns: 4 });
   assert.ok(
     result.panels.every(
@@ -455,7 +455,7 @@ test("keeps a dense 4 by 4 slide as sixteen panels instead of grid cells", () =>
   assert.equal(result.panels.length, 16);
   assert.equal(result.detectedPanelCount, 16);
   assert.equal(result.truncated, false);
-  assert.equal(result.maxPanels, 24);
+  assert.equal(result.maxPanels, 30);
   assert.deepEqual(result.layout, { rows: 4, columns: 4 });
   for (let index = 0; index < result.panels.length; index += 1) {
     const row = Math.floor(index / 4);
@@ -471,18 +471,18 @@ test("keeps a dense 4 by 4 slide as sixteen panels instead of grid cells", () =>
   }
 });
 
-test("caps excessive slide detections at 24 and restores row-major order", () => {
+test("caps excessive slide detections at 30 and restores row-major order", () => {
   const width = 1200;
   const height = 800;
   const mask = new Uint8Array(width * height);
-  const leftStarts = [30, 270, 510, 750, 990];
+  const leftStarts = [30, 195, 360, 525, 690, 855, 1020];
   const topStarts = [30, 185, 340, 495, 650];
 
   for (let row = 0; row < 5; row += 1) {
-    for (let column = 0; column < 5; column += 1) {
+    for (let column = 0; column < 7; column += 1) {
       const left = leftStarts[column];
       const top = topStarts[row];
-      const right = left + 180;
+      const right = left + 130;
       const bottom = top + 105;
       drawFrame(mask, width, left, top, right, bottom);
       drawCurve(
@@ -498,12 +498,12 @@ test("caps excessive slide detections at 24 and restores row-major order", () =>
   }
 
   const result = detectChartPanelsFromMask(mask, width, height);
-  assert.equal(result.detectedPanelCount, 25);
-  assert.equal(result.panels.length, 24);
+  assert.equal(result.detectedPanelCount, 35);
+  assert.equal(result.panels.length, 30);
   assert.equal(result.truncated, true);
-  assert.equal(result.maxPanels, 24);
+  assert.equal(result.maxPanels, 30);
   assert.ok(result.layout.rows >= 4);
-  assert.ok(result.layout.columns <= 5);
+  assert.ok(result.layout.columns <= 7);
   for (let index = 1; index < result.panels.length; index += 1) {
     const previous = result.panels[index - 1];
     const current = result.panels[index];
@@ -709,7 +709,7 @@ test("returns one full-image fallback when no credible axes exist", () => {
   assert.equal(result.fallbackUsed, true);
   assert.equal(result.detectedPanelCount, 0);
   assert.equal(result.truncated, false);
-  assert.equal(result.maxPanels, 24);
+  assert.equal(result.maxPanels, 30);
   assert.deepEqual(result.layout, { rows: 1, columns: 1 });
   assert.deepEqual(
     {

@@ -73,6 +73,7 @@ test("server-renders the VTH similarity product", async () => {
   assert.match(html, /가변 크기/);
   assert.match(html, /저해상도/);
   assert.match(html, /경계 없는 Curve/);
+  assert.match(html, /FHD 밀집 30차트/);
   assert.match(
     html,
     /vnand-random-multichart-mixed-01\.png/,
@@ -89,12 +90,17 @@ test("server-renders the VTH similarity product", async () => {
     html,
     /vnand-random-multichart-frameless-04\.png/,
   );
+  assert.match(
+    html,
+    /vnand-fhd-dense-30-chart-sample\.png/,
+  );
   assert.match(html, /검색 API 문서/);
   assert.match(html, /완전 독립판 다운로드/);
   assert.match(html, /WINDOWS X64 · FULL OFFLINE/);
   assert.match(html, /UBUNTU X64 · WEB SERVER/);
   assert.match(html, /외부 Web 서버 다운로드/);
-  assert.match(html, /ENGINE V3\.2/);
+  assert.match(html, /ENGINE V3\.3/);
+  assert.match(html, /30-PANEL MAX/);
   assert.match(
     html,
     /동의 시 표준 Curve \+ 원본 미리보기를 공용 학습/,
@@ -229,24 +235,24 @@ async function verifyStandalonePackageDownload({
 
 test("ships the verified Windows standalone package as a web download", async () => {
   await verifyStandalonePackageDownload({
-    manifestFileName: "windows-package-v1.32.0.json",
+    manifestFileName: "windows-package-v1.33.0.json",
     checksumFileName: "vth-similarity-windows-x64.sha256",
-    expectedVersion: "1.32.0",
+    expectedVersion: "1.33.0",
     expectedFileName: "vth-similarity-windows-x64.zip",
     expectedDownloadFileName:
-      "vth-similarity-windows-x64-v1.32.0.zip",
+      "vth-similarity-windows-x64-v1.33.0.zip",
     assemble: assembleWindowsPackage,
   });
 });
 
 test("ships the verified Ubuntu external Web server package as a web download", async () => {
   await verifyStandalonePackageDownload({
-    manifestFileName: "ubuntu-package-v1.32.0.json",
+    manifestFileName: "ubuntu-package-v1.33.0.json",
     checksumFileName: "vth-similarity-ubuntu-x64.sha256",
-    expectedVersion: "1.32.0",
+    expectedVersion: "1.33.0",
     expectedFileName: "vth-similarity-ubuntu-x64.tar.gz",
     expectedDownloadFileName:
-      "vth-similarity-ubuntu-x64-v1.32.0.tar.gz",
+      "vth-similarity-ubuntu-x64-v1.33.0.tar.gz",
     assemble: assembleUbuntuPackage,
   });
 });
@@ -410,6 +416,51 @@ test("ships a complete browser search corpus and no starter preview", async () =
       );
     }),
   );
+  const [
+    denseFhdSource,
+    denseFhdDeployed,
+    denseFhdMetadataText,
+    denseFhdDeployedMetadataText,
+  ] = await Promise.all([
+    readFile(
+      new URL(
+        "../public/samples/vnand-fhd-dense-30-chart-sample.png",
+        import.meta.url,
+      ),
+    ),
+    readFile(
+      new URL(
+        "../dist/client/samples/vnand-fhd-dense-30-chart-sample.png",
+        import.meta.url,
+      ),
+    ),
+    readFile(
+      new URL(
+        "../public/samples/vnand-fhd-dense-30-chart-sample.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+    readFile(
+      new URL(
+        "../dist/client/samples/vnand-fhd-dense-30-chart-sample.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ]);
+  assert.deepEqual(denseFhdDeployed, denseFhdSource);
+  assert.equal(denseFhdDeployedMetadataText, denseFhdMetadataText);
+  assert.deepEqual(
+    [...denseFhdSource.subarray(0, 8)],
+    [137, 80, 78, 71, 13, 10, 26, 10],
+  );
+  assert.equal(denseFhdSource.readUInt32BE(16), 1920);
+  assert.equal(denseFhdSource.readUInt32BE(20), 1080);
+  const denseFhdMetadata = JSON.parse(denseFhdMetadataText);
+  assert.equal(denseFhdMetadata.expectedChartCount, 30);
+  assert.deepEqual(denseFhdMetadata.layout, { rows: 5, columns: 6 });
+  assert.equal(denseFhdMetadata.charts.length, 30);
 });
 
 test("shares standardized candidates and anonymous relevance labels centrally", async () => {
@@ -555,6 +606,8 @@ test("shares standardized candidates and anonymous relevance labels centrally", 
   assert.match(source, /vnand-random-multichart-mixed-02\.png/);
   assert.match(source, /vnand-random-multichart-lowres-03\.png/);
   assert.match(source, /vnand-random-multichart-frameless-04\.png/);
+  assert.match(source, /vnand-fhd-dense-30-chart-sample\.png/);
+  assert.match(source, /FHD 밀집 30차트/);
   assert.doesNotMatch(source, /standardizedImageDataUrl/);
   assert.match(source, /\/api\/v1\/shared-training-samples/);
   assert.match(source, /SHARED_TRAINING_CONSENT_VERSION/);
@@ -632,6 +685,30 @@ test("shares standardized candidates and anonymous relevance labels centrally", 
   assert.match(source, /feedback-annotator-code/);
   assert.match(source, /MAX_FILE_SIZE = 12 \* 1024 \* 1024/);
   assert.match(source, /image\/png.*image\/jpeg.*image\/webp/s);
+});
+
+test("publishes the complete 30-panel similarity API contract", async () => {
+  const openapi = JSON.parse(
+    await readFile(
+      new URL(
+        "../public/similarity-search-openapi.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const healthMultiChart =
+    openapi.components.schemas.HealthResponse.properties.multiChart
+      .properties;
+  const searchProperties =
+    openapi.components.schemas.SearchResponse.properties;
+  assert.equal(healthMultiChart.maxPanels.const, 30);
+  assert.equal(searchProperties.panelCount.maximum, 30);
+  assert.equal(searchProperties.panels.maxItems, 30);
+  assert.equal(
+    searchProperties.panelDetection.properties.maxPanels.const,
+    30,
+  );
 });
 
 test("hosting metadata is ready for Sites ownership", async () => {

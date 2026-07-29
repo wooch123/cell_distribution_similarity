@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(moduleDirectory, "..");
-const version = "1.32.0";
+const version = "1.33.0";
 const packageName = `vth-similarity-windows-x64-v${version}`;
 const artifactsDirectory = path.join(projectRoot, "artifacts", "windows");
 const cacheDirectory = path.join(artifactsDirectory, "cache");
@@ -170,6 +170,8 @@ async function packageWindows() {
       "vnand-random-multichart-mixed-02.png",
       "vnand-random-multichart-lowres-03.png",
       "vnand-random-multichart-frameless-04.png",
+      "vnand-fhd-dense-30-chart-sample.png",
+      "vnand-fhd-dense-30-chart-sample.json",
       "random-multichart-samples.json",
     ].map((fileName) =>
       access(
@@ -324,16 +326,21 @@ Node.js v${nodeVersion} Windows x64 런타임이 압축된 상태로 포함되�
 형상 검색
 - 한 그림에 서로 다른 좌표의 차트가 여러 개 있으면 사각 프레임과 열린
   L축을 찾아 행 우선 순서로 분리하고, 각 차트를 독립적으로 분석·검색합니다.
-- 한 이미지에서 최대 24개 차트를 분석합니다. 24개를 초과하면 신뢰도가 높은
-  24개를 행 우선 순서로 반환하고 API 경고와 truncated 상태를 표시합니다.
+- FHD 한 이미지에서 오밀조밀하게 배치된 차트를 최대 30개까지 분석합니다.
+  30개를 초과하면 신뢰도가 높은 30개를 행 우선 순서로 반환하고 API 경고와
+  truncated 상태를 표시합니다.
 - 화면의 "랜덤 멀티 차트 분석"은 임의 좌표의 차트와 표·플로우차트·
   사진성 블록이 섞인 샘플 또는 경계 없는 Curve 전용 샘플 중 직전과
   다른 이미지를 골라 실행합니다.
-- "샘플 1", "가변 크기", "저해상도", "경계 없는 Curve" 링크로 네 원본을
-  각각 저장할 수 있습니다. "가변 크기" 샘플은 크기가 서로 다른 차트와
-  소형 단일 봉우리 차트를 함께 포함합니다. "경계 없는 Curve"는 프레임과
-  축 없이 Curve만 놓인 차트 전용 이미지입니다. 혼합 샘플의 비차트 내용은
-  Curve 증거가 없어 제외됩니다.
+- "샘플 1", "가변 크기", "저해상도", "경계 없는 Curve",
+  "FHD 밀집 30차트" 링크로 다섯 원본을 각각 저장할 수 있습니다.
+  "가변 크기" 샘플은 크기가 서로 다른 차트와 소형 단일 봉우리 차트를 함께
+  포함합니다. "경계 없는 Curve"는 프레임과 축 없이 Curve만 놓인 차트 전용
+  이미지입니다. FHD 샘플은 1920×1080 안의 5행×6열 차트 30개와
+  표·도형·사진성 방해 요소를 함께 포함하며 비차트 내용은 Curve 증거가 없어
+  제외됩니다.
+- 1920×1080 FHD 입력은 1600×900으로 축소하지 않아 3–4px의 좁은 차트
+  간격과 가는 프레임을 원본 분석 크기에서 보존합니다.
 - 기존 12차트 PPT 검증 파일의 4/8-State 분포도 패키지에 유지됩니다.
 - 분리된 차트는 바깥쪽 PPT 카드가 아니라 실제 내부 플롯을 선택하고,
   원본 해상도 크롭에서 Curve를 다시 분석합니다.
@@ -429,7 +436,7 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
       model: true,
       similaritySearchApi: true,
       multiChartPanelSplitting: true,
-      multiChartMaximumPanels: 24,
+      multiChartMaximumPanels: 30,
       multiChartSample: {
         path: "site/client/samples/vnand-ppt-12-chart-sample.png",
         panelCount: 12,
@@ -463,6 +470,17 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
           path: "site/client/samples/vnand-random-multichart-frameless-04.png",
           panelCount: 8,
           distractors: [],
+        },
+        {
+          path: "site/client/samples/vnand-fhd-dense-30-chart-sample.png",
+          metadataPath:
+            "site/client/samples/vnand-fhd-dense-30-chart-sample.json",
+          panelCount: 30,
+          layout: {
+            rows: 5,
+            columns: 6,
+          },
+          distractors: ["table", "diagram", "photo"],
         },
       ],
       webApplication: true,

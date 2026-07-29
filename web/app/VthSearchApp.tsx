@@ -248,6 +248,11 @@ const RANDOM_MULTICHART_SAMPLES = [
     fileName: "vnand-random-multichart-frameless-04.png",
     label: "경계 없는 Curve",
   },
+  {
+    url: "/samples/vnand-fhd-dense-30-chart-sample.png",
+    fileName: "vnand-fhd-dense-30-chart-sample.png",
+    label: "FHD 밀집 30차트",
+  },
 ] as const;
 const CONTRIBUTOR_TOKEN_KEY = "vth-shared-contributor-token";
 const RELEVANCE_CONTRIBUTOR_TOKEN_KEY =
@@ -300,9 +305,9 @@ async function extractChartProfiles(file: Blob) {
     const documentScale = boundedRasterScale(
       bitmap.width,
       bitmap.height,
-      1600,
+      1920,
       1200,
-      2_000_000,
+      2_100_000,
     );
     const documentWidth = Math.max(
       1,
@@ -2531,7 +2536,7 @@ export function VthSearchApp() {
                 <strong>그래프를 놓거나 붙여넣으세요</strong>
                 <span>클릭하여 파일 선택 · Ctrl+V / ⌘V</span>
                 <small>
-                  PNG · JPG · WEBP / 무작위 배치·저해상도·경계 없는 Curve / 최대 24차트
+                  PNG · JPG · WEBP / 무작위 배치·저해상도·FHD 밀집 / 최대 30차트
                 </small>
               </button>
             )}
@@ -3442,7 +3447,7 @@ export function VthSearchApp() {
           <span>유사 산포 검색</span>
         </div>
         <p>Shape-first retrieval for log-scale V-NAND distributions.</p>
-        <span>ENGINE V3.2 / 2·4·8·16-STATE · 24-PANEL MAX</span>
+        <span>ENGINE V3.3 / 2·4·8·16-STATE · 30-PANEL MAX</span>
       </footer>
     </main>
   );

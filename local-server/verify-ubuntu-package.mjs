@@ -297,11 +297,73 @@ async function verifyService(packageDirectory, validationDirectory) {
       "Ubuntu package did not preserve frameless multi-chart analysis.",
     );
 
+    const denseFhdMetadata = JSON.parse(
+      await readFile(
+        path.join(
+          packageDirectory,
+          "site",
+          "client",
+          "samples",
+          "vnand-fhd-dense-30-chart-sample.json",
+        ),
+        "utf8",
+      ),
+    );
+    assert(
+      denseFhdMetadata.expectedChartCount === 30 &&
+        denseFhdMetadata.layout?.rows === 5 &&
+        denseFhdMetadata.layout?.columns === 6 &&
+        denseFhdMetadata.charts?.length === 30 &&
+        denseFhdMetadata.charts.every(
+          (chart, index) => chart.index === index,
+        ),
+      "Ubuntu package FHD dense sample metadata is incomplete.",
+    );
+    const denseFhdBytes = await readFile(
+      path.join(
+        packageDirectory,
+        "site",
+        "client",
+        "samples",
+        "vnand-fhd-dense-30-chart-sample.png",
+      ),
+    );
+    const denseFhdResponse = await fetch(
+      `${baseUrl}/api/v1/similarity-search?topK=1`,
+      {
+        method: "POST",
+        headers: {
+          ...headers,
+          "content-type": "image/png",
+        },
+        body: denseFhdBytes,
+      },
+    );
+    const denseFhd = await denseFhdResponse.json();
+    assert(
+      denseFhdResponse.status === 200 &&
+        denseFhd.panelCount === 30 &&
+        denseFhd.panelLayout?.rows === 5 &&
+        denseFhd.panelLayout?.columns === 6 &&
+        denseFhd.panelDetection?.detectedPanelCount === 30 &&
+        denseFhd.panelDetection?.analyzedPanelCount === 30 &&
+        denseFhd.panelDetection?.maxPanels === 30 &&
+        denseFhd.panelDetection?.truncated === false &&
+        denseFhd.panelDetection?.rejectedNonChartCount >= 1 &&
+        denseFhd.panels?.every(
+          (panel, index) =>
+            panel.panelIndex === index &&
+            panel.results?.length === 1,
+        ),
+      "Ubuntu package did not preserve FHD dense 30-chart analysis.",
+    );
+
     return {
       listenAddress: address.address,
       port: address.port,
       corpusCandidates: corpus.candidateCount,
       framelessPanels: frameless.panelCount,
+      denseFhdPanels: denseFhd.panelCount,
     };
   } finally {
     await new Promise((resolve, reject) =>
@@ -531,7 +593,7 @@ async function main() {
       ),
     );
     assert(
-      manifest.version === "1.32.0" &&
+      manifest.version === "1.33.0" &&
         manifest.platform === "ubuntu-linux-x64" &&
         manifest.architecture === "x86_64" &&
         manifest.entrypoint === "start.sh" &&
@@ -568,8 +630,18 @@ async function main() {
         manifest.bundled?.model === true &&
         manifest.bundled?.similaritySearchApi === true &&
         manifest.bundled?.multiChartPanelSplitting === true &&
-        manifest.bundled?.multiChartMaximumPanels === 24 &&
-        manifest.bundled?.samples?.length === 6 &&
+        manifest.bundled?.multiChartMaximumPanels === 30 &&
+        manifest.bundled?.samples?.length === 8 &&
+        manifest.bundled.samples.some(
+          (sample) =>
+            sample.path ===
+            "site/client/samples/vnand-fhd-dense-30-chart-sample.png",
+        ) &&
+        manifest.bundled.samples.some(
+          (sample) =>
+            sample.path ===
+            "site/client/samples/vnand-fhd-dense-30-chart-sample.json",
+        ) &&
         manifest.bundled?.environmentExample === "vth.env.example" &&
         manifest.bundled?.optionalSystemdInstaller ===
           "install-systemd.sh",
@@ -655,7 +727,10 @@ async function main() {
         readme.includes("sudo ./install-systemd.sh") &&
         readme.includes("data/만 쓰기 가능") &&
         readme.includes("Node.js나 npm 설치는 필요하지 않습니다") &&
-        readme.includes("tar.gz는 start.sh의 실행 권한"),
+        readme.includes("tar.gz는 start.sh의 실행 권한") &&
+        readme.includes("최대") &&
+        readme.includes("30개 차트") &&
+        readme.includes("FHD 밀집 샘플"),
       "Ubuntu LAN and standalone instructions are incomplete.",
     );
     await assertMissing(

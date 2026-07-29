@@ -12,8 +12,14 @@ const COMPACT_MINIMUM_PANEL_WIDTH_RATIO = 0.025;
 const COMPACT_MINIMUM_PANEL_HEIGHT_RATIO = 0.03;
 const COMPACT_MINIMUM_OPEN_AXIS_PANEL_AREA_RATIO = 0.003;
 const MAXIMUM_COMPOSITE_CONTAINER_CHECKS = 24;
-const MAXIMUM_COMPOSITE_CHILDREN = 20;
-export const MAXIMUM_CHART_PANELS = 24;
+const MAXIMUM_COMPOSITE_CHILDREN = 40;
+const MAXIMUM_SHARED_FRAME_CELL_CHECKS = 720;
+const MAXIMUM_SHARED_FRAME_HORIZONTAL_PAIR_CHECKS = 4_096;
+const MAXIMUM_SHARED_FRAME_LINE_RELATION_CHECKS = 200_000;
+const MAXIMUM_RECTANGLE_HORIZONTAL_PAIR_CHECKS = 4_096;
+const MAXIMUM_RECTANGLE_LINE_RELATION_CHECKS = 250_000;
+const MINIMUM_DENSE_SEPARATION_CANDIDATES = 6;
+export const MAXIMUM_CHART_PANELS = 30;
 
 function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
@@ -164,15 +170,22 @@ function extractLineBands(
   height,
   orientation,
   minimumSpan,
+  maximumGapOverride,
 ) {
   const horizontal = orientation === "horizontal";
   const primaryLength = horizontal ? height : width;
   const secondaryLength = horizontal ? width : height;
   const safeMinimumSpan = Math.max(14, Math.round(minimumSpan));
-  const maximumGap = Math.max(
-    2,
-    Math.round(secondaryLength * 0.006),
-  );
+  const maximumGap = Number.isFinite(maximumGapOverride)
+    ? clamp(
+        Math.round(maximumGapOverride),
+        0,
+        Math.max(0, secondaryLength - 1),
+      )
+    : Math.max(
+        2,
+        Math.round(secondaryLength * 0.006),
+      );
   const raw = [];
 
   for (let primary = 0; primary < primaryLength; primary += 1) {
@@ -370,6 +383,8 @@ function detectRectangleCandidates(
     4,
     Math.round(Math.min(width, height) * 0.014),
   );
+  let horizontalPairCheckCount = 0;
+  let lineRelationCheckCount = 0;
   for (
     let topIndex = 0;
     topIndex < horizontalLines.length - 1;
@@ -381,6 +396,13 @@ function detectRectangleCandidates(
       bottomIndex < horizontalLines.length;
       bottomIndex += 1
     ) {
+      horizontalPairCheckCount += 1;
+      if (
+        horizontalPairCheckCount >
+        MAXIMUM_RECTANGLE_HORIZONTAL_PAIR_CHECKS
+      ) {
+        return candidates;
+      }
       const bottomLine = horizontalLines[bottomIndex];
       const top = topLine.coordinate;
       const bottom = bottomLine.coordinate;
@@ -396,8 +418,16 @@ function detectRectangleCandidates(
       if (sharedRight - sharedLeft + 1 < minimumWidth) {
         continue;
       }
-      const spanningVerticalLines = verticalLines.filter(
-        (line) =>
+      const spanningVerticalLines = [];
+      for (const line of verticalLines) {
+        lineRelationCheckCount += 1;
+        if (
+          lineRelationCheckCount >
+          MAXIMUM_RECTANGLE_LINE_RELATION_CHECKS
+        ) {
+          return candidates;
+        }
+        if (
           line.coordinate >= sharedLeft - tolerance &&
           line.coordinate <= sharedRight + tolerance &&
           lineFitsInterval(
@@ -405,8 +435,11 @@ function detectRectangleCandidates(
             top,
             bottom,
             tolerance,
-          ),
-      );
+          )
+        ) {
+          spanningVerticalLines.push(line);
+        }
+      }
       for (
         let leftIndex = 0;
         leftIndex < spanningVerticalLines.length - 1;
@@ -418,6 +451,13 @@ function detectRectangleCandidates(
           rightIndex < spanningVerticalLines.length;
           rightIndex += 1
         ) {
+          lineRelationCheckCount += 1;
+          if (
+            lineRelationCheckCount >
+            MAXIMUM_RECTANGLE_LINE_RELATION_CHECKS
+          ) {
+            return candidates;
+          }
           const rightLine = spanningVerticalLines[rightIndex];
           const left = leftLine.coordinate;
           const right = rightLine.coordinate;
@@ -601,6 +641,217 @@ function detectLAxisCandidates(
         axisMode: "l-axis",
         detectionReason: "open-l-axis",
       });
+    }
+  }
+  return candidates;
+}
+
+/**
+ * Recover a plot whose top/bottom strokes continue through an immediately
+ * adjacent plot. This occurs after a 1–3 px PPT gutter is resized: two
+ * anti-aliased frame strokes can become a continuous line, so the normal
+ * endpoint rule deliberately rejects the middle cell as table-like.
+ *
+ * Only adjacent, visibly thick vertical boundaries are considered. A
+ * Curve-shaped interior is required before the candidate enters general
+ * deduplication, which keeps ordinary table cells and diagram boxes out. The
+ * number of evidence measurements is capped for adversarial grid-heavy input.
+ */
+function detectSharedFrameCellCandidates(
+  mask,
+  curveEvidenceMask,
+  width,
+  height,
+  minimumWidth,
+  minimumHeight,
+) {
+  if (!curveEvidenceMask) return [];
+  const horizontalLines = extractLineBands(
+    mask,
+    width,
+    height,
+    "horizontal",
+    minimumWidth,
+    0,
+  ).filter((line) => line.thickness >= 2);
+  const verticalLines = extractLineBands(
+    mask,
+    width,
+    height,
+    "vertical",
+    minimumHeight,
+    0,
+  ).filter((line) => line.thickness >= 2);
+  const tolerance = Math.max(
+    3,
+    Math.round(Math.min(width, height) * 0.006),
+  );
+  const candidates = [];
+  let checkedCandidateCount = 0;
+  let horizontalPairCheckCount = 0;
+  let lineRelationCheckCount = 0;
+
+  for (
+    let topIndex = 0;
+    topIndex < horizontalLines.length - 1;
+    topIndex += 1
+  ) {
+    const topLine = horizontalLines[topIndex];
+    for (
+      let bottomIndex = topIndex + 1;
+      bottomIndex < horizontalLines.length;
+      bottomIndex += 1
+    ) {
+      horizontalPairCheckCount += 1;
+      if (
+        horizontalPairCheckCount >
+        MAXIMUM_SHARED_FRAME_HORIZONTAL_PAIR_CHECKS
+      ) {
+        return candidates;
+      }
+      const bottomLine = horizontalLines[bottomIndex];
+      const top = topLine.coordinate;
+      const bottom = bottomLine.coordinate;
+      if (bottom - top + 1 < minimumHeight) continue;
+      const sharedLeft = Math.max(topLine.start, bottomLine.start);
+      const sharedRight = Math.min(topLine.end, bottomLine.end);
+      if (sharedRight - sharedLeft + 1 < minimumWidth) continue;
+
+      const spanningVerticalLines = [];
+      for (const line of verticalLines) {
+        lineRelationCheckCount += 1;
+        if (
+          lineRelationCheckCount >
+          MAXIMUM_SHARED_FRAME_LINE_RELATION_CHECKS
+        ) {
+          return candidates;
+        }
+        if (
+          line.coordinate >= sharedLeft - tolerance &&
+          line.coordinate <= sharedRight + tolerance &&
+          lineFitsInterval(line, top, bottom, tolerance)
+        ) {
+          spanningVerticalLines.push(line);
+        }
+      }
+      spanningVerticalLines.sort(
+        (left, right) => left.coordinate - right.coordinate,
+      );
+      for (
+        let boundaryIndex = 0;
+        boundaryIndex < spanningVerticalLines.length - 1;
+        boundaryIndex += 1
+      ) {
+        lineRelationCheckCount += 1;
+        if (
+          lineRelationCheckCount >
+          MAXIMUM_SHARED_FRAME_LINE_RELATION_CHECKS
+        ) {
+          return candidates;
+        }
+        const leftLine = spanningVerticalLines[boundaryIndex];
+        const rightLine =
+          spanningVerticalLines[boundaryIndex + 1];
+        const left = leftLine.coordinate;
+        const right = rightLine.coordinate;
+        const candidateWidth = right - left + 1;
+        const candidateHeight = bottom - top + 1;
+        const aspectRatio =
+          candidateWidth / Math.max(1, candidateHeight);
+        if (
+          candidateWidth < minimumWidth ||
+          aspectRatio < 0.65 ||
+          aspectRatio > 4.8 ||
+          !lineFitsInterval(
+            topLine,
+            left,
+            right,
+            tolerance,
+          ) ||
+          !lineFitsInterval(
+            bottomLine,
+            left,
+            right,
+            tolerance,
+          )
+        ) {
+          continue;
+        }
+
+        const endpointAlignedEdgeCount = [
+          Math.abs(topLine.start - left) <= tolerance &&
+            Math.abs(topLine.end - right) <= tolerance,
+          Math.abs(bottomLine.start - left) <= tolerance &&
+            Math.abs(bottomLine.end - right) <= tolerance,
+          Math.abs(leftLine.start - top) <= tolerance &&
+            Math.abs(leftLine.end - bottom) <= tolerance,
+          Math.abs(rightLine.start - top) <= tolerance &&
+            Math.abs(rightLine.end - bottom) <= tolerance,
+        ].filter(Boolean).length;
+        if (endpointAlignedEdgeCount >= 3) continue;
+
+        // Do not combine multiple table rows or vertically stacked plots.
+        // Thin grid/guide strokes are ignored; a genuine frame boundary is
+        // at least two pixels thick at the processed scale.
+        let hasInternalFrameBoundary = false;
+        for (const line of horizontalLines) {
+          lineRelationCheckCount += 1;
+          if (
+            lineRelationCheckCount >
+            MAXIMUM_SHARED_FRAME_LINE_RELATION_CHECKS
+          ) {
+            return candidates;
+          }
+          if (
+            line !== topLine &&
+            line !== bottomLine &&
+            line.coordinate > top + tolerance &&
+            line.coordinate < bottom - tolerance &&
+            lineFitsInterval(
+              line,
+              left,
+              right,
+              tolerance,
+            )
+          ) {
+            hasInternalFrameBoundary = true;
+            break;
+          }
+        }
+        if (hasInternalFrameBoundary) continue;
+        checkedCandidateCount += 1;
+        if (
+          checkedCandidateCount >
+          MAXIMUM_SHARED_FRAME_CELL_CHECKS
+        ) {
+          return candidates;
+        }
+
+        const bounds = {
+          left,
+          top,
+          right,
+          bottom,
+          axisMode: "rectangle",
+        };
+        const curveEvidence = measureChartCurveEvidence(
+          bounds,
+          curveEvidenceMask,
+          width,
+        );
+        if (!curveEvidence.valid) continue;
+        candidates.push({
+          ...bounds,
+          confidence: clamp(
+            0.48 + curveEvidence.score * 0.45,
+            0,
+            0.94,
+          ),
+          detectionScale: "separation",
+          detectionReason: "shared-frame-cell",
+          curveEvidence,
+        });
+      }
     }
   }
   return candidates;
@@ -996,12 +1247,27 @@ export function measureChartCurveEvidence(
     singlePeakMonotonicity >= 0.9 &&
     traceSmoothness >= 0.75 &&
     !smoothSinglePeakShape;
-  const fullWidthTrace =
-    horizontalCoverage >= 0.42 &&
-    coherentTrace &&
-    verticalVariation >= 0.045 &&
+  // Some dense V-NAND plots use broad, highly overlapping States. Their
+  // salient-color mask contains several short peak arcs instead of one path
+  // spanning 20% of the frame, even though those arcs cover most x columns
+  // and vary coherently in y. Admit that segmented shallow trace only inside
+  // a geometric frame/axis; frameless text, photos and connectors retain the
+  // stricter continuity requirement.
+  const segmentedShallowTrace =
+    candidate.axisMode !== "content" &&
+    horizontalCoverage >= 0.62 &&
+    continuousCoverage >= 0.08 &&
+    verticalVariation >= 0.08 &&
+    residualDensity <= 0.1 &&
     thinEnough &&
     !sharpSinglePeakArtifact;
+  const fullWidthTrace =
+    (horizontalCoverage >= 0.42 &&
+      coherentTrace &&
+      verticalVariation >= 0.045 &&
+      thinEnough &&
+      !sharpSinglePeakArtifact) ||
+    segmentedShallowTrace;
   const valid = fullWidthTrace || localizedSinglePeak;
   const score = clamp(
     horizontalCoverage * 0.34 +
@@ -1021,6 +1287,7 @@ export function measureChartCurveEvidence(
     localizedSinglePeak,
     logScaleParabolicPeak,
     fullWidthTrace,
+    segmentedShallowTrace,
     peakPosition,
     peakProminence,
     singlePeakMonotonicity,
@@ -1070,8 +1337,8 @@ function clearSeparationGutter(
   height,
 ) {
   const minimumGutter = Math.max(
-    4,
-    Math.round(Math.min(width, height) * 0.004),
+    1,
+    Math.round(Math.min(width, height) * 0.001),
   );
   const measureRegion = (left, top, right, bottom) => {
     if (right < left || bottom < top) return 1;
@@ -1183,6 +1450,7 @@ function clearSeparationGutter(
 function removeCompositeContainers(
   candidates,
   curveEvidenceMask,
+  separationEvidenceMask,
   width,
   height,
   compactMinimumAreaRatio,
@@ -1256,6 +1524,23 @@ function removeCompositeContainers(
         children.push(inner);
       }
     }
+    const strongChildCount = children.reduce(
+      (count, child) => {
+        const evidence =
+          child.curveEvidence ??
+          measureChartCurveEvidence(
+            child,
+            curveEvidenceMask,
+            width,
+          );
+        child.curveEvidence = evidence;
+        return (
+          count +
+          (isStrongIndependentChild(child, evidence) ? 1 : 0)
+        );
+      },
+      0,
+    );
     for (
       let firstIndex = 0;
       firstIndex < children.length - 1;
@@ -1273,7 +1558,7 @@ function removeCompositeContainers(
           !clearSeparationGutter(
             first,
             second,
-            curveEvidenceMask,
+            separationEvidenceMask ?? curveEvidenceMask,
             width,
             height,
           )
@@ -1301,7 +1586,10 @@ function removeCompositeContainers(
         second.curveEvidence = secondEvidence;
         if (
           isStrongIndependentChild(second, secondEvidence) &&
-          (area(first) + area(second)) / outerArea >= 0.12
+          ((area(first) + area(second)) / outerArea >= 0.12 ||
+            (strongChildCount >= 4 &&
+              (area(first) + area(second)) / outerArea >=
+                0.04))
         ) {
           compositeContainers.add(outer);
           break;
@@ -1319,6 +1607,7 @@ function removeDuplicateAndGridCandidates(
   candidates,
   edgeEvidenceMask,
   curveEvidenceMask,
+  separationEvidenceMask,
   width,
   height,
   compactMinimumAreaRatio,
@@ -1335,8 +1624,11 @@ function removeDuplicateAndGridCandidates(
     const existing = uniqueCandidates.get(key);
     if (
       !existing ||
+      (candidate.detectionReason === "shared-frame-cell" &&
+        existing.detectionReason !== "shared-frame-cell") ||
       (candidate.detectionScale === "strict" &&
-        existing.detectionScale !== "strict")
+        existing.detectionScale !== "strict" &&
+        existing.detectionReason !== "shared-frame-cell")
     ) {
       uniqueCandidates.set(key, candidate);
     }
@@ -1352,6 +1644,7 @@ function removeDuplicateAndGridCandidates(
       ),
     })),
     curveEvidenceMask,
+    separationEvidenceMask,
     width,
     height,
     compactMinimumAreaRatio,
@@ -1368,15 +1661,35 @@ function removeDuplicateAndGridCandidates(
       ),
   );
   const ranked = [...withoutRectangleDerivedLAxes].sort(
-    (left, right) =>
-      (right.detectionScale === "strict") -
-        (left.detectionScale === "strict") ||
-      area(right) - area(left) ||
-      (right.axisMode === "rectangle") -
-        (left.axisMode === "rectangle") ||
-      right.confidence - left.confidence ||
-      left.top - right.top ||
-      left.left - right.left,
+    (left, right) => {
+      // Exact-gutter candidates must win over a tolerant full-row/full-slide
+      // frame synthesized by proportional line-gap bridging. Exact duplicate
+      // bounds have already preferred the strict hypothesis above, so this
+      // priority affects only genuinely different dense-panel boundaries.
+      const leftSeparation =
+        left.detectionScale === "separation";
+      const rightSeparation =
+        right.detectionScale === "separation";
+      const leftPriority =
+        (left.detectionReason === "shared-frame-cell" ? 3 : 0) +
+        (leftSeparation ? 2 : 0) +
+        (left.detectionScale === "strict" ? 1 : 0);
+      const rightPriority =
+        (right.detectionReason === "shared-frame-cell" ? 3 : 0) +
+        (rightSeparation ? 2 : 0) +
+        (right.detectionScale === "strict" ? 1 : 0);
+      return (
+        rightPriority - leftPriority ||
+        (leftSeparation && rightSeparation
+          ? area(left) - area(right)
+          : area(right) - area(left)) ||
+        (right.axisMode === "rectangle") -
+          (left.axisMode === "rectangle") ||
+        right.confidence - left.confidence ||
+        left.top - right.top ||
+        left.left - right.left
+      );
+    },
   );
   const kept = [];
   const suppressionEnvelopes = [];
@@ -1610,6 +1923,7 @@ function detectGeometricCandidatesAtScale(
   minimumWidth,
   minimumHeight,
   detectionScale,
+  maximumLineScanGap,
 ) {
   const horizontalLines = extractLineBands(
     mask,
@@ -1617,6 +1931,7 @@ function detectGeometricCandidatesAtScale(
     height,
     "horizontal",
     minimumWidth,
+    maximumLineScanGap,
   );
   const verticalLines = extractLineBands(
     mask,
@@ -1624,6 +1939,7 @@ function detectGeometricCandidatesAtScale(
     height,
     "vertical",
     minimumHeight,
+    maximumLineScanGap,
   );
   return [
     ...detectRectangleCandidates(
@@ -2043,10 +2359,52 @@ export function detectChartPanelsFromMask(
           "compact",
         )
       : [];
+  // A repaired or anti-aliased line hypothesis is intentionally tolerant of
+  // short gaps within an axis. At FHD, however, its proportional scan gap can
+  // also bridge the 1–12 px gutters between aligned plots in a dense 6 × 5
+  // slide. Scan the original mask once more at the compact size with no gap
+  // bridging. These candidates preserve true panel boundaries while the
+  // tolerant hypotheses above continue to recover broken low-resolution axes.
+  const separationCandidates =
+    detectGeometricCandidatesAtScale(
+      mask,
+      width,
+      height,
+      compactMinimumWidth,
+      compactMinimumHeight,
+      "separation",
+      0,
+    );
   const curveEvidenceMask =
     options.curveEvidenceMask ??
     edgeEvidenceMask ??
     workingMask;
+  const sharedFrameCellCandidates =
+    detectSharedFrameCellCandidates(
+      mask,
+      curveEvidenceMask,
+      width,
+      height,
+      compactMinimumWidth,
+      compactMinimumHeight,
+    );
+  // Exact-gap and shared-frame hypotheses are intentionally permissive
+  // because their job is to split dense slide layouts. Activating them for a
+  // lone card would also promote a chevron or a few dark grid cells. Require
+  // repeated panel structure; ordinary one-to-five chart uploads continue to
+  // use the stricter geometric and frameless paths above.
+  const denseSeparationDetected =
+    separationCandidates.length >=
+      MINIMUM_DENSE_SEPARATION_CANDIDATES ||
+    sharedFrameCellCandidates.length >=
+      MINIMUM_DENSE_SEPARATION_CANDIDATES;
+  const retainedSeparationCandidates =
+    denseSeparationDetected ? separationCandidates : [];
+  const retainedSharedFrameCellCandidates =
+    sharedFrameCellCandidates.length >=
+    MINIMUM_DENSE_SEPARATION_CANDIDATES
+      ? sharedFrameCellCandidates
+      : [];
   const framelessDetection = detectFramelessCurveCandidates(
     curveEvidenceMask,
     options.curveColorMasks,
@@ -2057,10 +2415,15 @@ export function detectChartPanelsFromMask(
     [
       ...strictCandidates,
       ...compactCandidates,
+      ...retainedSeparationCandidates,
+      ...retainedSharedFrameCellCandidates,
       ...framelessDetection.candidates,
     ],
     edgeEvidenceMask ?? workingMask,
     curveEvidenceMask,
+    options.curveEvidenceMask ??
+      options.edgeEvidenceMask ??
+      mask,
     width,
     height,
     compactMinimumAreaRatio,
@@ -2102,6 +2465,11 @@ export function detectChartPanelsFromMask(
           : minimumAreaRatio;
       const compact =
         candidate.detectionScale === "compact" ||
+        (candidate.detectionScale === "separation" &&
+          (candidate.right - candidate.left + 1 <
+            minimumWidth ||
+            candidate.bottom - candidate.top + 1 <
+              minimumHeight)) ||
         candidateAreaRatio <
           strictMinimumCandidateAreaRatio;
       const areaRatio = compact

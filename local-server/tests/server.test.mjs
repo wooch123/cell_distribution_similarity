@@ -171,7 +171,7 @@ test("serves the web app and persists ready and pending training images", async 
       similarityCapability.multiChart.nonChartRejection,
       true,
     );
-    assert.equal(similarityCapability.multiChart.maxPanels, 24);
+    assert.equal(similarityCapability.multiChart.maxPanels, 30);
     assert.equal(
       similarityCapability.multiChart.overflowPolicy,
       "highest-confidence-then-reading-order",
@@ -203,7 +203,7 @@ test("serves the web app and persists ready and pending training images", async 
     assert.equal(similarity.panelDetection.detectedPanelCount, 0);
     assert.ok(similarity.panelDetection.rejectedNonChartCount >= 1);
     assert.equal(similarity.panelDetection.analyzedPanelCount, 1);
-    assert.equal(similarity.panelDetection.maxPanels, 24);
+    assert.equal(similarity.panelDetection.maxPanels, 30);
     assert.equal(similarity.panelDetection.truncated, false);
     assert.deepEqual(
       similarity.results.map((result) => result.rank),
@@ -481,6 +481,14 @@ test("protects network-bound training data with a bootstrap cookie", async () =>
     );
     assert.ok(
       openApi.paths["/api/v1/training-samples"].get.responses["401"],
+    );
+    const panelContract =
+      openApi.components.schemas.SimilaritySearchResponse.properties;
+    assert.equal(panelContract.panelCount.maximum, 30);
+    assert.equal(panelContract.panels.maxItems, 30);
+    assert.equal(
+      panelContract.panelDetection.properties.maxPanels.const,
+      30,
     );
 
     const unauthorizedList = await fetch(

@@ -268,7 +268,7 @@ async function verifyService(packageDirectory, validationDirectory) {
     assert(
       multiChart.panelDetection?.detectedPanelCount === 12 &&
         multiChart.panelDetection?.analyzedPanelCount === 12 &&
-        multiChart.panelDetection?.maxPanels === 24 &&
+        multiChart.panelDetection?.maxPanels === 30 &&
         multiChart.panelDetection?.truncated === false,
       "Packaged dense-panel metadata is invalid or truncated.",
     );
@@ -311,11 +311,35 @@ async function verifyService(packageDirectory, validationDirectory) {
       "Legacy top-level results do not mirror panel 0.",
     );
 
+    const denseFhdMetadata = JSON.parse(
+      await readFile(
+        path.join(
+          packageDirectory,
+          "site",
+          "client",
+          "samples",
+          "vnand-fhd-dense-30-chart-sample.json",
+        ),
+        "utf8",
+      ),
+    );
+    assert(
+      denseFhdMetadata.expectedChartCount === 30 &&
+        denseFhdMetadata.layout?.rows === 5 &&
+        denseFhdMetadata.layout?.columns === 6 &&
+        denseFhdMetadata.charts?.length === 30 &&
+        denseFhdMetadata.charts.every(
+          (chart, index) => chart.index === index,
+        ),
+      "Bundled FHD dense 30-chart metadata is incomplete.",
+    );
+
     for (const sample of [
       {
         fileName: "vnand-random-multichart-mixed-01.png",
         panelCount: 8,
         hasDistractors: true,
+        minimumStateCount: 4,
       },
       {
         fileName: "vnand-random-multichart-mixed-02.png",
@@ -326,11 +350,17 @@ async function verifyService(packageDirectory, validationDirectory) {
         fileName: "vnand-random-multichart-lowres-03.png",
         panelCount: 7,
         hasDistractors: true,
+        minimumStateCount: 4,
       },
       {
         fileName: "vnand-random-multichart-frameless-04.png",
         panelCount: 8,
         hasDistractors: false,
+      },
+      {
+        fileName: "vnand-fhd-dense-30-chart-sample.png",
+        panelCount: 30,
+        hasDistractors: true,
       },
     ]) {
       const sampleBytes = await readFile(
@@ -367,8 +397,9 @@ async function verifyService(packageDirectory, validationDirectory) {
           result.panels?.every(
             (panel) =>
               panel.results?.length === 1 &&
-              (!sample.hasDistractors ||
-                panel.query?.stateCount >= 4),
+              (!sample.minimumStateCount ||
+                panel.query?.stateCount >=
+                  sample.minimumStateCount),
           ),
         `Packaged random sample panel verification failed: ${sample.fileName}`,
       );
@@ -514,7 +545,8 @@ async function main() {
     assert(
       readme.includes("완전 오프라인 동작") &&
         readme.includes("외부 서버에 연결하지 않으며") &&
-        readme.includes("최대 24개 차트") &&
+        readme.includes("최대 30개") &&
+        readme.includes("FHD 밀집 30차트") &&
         readme.includes("12차트 PPT 샘플") &&
         readme.includes("4/8-State 분포") &&
         readme.includes("랜덤 멀티 차트 분석") &&
@@ -533,12 +565,14 @@ async function main() {
       ),
     );
     assert(
-      manifest.network?.mode === "offline-loopback-only" &&
+      manifest.version === "1.33.0" &&
+        manifest.platform === "windows-x64" &&
+        manifest.network?.mode === "offline-loopback-only" &&
         manifest.network?.externalNetworkAllowed === false &&
         manifest.bundled?.corpus === true &&
         manifest.bundled?.model === true &&
         manifest.bundled?.multiChartPanelSplitting === true &&
-        manifest.bundled?.multiChartMaximumPanels === 24 &&
+        manifest.bundled?.multiChartMaximumPanels === 30 &&
         manifest.bundled?.multiChartSample?.path ===
           "site/client/samples/vnand-ppt-12-chart-sample.png" &&
         manifest.bundled?.multiChartSample?.panelCount === 12 &&
@@ -552,7 +586,19 @@ async function main() {
           ]) &&
         manifest.bundled?.multiChartSample?.layout?.rows === 3 &&
         manifest.bundled?.multiChartSample?.layout?.columns === 4 &&
-        manifest.bundled?.randomMultiChartSamples?.length === 4 &&
+        manifest.bundled?.randomMultiChartSamples?.length === 5 &&
+        manifest.bundled.randomMultiChartSamples.some(
+          (sample) =>
+            sample.path.endsWith(
+              "vnand-fhd-dense-30-chart-sample.png",
+            ) &&
+            sample.metadataPath?.endsWith(
+              "vnand-fhd-dense-30-chart-sample.json",
+            ) &&
+            sample.panelCount === 30 &&
+            sample.layout?.rows === 5 &&
+            sample.layout?.columns === 6,
+        ) &&
         manifest.bundled.randomMultiChartSamples.every(
           (sample) =>
             sample.panelCount >= 7 &&
