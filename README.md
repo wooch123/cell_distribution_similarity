@@ -80,7 +80,7 @@ descriptor와 선택 좌표를 전송합니다. 파일명·메타데이터를 �
 
 ## Windows 무설치판과 Ubuntu Universal 외부 Web 서버판
 
-`artifacts/windows/vth-similarity-windows-x64-v1.45.0.zip`은 공식
+`artifacts/windows/vth-similarity-windows-x64-v1.46.0.zip`은 공식
 Windows x64 Node 런타임, 웹 빌드, 로컬 학습 API를 함께 담습니다. 다른
 Windows PC에서 압축을 푼 뒤 `start.bat`을 실행하면 설치 없이
 `http://127.0.0.1:4173`에서 동작합니다. 코퍼스, 모델, 웹 화면, 런타임이
@@ -114,7 +114,7 @@ FHD 한 이미지에서 오밀조밀하게 배치된 차트를 최대 30개까�
 추가 회귀는 160×90 이미지의 4개 차트와 240×135 이미지의 12개 차트를
 각각 분리하며, 조밀한 표 형태 격자 위의 유효 파형은 색상/검정 Curve 모두
 유지하고 같은 크기의 실제 색상 표는 계속 제외하는지 확인합니다.
-v1.45.0의 Ubuntu Universal 패키지는 공식 Linux x64와 ARM64 Node
+v1.46.0의 Ubuntu Universal 패키지는 공식 Linux x64와 ARM64 Node
 런타임을 하나의 `.tar.gz`에 함께 포함합니다. `start.sh`가 `uname -m`의
 `x86_64`/`amd64` 또는 `aarch64`/`arm64` 값을 판별해 맞는 런타임을
 자동 선택하며, 매니페스트의 플랫폼 계약은 `ubuntu-linux-universal`입니다.
@@ -166,9 +166,9 @@ Node.js나 npm을 설치하지 않고 `.tar.gz`를 풀어 `./start.sh`를 실행
 `data/` 학습 저장소와 추천 후보를 공유하지만 외부 공용 서버로 원본이나
 학습 데이터를 전송하지 않습니다.
 
-v1.45.0 웹 배포는
-`/downloads/windows-package-v1.45.0.json`과
-`/downloads/ubuntu-package-v1.45.0.json`을 고정 매니페스트 경로로
+v1.46.0 웹 배포는
+`/downloads/windows-package-v1.46.0.json`과
+`/downloads/ubuntu-package-v1.46.0.json`을 고정 매니페스트 경로로
 사용합니다. 두 매니페스트 모두 schema-v1 `browser-assembled` 계약과
 SHA-256 조각 목록을 제공하며 브라우저는 각 조각과 완성 파일을 검증한 뒤
 저장합니다. Windows 결과물은 ZIP이고 Ubuntu는

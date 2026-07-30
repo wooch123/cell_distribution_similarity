@@ -345,26 +345,26 @@ async function verifyStandalonePackageDownload({
 
 test("ships the verified Windows standalone package as a web download", async () => {
   await verifyStandalonePackageDownload({
-    manifestFileName: "windows-package-v1.45.0.json",
+    manifestFileName: "windows-package-v1.46.0.json",
     checksumFileName: "vth-similarity-windows-x64.sha256",
-    expectedVersion: "1.45.0",
+    expectedVersion: "1.46.0",
     expectedFileName: "vth-similarity-windows-x64.zip",
     expectedDownloadFileName:
-      "vth-similarity-windows-x64-v1.45.0.zip",
+      "vth-similarity-windows-x64-v1.46.0.zip",
     assemble: assembleWindowsPackage,
   });
 });
 
 test("ships the verified Ubuntu external Web server package as a web download", async () => {
   await verifyStandalonePackageDownload({
-    manifestFileName: "ubuntu-package-v1.45.0.json",
+    manifestFileName: "ubuntu-package-v1.46.0.json",
     checksumFileName: "vth-similarity-ubuntu-universal.sha256",
-    expectedVersion: "1.45.0",
+    expectedVersion: "1.46.0",
     expectedPlatform: "ubuntu-linux-universal",
     expectedArchitectures: ["x64", "arm64"],
     expectedFileName: "vth-similarity-ubuntu-universal.tar.gz",
     expectedDownloadFileName:
-      "vth-similarity-ubuntu-universal-v1.45.0.tar.gz",
+      "vth-similarity-ubuntu-universal-v1.46.0.tar.gz",
     assemble: assembleUbuntuPackage,
   });
 });

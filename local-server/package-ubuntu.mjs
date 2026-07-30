@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(moduleDirectory, "..");
-const version = "1.45.0";
+const version = "1.46.0";
 const packageName = `vth-similarity-ubuntu-universal-v${version}`;
 const artifactsDirectory = path.join(projectRoot, "artifacts", "ubuntu");
 const cacheDirectory = path.join(artifactsDirectory, "cache");
