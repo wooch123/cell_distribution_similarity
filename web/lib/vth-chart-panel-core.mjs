@@ -3395,11 +3395,12 @@ function analyzeAxisAlignedDocumentLattice(
   };
 }
 
-function candidateHasLocalTableLattice(
+function analyzeCandidateLocalLattice(
   candidate,
   broadMask,
   width,
   height,
+  { allowDocumentScale = false } = {},
 ) {
   const localWidth = candidate.right - candidate.left + 1;
   const localHeight = candidate.bottom - candidate.top + 1;
@@ -3407,9 +3408,10 @@ function candidateHasLocalTableLattice(
     !broadMask ||
     localWidth < 48 ||
     localHeight < 36 ||
-    localWidth * localHeight > width * height * 0.7
+    (!allowDocumentScale &&
+      localWidth * localHeight > width * height * 0.7)
   ) {
-    return false;
+    return null;
   }
   const localMask = new Uint8Array(localWidth * localHeight);
   for (let localY = 0; localY < localHeight; localY += 1) {
@@ -3424,7 +3426,189 @@ function candidateHasLocalTableLattice(
     localMask,
     localWidth,
     localHeight,
-  ).tableGridArtifact;
+  );
+}
+
+function candidateHasLocalTableLattice(
+  candidate,
+  broadMask,
+  width,
+  height,
+) {
+  return (
+    analyzeCandidateLocalLattice(
+      candidate,
+      broadMask,
+      width,
+      height,
+    )?.tableGridArtifact === true
+  );
+}
+
+function measureVerticalGuideWaveformCrossings(
+  candidate,
+  localLattice,
+  curveResidualMask,
+  originalCurveMask,
+  width,
+  height,
+) {
+  const candidateWidth =
+    candidate.right - candidate.left + 1;
+  const candidateHeight =
+    candidate.bottom - candidate.top + 1;
+  const edgeInset = Math.max(
+    3,
+    Math.round(candidateWidth * 0.025),
+  );
+  const supportRadius = clamp(
+    Math.round(candidateWidth * 0.009),
+    4,
+    10,
+  );
+  const yTolerance = clamp(
+    Math.round(candidateHeight * 0.055),
+    5,
+    24,
+  );
+  const internalBands = localLattice.verticalBands.filter(
+    (band) =>
+      band.coordinate >= edgeInset &&
+      band.coordinate <= candidateWidth - edgeInset - 1,
+  );
+  let crossingCount = 0;
+  for (const band of internalBands) {
+    const absoluteLeftEdge =
+      candidate.left + band.start;
+    const absoluteRightEdge =
+      candidate.left + band.end;
+    const leftRows = new Uint8Array(candidateHeight);
+    const rightRows = new Uint8Array(candidateHeight);
+    for (
+      let x = Math.max(
+        candidate.left,
+        absoluteLeftEdge - supportRadius,
+      );
+      x < absoluteLeftEdge;
+      x += 1
+    ) {
+      for (
+        let y = Math.max(0, candidate.top);
+        y <= Math.min(height - 1, candidate.bottom);
+        y += 1
+      ) {
+        if (curveResidualMask[y * width + x]) {
+          leftRows[y - candidate.top] = 1;
+        }
+      }
+    }
+    for (
+      let x = absoluteRightEdge + 1;
+      x <=
+      Math.min(
+        candidate.right,
+        absoluteRightEdge + supportRadius,
+      );
+      x += 1
+    ) {
+      for (
+        let y = Math.max(0, candidate.top);
+        y <= Math.min(height - 1, candidate.bottom);
+        y += 1
+      ) {
+        if (curveResidualMask[y * width + x]) {
+          rightRows[y - candidate.top] = 1;
+        }
+      }
+    }
+    let aligned = false;
+    for (
+      let localY = 0;
+      localY < candidateHeight && !aligned;
+      localY += 1
+    ) {
+      if (!leftRows[localY]) continue;
+      for (
+        let nearbyY = Math.max(0, localY - yTolerance);
+        nearbyY <=
+        Math.min(
+          candidateHeight - 1,
+          localY + yTolerance,
+        );
+        nearbyY += 1
+      ) {
+        if (rightRows[nearbyY]) {
+          aligned = true;
+          break;
+        }
+      }
+    }
+    if (!aligned && originalCurveMask) {
+      const maximumLocalBridgeSpan = Math.max(
+        10,
+        Math.round(candidateWidth * 0.12),
+      );
+      const minimumY = Math.max(
+        0,
+        candidate.top +
+          Math.round(candidateHeight * 0.03),
+      );
+      const maximumY = Math.min(
+        height - 1,
+        candidate.bottom -
+          Math.round(candidateHeight * 0.03),
+      );
+      for (
+        let y = minimumY;
+        y <= maximumY && !aligned;
+        y += 1
+      ) {
+        let leftSpan = 0;
+        for (
+          let x = absoluteLeftEdge - 1;
+          x >= candidate.left &&
+          leftSpan <= maximumLocalBridgeSpan;
+          x -= 1
+        ) {
+          if (!originalCurveMask[y * width + x]) break;
+          leftSpan += 1;
+        }
+        if (leftSpan < 1) continue;
+        let rightSpan = 0;
+        for (
+          let x = absoluteRightEdge + 1;
+          x <= candidate.right &&
+          rightSpan <= maximumLocalBridgeSpan;
+          x += 1
+        ) {
+          if (!originalCurveMask[y * width + x]) break;
+          rightSpan += 1;
+        }
+        const totalSpan =
+          leftSpan +
+          rightSpan +
+          (absoluteRightEdge - absoluteLeftEdge + 1);
+        if (
+          rightSpan >= 1 &&
+          totalSpan <= maximumLocalBridgeSpan
+        ) {
+          aligned = true;
+        }
+      }
+    }
+    if (aligned) crossingCount += 1;
+  }
+  const minimumCrossingCount = Math.max(
+    1,
+    Math.ceil(internalBands.length * 0.9),
+  );
+  return {
+    crossingCount,
+    internalBandCount: internalBands.length,
+    valid:
+      internalBands.length >= 1 &&
+      crossingCount >= minimumCrossingCount,
+  };
 }
 
 function analyzeExtendedDeskewedDocument(
@@ -4201,6 +4385,13 @@ function removeCompositeContainers(
     );
   };
   for (const outer of possibleContainers) {
+    // Dense guide lines inside one physical plot can synthesize many
+    // rectangle "children". When the line-suppressed residual independently
+    // proves one Curve crossing those guide cells, the outer frame is the
+    // chart itself rather than a composite card around separate panels.
+    if (outer.curveEvidence?.guideGridWaveformRescue === true) {
+      continue;
+    }
     const outerArea = area(outer);
     const inset = Math.max(
       4,
@@ -4461,7 +4652,20 @@ function removeDuplicateAndGridCandidates(
   width,
   height,
   compactMinimumAreaRatio,
+  guideStructureMask = edgeEvidenceMask,
 ) {
+  let straightRunResidual;
+  const getStraightRunResidual = () => {
+    if (!straightRunResidual) {
+      straightRunResidual =
+        suppressStraightRunsForSpatialRecovery(
+          curveEvidenceMask,
+          width,
+          height,
+        ).mask;
+    }
+    return straightRunResidual;
+  };
   const uniqueCandidates = new Map();
   for (const candidate of candidates) {
     const key = [
@@ -4511,13 +4715,115 @@ function removeDuplicateAndGridCandidates(
           curveEvidenceMask,
           width,
         );
+      let guideGridWaveformEvidence;
+      const canContainGuideGridWaveform =
+        candidate.axisMode !== "content" &&
+        candidate.detectionScale === "strict" &&
+        area(candidate) >= width * height * 0.01 &&
+        measuredEvidence.horizontalCoverage >= 0.62 &&
+        measuredEvidence.continuousCoverage >= 0.55 &&
+        measuredEvidence.verticalVariation >= 0.04 &&
+        (measuredEvidence.directionChangeCount >= 1 ||
+          measuredEvidence.localizedSinglePeak);
+      const candidateLocalLattice =
+        canContainGuideGridWaveform
+          ? analyzeCandidateLocalLattice(
+              candidate,
+              guideStructureMask,
+              width,
+              height,
+              { allowDocumentScale: true },
+            )
+          : null;
+      const guideGridStructure =
+        candidateLocalLattice != null &&
+        candidateLocalLattice.horizontalBandCount >= 3 &&
+        candidateLocalLattice.verticalBandCount >= 3;
+      if (guideGridStructure) {
+        const straightRunResidualMask =
+          getStraightRunResidual();
+        const residualEvidence = measureChartCurveEvidence(
+          candidate,
+          straightRunResidualMask,
+          width,
+        );
+        const guideCrossingEvidence =
+          measureVerticalGuideWaveformCrossings(
+            candidate,
+            candidateLocalLattice,
+            straightRunResidualMask,
+            curveEvidenceMask,
+            width,
+            height,
+          );
+        const crossesGuideCells =
+          guideCrossingEvidence.valid &&
+          residualEvidence.valid &&
+          !residualEvidence.tableGridArtifact &&
+          !residualEvidence.closedLoopArtifact &&
+          !residualEvidence.closedTwoBranchArtifact &&
+          residualEvidence.horizontalCoverage >= 0.68 &&
+          Math.max(
+            residualEvidence.continuousCoverage,
+            measuredEvidence.continuousCoverage,
+          ) >= 0.6 &&
+          Math.max(
+            residualEvidence.verticalVariation,
+            measuredEvidence.verticalVariation,
+          ) >= 0.045 &&
+          residualEvidence.thinEnough &&
+          (Math.max(
+            residualEvidence.directionChangeCount,
+            measuredEvidence.directionChangeCount,
+          ) >= 1 ||
+            residualEvidence.localizedSinglePeak);
+        if (crossesGuideCells) {
+          guideGridWaveformEvidence = {
+            ...residualEvidence,
+            valid: true,
+            score: Math.max(
+              residualEvidence.score,
+              measuredEvidence.score,
+            ),
+            horizontalCoverage: Math.max(
+              residualEvidence.horizontalCoverage,
+              measuredEvidence.horizontalCoverage,
+            ),
+            continuousCoverage: Math.max(
+              residualEvidence.continuousCoverage,
+              measuredEvidence.continuousCoverage,
+            ),
+            verticalVariation: Math.max(
+              residualEvidence.verticalVariation,
+              measuredEvidence.verticalVariation,
+            ),
+            directionChangeCount: Math.max(
+              residualEvidence.directionChangeCount,
+              measuredEvidence.directionChangeCount,
+            ),
+            tableGridArtifact: false,
+            guideGridWaveformRescue: true,
+            guideGridOriginalTableArtifact:
+              measuredEvidence.tableGridArtifact === true,
+            guideGridStructuralProof: true,
+            guideGridCrossingCount:
+              guideCrossingEvidence.crossingCount,
+            guideGridInternalBandCount:
+              guideCrossingEvidence.internalBandCount,
+            guideGridIgnoredRowBandCount:
+              measuredEvidence.ignoredRowBandCount,
+            guideGridIgnoredColumnBandCount:
+              measuredEvidence.ignoredColumnBandCount,
+          };
+        }
+      }
       const microFrameSignal = measureMicroFrameSignal(
         candidate,
         curveEvidenceMask,
         separationEvidenceMask,
         width,
       );
-      const curveEvidence =
+      const fallbackCurveEvidence =
         !measuredEvidence.valid &&
         microFrameSignal?.valid
           ? {
@@ -4546,6 +4852,8 @@ function removeDuplicateAndGridCandidates(
                 microFrameSignal.broadResidualPixelCount,
             }
           : measuredEvidence;
+      const curveEvidence =
+        guideGridWaveformEvidence ?? fallbackCurveEvidence;
       return {
         ...candidate,
         // Validate before overlap suppression. Broken geometry must not
@@ -4603,10 +4911,16 @@ function removeDuplicateAndGridCandidates(
       const rightSeparation =
         right.detectionScale === "separation";
       const leftPriority =
+        (left.curveEvidence?.guideGridWaveformRescue === true
+          ? 6
+          : 0) +
         (left.detectionReason === "shared-frame-cell" ? 3 : 0) +
         (leftSeparation ? 2 : 0) +
         (left.detectionScale === "strict" ? 1 : 0);
       const rightPriority =
+        (right.curveEvidence?.guideGridWaveformRescue === true
+          ? 6
+          : 0) +
         (right.detectionReason === "shared-frame-cell" ? 3 : 0) +
         (rightSeparation ? 2 : 0) +
         (right.detectionScale === "strict" ? 1 : 0);
@@ -9851,6 +10165,7 @@ export function detectChartPanelsFromMask(
     width,
     height,
     compactMinimumAreaRatio,
+    workingMask,
   );
   const achromaticCurveMask =
     buildAchromaticCurveResidual(
@@ -10242,6 +10557,8 @@ export function detectChartPanelsFromMask(
         (candidate.top + candidate.bottom) / 2;
       const coveredByAxisAlignedTable =
         axisAlignedDocumentLattice.tableGridArtifact &&
+        candidate.curveEvidence.guideGridWaveformRescue !==
+          true &&
         (candidate.curveEvidence.colorSeriesCount ?? 0) < 2 &&
         latticeBounds &&
         ((centerX >= latticeBounds.left &&
@@ -10253,6 +10570,8 @@ export function detectChartPanelsFromMask(
             0.35);
       const coveredByRotatedTable =
         rotatedDocumentTableGridArtifact &&
+        candidate.curveEvidence.guideGridWaveformRescue !==
+          true &&
         (candidate.curveEvidence.colorSeriesCount ?? 0) < 2 &&
         candidateCoveredByRotatedLattice(
           candidate,
@@ -10262,6 +10581,8 @@ export function detectChartPanelsFromMask(
         );
       const coveredByLocalTable =
         candidate.axisMode !== "content" &&
+        candidate.curveEvidence.guideGridWaveformRescue !==
+          true &&
         !(
           candidate.spatialFrameRecovered === true &&
           candidate.spatialFrameSupport >= 0.85
@@ -10282,6 +10603,8 @@ export function detectChartPanelsFromMask(
       const coveredByLocalOneDimensionalLattice =
         Boolean(localOneDimensionalBounds) &&
         !repeatedGridRecovery &&
+        candidate.curveEvidence.guideGridWaveformRescue !==
+          true &&
         ((centerX >= localOneDimensionalBounds.left &&
           centerX <= localOneDimensionalBounds.right &&
           centerY >= localOneDimensionalBounds.top &&
@@ -10554,6 +10877,15 @@ export function detectChartPanelsFromMask(
             candidate.curveEvidence.colorSeriesCount ?? 0,
           tableGridArtifact:
             candidate.curveEvidence.tableGridArtifact === true,
+          guideGridWaveformRescue:
+            candidate.curveEvidence
+              .guideGridWaveformRescue === true,
+          guideGridCrossingCount:
+            candidate.curveEvidence
+              .guideGridCrossingCount ?? 0,
+          guideGridInternalBandCount:
+            candidate.curveEvidence
+              .guideGridInternalBandCount ?? 0,
           measuredPeakCount:
             candidate.curveEvidence.measuredPeakCount ?? 0,
           measuredPeakTopologyAccepted:

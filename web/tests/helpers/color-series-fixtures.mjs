@@ -163,10 +163,24 @@ function drawPseudoText(
   }
 }
 
-function seriesResponse(progress, seriesIndex) {
+function seriesResponse(progress, seriesIndex, stateCount = 4) {
   const shape = SERIES_SHAPES[seriesIndex];
+  if (stateCount === 1) {
+    const distance = (progress - 0.46) / 0.17;
+    return 0.98 * Math.exp(-0.5 * distance * distance);
+  }
   let response = 0;
-  for (let index = 0; index < shape.centers.length; index += 1) {
+  const centerIndexes = Array.from(
+    { length: Math.min(stateCount, shape.centers.length) },
+    (_, index) =>
+      stateCount === shape.centers.length
+        ? index
+        : Math.round(
+            (index * (shape.centers.length - 1)) /
+              Math.max(1, stateCount - 1),
+          ),
+  );
+  for (const index of centerIndexes) {
     const distance =
       (progress - shape.centers[index]) / shape.widths[index];
     response = Math.max(
@@ -183,10 +197,15 @@ function seriesY(
   seriesIndex,
   bounds,
   crossingMode,
+  stateCount = 4,
 ) {
   const shape = SERIES_SHAPES[seriesIndex];
   const plotHeight = bounds.bottom - bounds.top;
-  const response = seriesResponse(progress, seriesIndex);
+  const response = seriesResponse(
+    progress,
+    seriesIndex,
+    stateCount,
+  );
   let normalizedY =
     0.88 -
     response * 0.7 +
@@ -203,8 +222,8 @@ function seriesY(
       1 - Math.abs(progress - 0.51) / 0.13,
     );
     const sharedResponse =
-      (seriesResponse(progress, 0) +
-        seriesResponse(progress, 1)) /
+      (seriesResponse(progress, 0, stateCount) +
+        seriesResponse(progress, 1, stateCount)) /
       2;
     const sharedY = 0.88 - sharedResponse * 0.7;
     normalizedY =
@@ -373,6 +392,14 @@ export function colorSeriesChartFixture(options = {}) {
   if (colors.length !== seriesCount) {
     throw new Error("seriesCount와 동일한 수의 색상이 필요합니다.");
   }
+  const stateCounts = Array.isArray(options.stateCounts)
+    ? options.stateCounts.map((value) =>
+        Math.max(1, Math.min(4, Math.round(value))),
+      )
+    : Array.from({ length: seriesCount }, () => 4);
+  if (stateCounts.length !== seriesCount) {
+    throw new Error("seriesCount와 동일한 수의 State 수가 필요합니다.");
+  }
 
   addChartDecorations(
     pixels,
@@ -394,6 +421,7 @@ export function colorSeriesChartFixture(options = {}) {
         seriesIndex,
         bounds,
         options.crossingMode ?? "near",
+        stateCounts[seriesIndex],
       );
       if (previous) {
         drawLine(
@@ -427,6 +455,7 @@ export function colorSeriesChartFixture(options = {}) {
     mimeType: "image/png",
     bounds,
     seriesCount,
+    stateCounts,
     colors,
   };
 }

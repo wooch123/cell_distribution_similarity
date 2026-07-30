@@ -214,6 +214,20 @@ async function verifyService(packageDirectory, validationDirectory) {
       "Ubuntu health API is invalid.",
     );
 
+    const similarityCapabilityResponse = await fetch(
+      `${baseUrl}/api/v1/similarity-search`,
+      { headers },
+    );
+    const similarityCapability = await similarityCapabilityResponse.json();
+    assert(
+      similarityCapabilityResponse.status === 200 &&
+        similarityCapability.multiChart?.colorSeries
+          ?.maxIndependentSeries === 2 &&
+        similarityCapability.multiChart?.colorSeries?.overflowPolicy ===
+          "most-irregular-only",
+      "Ubuntu color-series capability policy is invalid.",
+    );
+
     const corpus = JSON.parse(
       await readFile(
         path.join(
@@ -300,22 +314,28 @@ async function verifyService(packageDirectory, validationDirectory) {
           ?.tableLatticeDominant === true,
       "Ubuntu API did not reject table and diagram-only content.",
     );
-    const colorSeriesResponse = await fetch(
-      `${baseUrl}/api/v1/similarity-search?topK=2`,
-      {
-        method: "POST",
-        headers: {
-          ...headers,
-          "content-type": "image/png",
+    for (const seriesCount of [2, 3]) {
+      const colorSeriesResponse = await fetch(
+        `${baseUrl}/api/v1/similarity-search?topK=2`,
+        {
+          method: "POST",
+          headers: {
+            ...headers,
+            "content-type": "image/png",
+          },
+          body: colorSeriesVerificationPng(seriesCount),
         },
-        body: colorSeriesVerificationPng(),
-      },
-    );
-    assert(
-      colorSeriesResponse.status === 200,
-      "Ubuntu color-series search did not return 200.",
-    );
-    verifyColorSeriesSearch(await colorSeriesResponse.json(), 2);
+      );
+      assert(
+        colorSeriesResponse.status === 200,
+        `Ubuntu ${seriesCount}-color-series search did not return 200.`,
+      );
+      verifyColorSeriesSearch(
+        await colorSeriesResponse.json(),
+        2,
+        seriesCount,
+      );
+    }
 
     const repeatedGridSample = await readFile(
       path.join(
@@ -689,12 +709,12 @@ async function main() {
       "utf8",
     );
     assert(
-      bundledServerSource.includes("v1.41.0") &&
-        !bundledServerSource.includes("v1.40.0"),
+      bundledServerSource.includes("v1.42.0") &&
+        !bundledServerSource.includes("v1.41.0"),
       "Ubuntu package contains a stale hosted download release.",
     );
     assert(
-      manifest.version === "1.41.0" &&
+      manifest.version === "1.42.0" &&
         manifest.platform === "ubuntu-linux-x64" &&
         manifest.architecture === "x86_64" &&
         manifest.entrypoint === "start.sh" &&
@@ -738,6 +758,10 @@ async function main() {
         manifest.bundled?.borderSafeDocumentBackground === true &&
         manifest.bundled?.repeatedWaveformGridRecovery === true &&
         manifest.bundled?.colorSeriesSeparation === true &&
+        manifest.bundled?.colorSeriesPolicy
+          ?.maxIndependentSeries === 2 &&
+        manifest.bundled?.colorSeriesPolicy?.overflowPolicy ===
+          "most-irregular-only" &&
         manifest.bundled?.similarityRanking ===
           "per-panel-per-series" &&
         manifest.bundled?.samples?.length === 8 &&
@@ -841,6 +865,9 @@ async function main() {
         readme.includes("30개 차트") &&
         readme.includes("FHD 밀집 샘플") &&
         readme.includes("색상 시리즈") &&
+        readme.includes("최대 2개") &&
+        readme.includes("3개 이상의 색상 분포") &&
+        readme.includes("가장 비정규적인 산포 하나만") &&
         readme.includes("학습 포함") &&
         readme.includes("전체 선택/해제") &&
         readme.includes("선택하지 않은") &&

@@ -651,8 +651,12 @@ async function extractChartProfiles(file: Blob) {
         alternatives: ShapeHypothesis[];
         axesDetected: boolean;
         distributionSelection: {
-          mode: "single" | "most-irregular";
+          mode:
+            | "single"
+            | "most-irregular"
+            | "most-irregular-only";
           distributionCount: number;
+          targetDistributionCount: number;
           selectedIndex: number;
           selectedSeriesIndex: number;
           irregularityScore: number;
@@ -1325,7 +1329,9 @@ export function VthSearchApp() {
                 axesDetected: extracted.axesDetected,
                 processingMs: extracted.processingMs,
                 curveHypothesisCount: 1 + alternatives.length,
-                distributionCount: series.length,
+                distributionCount:
+                  extracted.distributionSelection
+                    .distributionCount,
                 selectedDistributionIndex:
                   extracted.distributionSelection.selectedIndex,
                 seriesIndex: extractedSeries.seriesIndex,
@@ -2169,7 +2175,9 @@ export function VthSearchApp() {
                   (series.length === 1
                     ? extracted.alternatives.length
                     : 0),
-                distributionCount: series.length,
+                distributionCount:
+                  extracted.distributionSelection
+                    .distributionCount,
                 selectedDistributionIndex:
                   extracted.distributionSelection.selectedIndex,
                 seriesIndex: extractedSeries.seriesIndex,
@@ -3114,6 +3122,8 @@ export function VthSearchApp() {
                       }`
                     : analysis.seriesCount > 1
                       ? `한 차트의 색상 시리즈 ${analysis.seriesCount}개를 각각 독립 파형으로 분리했습니다.`
+                    : analysis.distributionCount > 2
+                      ? `${analysis.distributionCount}개 색상 분포 중 가장 비정규적인 산포만 분석했습니다.`
                       : "형상 분석이 완료되었습니다."}
               </h2>
             </div>
@@ -3169,6 +3179,8 @@ export function VthSearchApp() {
                         ? "비정규성 대표 시리즈"
                         : `시리즈 ${analysis.seriesIndex + 1}`
                     }`
+                  : analysis.distributionCount > 2
+                  ? `색상 분포 ${analysis.distributionCount}개 감지 · 가장 비정규적인 산포만 검색·학습`
                   : analysis.panelCount > 1
                   ? "독립 패널로 분리 · 패널 내부 축·격자·라벨 별도 제거"
                   : analysis.removedLabelCount > 0

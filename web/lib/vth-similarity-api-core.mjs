@@ -1577,6 +1577,30 @@ function queryForApi(
     curveHypothesisCount: 1 + analysis.alternatives.length,
     distributionCount:
       analysis.distributionSelection.distributionCount,
+    targetDistributionCount:
+      analysis.distributionSelection
+        .targetDistributionCount ??
+      analysis.series?.length ??
+      1,
+    distributionSelectionMode:
+      analysis.distributionSelection.mode,
+    colorSeriesPolicy:
+      analysis.preprocessing.colorSeriesPolicy
+        ? {
+            maximumIndependentSeries:
+              analysis.preprocessing.colorSeriesPolicy
+                .maximumIndependentSeries,
+            collapsedToMostIrregular:
+              analysis.preprocessing.colorSeriesPolicy
+                .collapsedToMostIrregular,
+            detectedSeriesCount:
+              analysis.preprocessing.colorSeriesPolicy
+                .detectedSeriesCount,
+            targetSeriesCount:
+              analysis.preprocessing.colorSeriesPolicy
+                .targetSeriesCount,
+          }
+        : null,
     selectedDistributionIndex:
       analysis.distributionSelection.selectedIndex,
     irregularityScore: rounded(

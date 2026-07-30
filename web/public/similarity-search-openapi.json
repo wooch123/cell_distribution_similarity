@@ -29,7 +29,7 @@
       },
       "post": {
         "summary": "Find V-NAND distribution images with similar shape",
-        "description": "Accepts PNG or JPEG as raw bytes, multipart/form-data, or a Base64 data URL JSON body. Multiple charts at different coordinates are detected and cropped in reading order. Multiple full-width waveform series inside one physical chart are temporarily separated by color, normalized without color/style features, and ranked independently in `panel.series`. Every series includes `trainingSelection`, a normalized 256-point `profile`, and its canonical `descriptor`; these fields plus the same complete image are sufficient to create one selected training request without a second Curve extractor. The panel and top-level compatibility fields mirror their representative series waveform and selector. Text, tables, empty axes, rectangles, and explanatory diagrams without a coherent distribution waveform are excluded; a request with no distribution waveform returns 422 `distribution_waveform_not_found`. The legacy panel `query` and `results` mirror its representative most-irregular series, and the top-level fields mirror panel 0's representative series. `topK` defaults to 8 and is limited to 1–10 per series. When the deployment configures `VTH_SEARCH_API_KEY`, send it as `Authorization: Bearer <key>` or `X-API-Key`.",
+        "description": "Accepts PNG or JPEG as raw bytes, multipart/form-data, or a Base64 data URL JSON body. Multiple charts at different coordinates are detected and cropped in reading order. Up to two independently validated color-derived full-width waveform series inside one physical chart are temporarily separated by color, normalized without color/style features, and ranked independently in `panel.series`. When three or more color-derived waveform series are detected, only the distribution with the highest irregularity score is exposed, ranked, and eligible for training as the single `panel.series` entry. Every returned series includes `trainingSelection`, a normalized 256-point `profile`, and its canonical `descriptor`; these fields plus the same complete image are sufficient to create one selected training request without a second Curve extractor. The panel and top-level compatibility fields mirror their representative series waveform and selector. Text, tables, empty axes, rectangles, and explanatory diagrams without a coherent distribution waveform are excluded; a request with no distribution waveform returns 422 `distribution_waveform_not_found`. The legacy panel `query` and `results` mirror its representative most-irregular series, and the top-level fields mirror panel 0's representative series. `topK` defaults to 8 and is limited to 1–10 per series. When the deployment configures `VTH_SEARCH_API_KEY`, send it as `Authorization: Bearer <key>` or `X-API-Key`.",
         "parameters": [
           {
             "name": "topK",
@@ -192,12 +192,22 @@
               },
               "colorSeries": {
                 "type": "object",
-                "required": ["supported", "ranking", "styleInvariant", "representative"],
+                "required": ["supported", "ranking", "styleInvariant", "representative", "maxIndependentSeries", "overflowPolicy"],
                 "properties": {
                   "supported": { "type": "boolean", "const": true },
                   "ranking": { "type": "string", "const": "per-series" },
                   "styleInvariant": { "type": "boolean", "const": true },
-                  "representative": { "type": "string", "const": "most-irregular" }
+                  "representative": { "type": "string", "const": "most-irregular" },
+                  "maxIndependentSeries": {
+                    "type": "integer",
+                    "const": 2,
+                    "description": "Up to two independently validated color-derived distributions are returned separately."
+                  },
+                  "overflowPolicy": {
+                    "type": "string",
+                    "const": "most-irregular-only",
+                    "description": "When three or more color-derived distributions are detected, only the highest-irregularity distribution is returned, ranked, and exposed as a training target."
+                  }
                 }
               }
             }
@@ -464,12 +474,12 @@
           "seriesCount": {
             "type": "integer",
             "minimum": 1,
-            "description": "Number of independently extracted waveform series inside this physical chart panel."
+            "description": "Number of returned target waveform series inside this physical chart panel. Color-derived distributions return up to two independent series; three or more color-derived detections collapse to the single most-irregular series."
           },
           "selectedSeriesIndex": {
             "type": "integer",
             "minimum": 0,
-            "description": "Representative most-irregular series mirrored by the compatibility query/results fields."
+            "description": "Representative most-irregular returned series mirrored by the compatibility query/results fields. It is 0 when three or more color-derived detections collapse to one target."
           },
           "series": {
             "type": "array",

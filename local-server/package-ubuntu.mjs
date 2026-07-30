@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(moduleDirectory, "..");
-const version = "1.41.0";
+const version = "1.42.0";
 const packageName = `vth-similarity-ubuntu-x64-v${version}`;
 const artifactsDirectory = path.join(projectRoot, "artifacts", "ubuntu");
 const cacheDirectory = path.join(artifactsDirectory, "cache");
@@ -449,9 +449,11 @@ Linux x64 실행 파일과 검색 코퍼스, 모델, 웹 화면, 로컬 학습 A
   30개 차트를 독립적으로 검색합니다.
 - 얇은 회색 슬라이드 외곽선을 실제 배경과 구분하고, 반복 파형 격자의
   누락된 셀 경계를 복원한 뒤 설명문·수치 표·단조 추세선을 제외합니다.
-- 한 차트 안에 여러 색상 시리즈가 있으면 색은 분리 과정에서만 사용하고,
-  각 시리즈를 색·선 스타일 없는 Curve로 정규화해 독립적으로 검색합니다.
+- 한 차트에서 검증된 독립 색상 분포가 1~2개이면 색은 분리 과정에서만
+  사용하고, 최대 2개를 색·선 스타일 없는 Curve로 정규화해 각각 검색합니다.
   API의 panel.series 배열에서 시리즈별 순위와 점수를 확인할 수 있습니다.
+- 3개 이상의 색상 분포가 검출되면 비정규도 점수가 가장 높은
+  가장 비정규적인 산포 하나만 검색·추천·학습 대상으로 사용합니다.
 - 크기가 다른 차트, 단일 봉우리, 저해상도, 표·도형·사진성 방해 요소를
   포함한 기존 네 가지 멀티차트 샘플과 1920×1080 안의 5행×6열 차트
   30개를 검증하는 FHD 밀집 샘플이 함께 들어 있습니다.
@@ -469,7 +471,7 @@ Linux x64 실행 파일과 검색 코퍼스, 모델, 웹 화면, 로컬 학습 A
   입력에서 패널 수·좌표와 선택 시리즈 형상을 다시 검증하고 선택 패널
   크롭만 저장합니다.
 - 여러 파일 또는 폴더 일괄 학습은 각 이미지에서 검출한 모든 차트와
-  시리즈를 순차 저장합니다.
+  색상 분리 정책에 따라 반환된 시리즈를 순차 저장합니다.
 - 학습 후보는 서버를 다시 시작해도 유지되고 데이터 관리 탭에서 삭제할 수
   있습니다.
 - LAN 사용자는 같은 서버의 학습 후보와 추천 결과를 공유합니다.
@@ -566,6 +568,10 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
       borderSafeDocumentBackground: true,
       repeatedWaveformGridRecovery: true,
       colorSeriesSeparation: true,
+      colorSeriesPolicy: {
+        maxIndependentSeries: 2,
+        overflowPolicy: "most-irregular-only",
+      },
       similarityRanking: "per-panel-per-series",
       samples: sampleFiles.map((fileName) => ({
         path: `site/client/samples/${fileName}`,

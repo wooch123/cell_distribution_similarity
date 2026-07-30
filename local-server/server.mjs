@@ -648,6 +648,8 @@ export async function createVthServer(options = {}) {
                 ranking: "per-series",
                 styleInvariant: true,
                 representative: "most-irregular",
+                maxIndependentSeries: 2,
+                overflowPolicy: "most-irregular-only",
               },
             },
             inputHandling: {

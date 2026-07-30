@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(moduleDirectory, "..");
-const version = "1.41.0";
+const version = "1.42.0";
 const packageName = `vth-similarity-windows-x64-v${version}`;
 const artifactsDirectory = path.join(projectRoot, "artifacts", "windows");
 const cacheDirectory = path.join(artifactsDirectory, "cache");
@@ -328,9 +328,10 @@ Node.js v${nodeVersion} Windows x64 런타임이 압축된 상태로 포함되�
 형상 검색
 - 한 그림에 서로 다른 좌표의 차트가 여러 개 있으면 사각 프레임과 열린
   L축을 찾아 행 우선 순서로 분리하고, 각 차트를 독립적으로 분석·검색합니다.
-- 하나의 차트 안에 여러 분포가 서로 다른 색으로 겹쳐 있으면 색은 분리
-  단계에서만 사용하고, 각 시리즈를 색·선 스타일 없는 표준 Curve로 바꿔
-  독립적으로 검색합니다. 대표 결과는 가장 비정규적인 시리즈입니다.
+- 한 차트에서 검증된 독립 색상 분포가 1~2개이면 색은 분리 단계에서만
+  사용하고, 최대 2개를 색·선 스타일 없는 표준 Curve로 바꿔 각각 검색합니다.
+- 3개 이상의 색상 분포가 검출되면 비정규도 점수가 가장 높은
+  가장 비정규적인 산포 하나만 검색·추천·학습 대상으로 사용합니다.
 - FHD 한 이미지에서 오밀조밀하게 배치된 차트를 최대 30개까지 분석합니다.
   30개를 초과하면 신뢰도가 높은 30개를 행 우선 순서로 반환하고 API 경고와
   truncated 상태를 표시합니다.
@@ -374,8 +375,8 @@ Node.js v${nodeVersion} Windows x64 런타임이 압축된 상태로 포함되�
 - 선택하지 않은 차트와 시리즈는 학습 저장소로 보내지 않습니다. 주변
   표·설명도 저장하지 않습니다.
 - "여러 파일 학습" 또는 "폴더 전체 학습"으로 선택한 지원 이미지를 개수
-  제한 없이 순차 분석하고, 각 이미지에서 검출한 모든 차트와 시리즈를
-  저장할 수 있습니다.
+  제한 없이 순차 분석하고, 각 이미지에서 검출한 모든 차트와 색상 분리
+  정책에 따라 반환된 시리즈를 저장할 수 있습니다.
 - "이 PC에 학습"을 누르면 축 없는 표준 Curve, descriptor와
   파일명·메타데이터를 제거한 원본 미리보기가 data 폴더에 저장됩니다.
 - 학습 후보가 추천되면 표준 Curve와 저장한 원본 미리보기를 함께 보여줍니다.
@@ -397,8 +398,11 @@ Invoke-WebRequest -Method Post \`
 
 검색 결과의 panelCount, panelLayout, panels 배열은 분리된 차트의 좌표와
 검출 신뢰도를 포함합니다. 각 panel의 seriesCount, selectedSeriesIndex,
-series 배열에는 색으로 분리된 시리즈별 query, results와
+series 배열에는 검증된 색상 분포가 1~2개일 때 최대 2개의 시리즈별
+query, results와
 trainingSelection, 256-point profile, canonical descriptor가 들어 있습니다.
+3개 이상의 색상 분포가 검출되면 가장 비정규적인 산포 하나만 series에
+포함되며 검색과 선택 학습 모두 같은 정책을 따릅니다.
 하위 호환용 panel query/results는 대표 시리즈를, 최상위 query/results는
 첫 번째 차트의 대표 시리즈를 가리킵니다. 각 results 배열은 rank, score,
 세부 형상 scores, 유사 이유, 표준 추천 그림 URL과 학습 원본 그림 URL을
@@ -486,6 +490,10 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
       borderSafeDocumentBackground: true,
       repeatedWaveformGridRecovery: true,
       colorSeriesSeparation: true,
+      colorSeriesPolicy: {
+        maxIndependentSeries: 2,
+        overflowPolicy: "most-irregular-only",
+      },
       similarityRanking: "per-panel-per-series",
       multiChartSample: {
         path: "site/client/samples/vnand-ppt-12-chart-sample.png",

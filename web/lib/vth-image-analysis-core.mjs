@@ -18,6 +18,7 @@ import {
 } from "./vth-shape-core.mjs";
 
 const MAX_DISTRIBUTIONS_PER_IMAGE = 6;
+const MAX_INDEPENDENT_COLOR_SERIES = 2;
 
 function mean(values) {
   return values.length
@@ -1763,6 +1764,58 @@ export function distributionIrregularityScore(
   );
 }
 
+function isEligibleIndependentDistributionProfile(
+  profile,
+  descriptor,
+) {
+  if (!isValidStateCount(descriptor.stateCount)) return false;
+  if (descriptor.observedStateCount >= 2) return true;
+  if (
+    descriptor.stateCount !== 1 ||
+    descriptor.observedStateCount !== 1 ||
+    descriptor.peakLocations.length !== 1
+  ) {
+    return false;
+  }
+
+  // A full-width diagonal or horizontal guide can otherwise look like a
+  // one-State trace after hue/achromatic separation. A genuine one-State VTH
+  // distribution has an interior rounded summit and independently descending
+  // left/right tails. Keep the gate intentionally shape-only: axis values,
+  // color and line style do not participate.
+  const smoothed = movingAverage(profile, 7);
+  const peakLocation = descriptor.peakLocations[0];
+  const peakIndex = Math.round(
+    peakLocation * Math.max(0, smoothed.length - 1),
+  );
+  const edgeWidth = Math.max(
+    4,
+    Math.round(smoothed.length * 0.08),
+  );
+  const apex = smoothed[peakIndex];
+  const leftTail = mean(smoothed.slice(0, edgeWidth));
+  const rightTail = mean(smoothed.slice(-edgeWidth));
+  const shoulderOffset = Math.max(
+    3,
+    Math.round(smoothed.length * 0.025),
+  );
+  const leftShoulder =
+    smoothed[Math.max(0, peakIndex - shoulderOffset)];
+  const rightShoulder =
+    smoothed[
+      Math.min(smoothed.length - 1, peakIndex + shoulderOffset)
+    ];
+
+  return (
+    peakLocation >= 0.08 &&
+    peakLocation <= 0.92 &&
+    apex - leftTail >= 0.3 &&
+    apex - rightTail >= 0.3 &&
+    leftShoulder >= apex - 0.22 &&
+    rightShoulder >= apex - 0.22
+  );
+}
+
 function columnInkCenters(mask, width, height, x) {
   const centers = [];
   let start = -1;
@@ -2129,8 +2182,10 @@ export function extractAchromaticDistributionCandidate(
   if (!profile) return null;
   const descriptor = descriptorFromProfile(profile);
   if (
-    !isValidStateCount(descriptor.stateCount) ||
-    descriptor.observedStateCount < 2
+    !isEligibleIndependentDistributionProfile(
+      profile,
+      descriptor,
+    )
   ) {
     return null;
   }
@@ -2257,8 +2312,10 @@ export function extractColorDistributionCandidates(
     if (!profile) continue;
     const descriptor = descriptorFromProfile(profile);
     if (
-      !isValidStateCount(descriptor.stateCount) ||
-      descriptor.observedStateCount < 2
+      !isEligibleIndependentDistributionProfile(
+        profile,
+        descriptor,
+      )
     ) {
       continue;
     }
@@ -3137,13 +3194,30 @@ export function analyzeForegroundMasks(
     );
   }
 
-  // Keep every independently detected full-width distribution available to
-  // downstream search and training. The legacy profile/descriptor pair above
-  // remains the most-irregular representative, while series[] preserves a
-  // stable source order so one colored chart can be expanded into independent
-  // retrieval records without changing physical panel coordinates.
+  // At most two independently measured color traces are materialized as
+  // separate search/training records. Three or more traces make hue an
+  // unreliable proxy for user intent (legends and State-segment styling are
+  // common in PPT exports), so only the already selected most-irregular
+  // distribution remains a target. Geometry-only separation keeps its
+  // established behavior because this policy is specifically about color.
+  const colorDerivedDistributionSelection =
+    Boolean(selectedDistribution) &&
+    distributionCandidates.candidates.some((candidate) =>
+      ["color", "achromatic", "chromatic-union"].includes(
+        candidate.separationMode,
+      ),
+    );
+  const collapseColorSeriesToMostIrregular =
+    colorDerivedDistributionSelection &&
+    distributionCandidates.candidates.length >
+      MAX_INDEPENDENT_COLOR_SERIES;
+  const targetDistributionCandidates = selectedDistribution
+    ? collapseColorSeriesToMostIrregular
+      ? [selectedDistribution]
+      : distributionCandidates.candidates
+    : [];
   const orderedDistributionCandidates = selectedDistribution
-    ? [...distributionCandidates.candidates].sort(
+    ? [...targetDistributionCandidates].sort(
         (left, right) => left.sourceIndex - right.sourceIndex,
       )
     : [];
@@ -3195,9 +3269,13 @@ export function analyzeForegroundMasks(
     selectedSeriesIndex,
     distributionSelection: selectedDistribution
       ? {
-          mode: "most-irregular",
+          mode: collapseColorSeriesToMostIrregular
+            ? "most-irregular-only"
+            : "most-irregular",
           distributionCount:
             distributionCandidates.distributionCount,
+          targetDistributionCount:
+            orderedDistributionCandidates.length,
           selectedIndex: distributionCandidates.selectedIndex,
           selectedSeriesIndex,
           irregularityScore:
@@ -3206,6 +3284,7 @@ export function analyzeForegroundMasks(
       : {
           mode: "single",
           distributionCount: 1,
+          targetDistributionCount: 1,
           selectedIndex: 0,
           selectedSeriesIndex: 0,
           irregularityScore: distributionIrregularityScore(
@@ -3245,6 +3324,21 @@ export function analyzeForegroundMasks(
               "upper-arc-evidence"
           : chromaticUnionCandidate?.separationMode) ??
         "geometry",
+      colorSeriesPolicy: {
+        maximumIndependentSeries:
+          MAX_INDEPENDENT_COLOR_SERIES,
+        applied: colorDerivedDistributionSelection,
+        collapsedToMostIrregular:
+          collapseColorSeriesToMostIrregular,
+        detectedSeriesCount:
+          colorDerivedDistributionSelection
+            ? distributionCandidates.candidates.length
+            : 0,
+        targetSeriesCount:
+          orderedDistributionCandidates.length || 1,
+        selectedSourceIndex:
+          selectedDistribution?.sourceIndex ?? 0,
+      },
       repeatedArchEvidence: {
         accepted:
           repeatedArchEvidence.accepted === true,
@@ -3343,10 +3437,18 @@ export function applyVerifiedWaveformEvidence(
     analysis.series.length
       ? analysis.series
       : [];
+  // A collapsed 3+ color chart also exposes one series, but that series is an
+  // intentional most-irregular choice rather than a single-distribution
+  // chart. Panel-level grid evidence describes the combined chart topology
+  // and must never replace that selected color trace.
+  const preservesCollapsedColorPolicy =
+    analysis?.preprocessing?.colorSeriesPolicy
+      ?.collapsedToMostIrregular === true;
   if (
     !analysis ||
     !topologyConsistent ||
-    declaredSeries.length !== 1
+    declaredSeries.length !== 1 ||
+    preservesCollapsedColorPolicy
   ) {
     return analysis;
   }

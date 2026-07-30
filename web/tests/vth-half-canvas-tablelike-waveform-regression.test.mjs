@@ -17,6 +17,7 @@ import {
   validateSharedTrainingPayload,
 } from "../lib/vth-shared-training-core.mjs";
 import {
+  denseGuideGridSingleChartFixture,
   grayscaleSharedBoundaryHalfCanvasLatticeFixture,
   guidedMultiPeakSparklineTextTableFixture,
   guidedSingleRowMultiPeakSparklineTextTableFixture,
@@ -196,6 +197,15 @@ const guidedSparklineTextTableFixture =
   guidedMultiPeakSparklineTextTableFixture();
 const guidedSingleRowSparklineTextTableFixture =
   guidedSingleRowMultiPeakSparklineTextTableFixture();
+const denseGuideGridSingleChartFixtures = [
+  denseGuideGridSingleChartFixture(),
+  denseGuideGridSingleChartFixture({ grayscaleCurve: true }),
+  denseGuideGridSingleChartFixture({ nearFullImage: true }),
+  denseGuideGridSingleChartFixture({
+    grayscaleCurve: true,
+    nearFullImage: true,
+  }),
+];
 const FIXTURE_SHA256 = Object.freeze({
   "left-half-12":
     "90a1006be007d27db4df02085245a9d440728da9b434fa5dccea41a2eaa4e7c1",
@@ -310,6 +320,106 @@ test("the shared-boundary 4x4 fixture is a deterministic table lattice containin
       );
     }
   }
+});
+
+for (const fixture of denseGuideGridSingleChartFixtures) {
+  test(`${fixture.name}: one half-canvas chart survives a dense internal guide lattice`, () => {
+    const maskResult = detectChartPanelsFromMask(
+      fixture.broadMask,
+      fixture.width,
+      fixture.height,
+      {
+        edgeEvidenceMask: fixture.salientMask,
+        curveEvidenceMask: fixture.curveMask,
+        curveColorMasks: fixture.curveColorMasks,
+        fallbackToWholeImage: false,
+        sourceScale: 1,
+      },
+    );
+    assert.equal(maskResult.fallbackUsed, false);
+    assert.equal(
+      maskResult.diagnostics.measuredCandidateSummaries.some(
+        ({ guideGridWaveformRescue }) =>
+          guideGridWaveformRescue === true,
+      ),
+      true,
+      `${fixture.name}/mask: the physical lattice and cross-cell waveform must be proven independently`,
+    );
+    assertOnlyExpectedCharts(
+      maskResult.panels,
+      fixture,
+      "mask-dense-guide-grid",
+    );
+
+    const rgbResult = detectChartPanels(
+      fixture.pixels,
+      fixture.width,
+      fixture.height,
+      fixture.channels,
+      { adaptiveUpscale: false },
+    );
+    assert.equal(rgbResult.fallbackUsed, false);
+    assert.equal(
+      rgbResult.diagnostics.measuredCandidateSummaries.some(
+        ({ guideGridWaveformRescue }) =>
+          guideGridWaveformRescue === true,
+      ),
+      true,
+      `${fixture.name}/rgb: guide lines must be removed before waveform validation`,
+    );
+    assertOnlyExpectedCharts(
+      rgbResult.panels,
+      fixture,
+      "rgb-dense-guide-grid",
+    );
+  });
+}
+
+test("grayscale dense guide grid: API and selected-source training preserve five peaks and four valleys", async () => {
+  const fixture = denseGuideGridSingleChartFixture({
+    grayscaleCurve: true,
+  });
+  const response = await searchSimilarityImage({
+    bytes: fixture.bytes,
+    mimeType: fixture.mimeType,
+    topK: 1,
+    corpus: publicCorpus,
+    origin: "https://dove9999.com",
+  });
+
+  assert.equal(response.panelDetection.fallbackUsed, false);
+  assert.equal(response.panelDetection.detectedPanelCount, 1);
+  assertOnlyExpectedCharts(
+    response.panels,
+    fixture,
+    "similarity-api-dense-guide-grid",
+  );
+  assertExactPanelTopology(
+    response,
+    fixture,
+    "similarity-api-dense-guide-grid",
+  );
+
+  const panel = response.panels[0];
+  const verification = await validateTrainingWaveformImage({
+    bytes: fixture.bytes,
+    mimeType: fixture.mimeType,
+    profile: panel.profile,
+    stateCount: 5,
+    sourceSelection: panel.trainingSelection,
+  });
+  assert.equal(
+    verification.authoritativeDescriptor.stateCount,
+    5,
+  );
+  assert.equal(
+    verification.authoritativeDescriptor.peakLocations.length,
+    5,
+  );
+  assert.equal(
+    verification.authoritativeDescriptor.valleyLocations.length,
+    4,
+  );
 });
 
 test("the grayscale chart lattice and multi-peak sparkline text table fixtures are deterministic 800x450 half-canvas documents", () => {

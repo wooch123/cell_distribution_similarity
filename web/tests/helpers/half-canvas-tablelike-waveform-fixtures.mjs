@@ -795,6 +795,165 @@ export function singleRowSharedBoundaryHalfCanvasLatticeFixture() {
   );
 }
 
+export function denseGuideGridSingleChartFixture({
+  grayscaleCurve = false,
+  nearFullImage = false,
+} = {}) {
+  const state = createFixtureState();
+  const chart = {
+    index: 0,
+    denseSharedGrid: true,
+    grayscaleCurve,
+    peakCount: 5,
+    bounds: nearFullImage
+      ? {
+          left: 18,
+          top: 12,
+          right: 781,
+          bottom: 437,
+        }
+      : {
+          left: 10,
+          top: 2,
+          right: 789,
+          bottom: 232,
+        },
+  };
+  drawRect(state, chart.bounds, COLORS.frame);
+
+  const chartWidth =
+    chart.bounds.right - chart.bounds.left + 1;
+  const chartHeight =
+    chart.bounds.bottom - chart.bounds.top + 1;
+  const plot = {
+    left:
+      chart.bounds.left +
+      Math.max(5, Math.round(chartWidth * 0.07)),
+    top:
+      chart.bounds.top +
+      Math.max(5, Math.round(chartHeight * 0.12)),
+    right:
+      chart.bounds.right -
+      Math.max(4, Math.round(chartWidth * 0.045)),
+    bottom:
+      chart.bounds.bottom -
+      Math.max(5, Math.round(chartHeight * 0.1)),
+  };
+  const darkGuideColor = [47, 54, 64];
+  for (let guide = 1; guide < 9; guide += 1) {
+    const ratio = guide / 9;
+    drawLine(
+      state,
+      plot.left,
+      Math.round(plot.top + (plot.bottom - plot.top) * ratio),
+      plot.right,
+      Math.round(plot.top + (plot.bottom - plot.top) * ratio),
+      darkGuideColor,
+      2,
+      { broad: true, salient: true },
+    );
+  }
+  for (let guide = 1; guide < 11; guide += 1) {
+    const ratio = guide / 11;
+    drawLine(
+      state,
+      Math.round(plot.left + (plot.right - plot.left) * ratio),
+      plot.top,
+      Math.round(plot.left + (plot.right - plot.left) * ratio),
+      plot.bottom,
+      darkGuideColor,
+      2,
+      { broad: true, salient: true },
+    );
+  }
+  const peakCenters = [0.1, 0.3, 0.5, 0.7, 0.9];
+  const colorIndex = grayscaleCurve ? -1 : 0;
+  const curveColor = grayscaleCurve
+    ? COLORS.text
+    : CURVE_COLORS[colorIndex];
+  let previous;
+  for (let x = plot.left; x <= plot.right; x += 1) {
+    const progress =
+      (x - plot.left) / Math.max(1, plot.right - plot.left);
+    const response = Math.max(
+      ...peakCenters.map((center) =>
+        Math.exp(-0.5 * ((progress - center) / 0.052) ** 2),
+      ),
+    );
+    const y = Math.round(
+      plot.bottom -
+        (0.2 + response * 0.16) *
+          (plot.bottom - plot.top),
+    );
+    if (previous) {
+      drawLine(
+        state,
+        previous.x,
+        previous.y,
+        x,
+        y,
+        curveColor,
+        2,
+        {
+          broad: true,
+          salient: true,
+          curve: true,
+          colorIndex,
+        },
+      );
+    }
+    previous = { x, y };
+  }
+
+  const contentRegion = nearFullImage
+    ? {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+      }
+    : {
+        left: 10,
+        top: 239,
+        right: 789,
+        bottom: 448,
+      };
+
+  return {
+    name: grayscaleCurve
+      ? nearFullImage
+        ? "near-full-grayscale-single-chart-dense-guide-grid"
+        : "top-half-grayscale-single-chart-dense-guide-grid"
+      : nearFullImage
+        ? "near-full-single-chart-dense-guide-grid"
+        : "top-half-single-chart-dense-guide-grid",
+    side: nearFullImage ? "full" : "top",
+    width: WIDTH,
+    height: HEIGHT,
+    channels: 3,
+    pixels: state.pixels,
+    broadMask: state.broadMask,
+    salientMask: state.salientMask,
+    curveMask: state.curveMask,
+    curveColorMasks: state.curveColorMasks,
+    bytes: encodePng({
+      width: WIDTH,
+      height: HEIGHT,
+      channels: 3,
+      depth: 8,
+      data: state.pixels,
+    }),
+    mimeType: "image/png",
+    charts: [chart],
+    expectedChartCount: 1,
+    chartRegion: chart.bounds,
+    contentRegion,
+    distractors: nearFullImage
+      ? []
+      : [{ type: "blank", bounds: contentRegion }],
+  };
+}
+
 function drawRepeatedTwoPeakSparklineTable(
   state,
   bounds,

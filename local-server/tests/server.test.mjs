@@ -253,6 +253,8 @@ test("serves the web app and persists ready and pending training images", async 
         ranking: "per-series",
         styleInvariant: true,
         representative: "most-irregular",
+        maxIndependentSeries: 2,
+        overflowPolicy: "most-irregular-only",
       },
     );
     assert.equal(

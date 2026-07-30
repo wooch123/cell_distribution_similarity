@@ -8,6 +8,7 @@ import { encode as encodePng } from "fast-png";
 import { detectChartPanels } from "../lib/vth-chart-panel-core.mjs";
 import {
   analyzeForegroundMasks,
+  applyVerifiedWaveformEvidence,
   extractColorDistributionCandidates,
 } from "../lib/vth-image-analysis-core.mjs";
 import { buildForegroundMasks } from "../lib/vth-image-core.mjs";
@@ -184,6 +185,60 @@ function ambiguousTwinSeriesFixture() {
   };
 }
 
+function twoColorChartWithNeutralGuideFixture(guideMode) {
+  const fixture = colorSeriesChartFixture({
+    width: 600,
+    height: 360,
+    seriesCount: 2,
+    crossingMode: "near",
+  });
+  const pixels = Uint8Array.from(fixture.pixels);
+  const color = [24, 27, 31];
+  const { left, top, right, bottom } = fixture.bounds;
+  for (let x = left + 5; x <= right - 5; x += 1) {
+    const progress =
+      (x - left - 5) / Math.max(1, right - left - 10);
+    const centerY =
+      guideMode === "horizontal"
+        ? Math.round(top + (bottom - top) * 0.56)
+        : Math.round(
+            bottom -
+              20 -
+              progress * Math.max(1, bottom - top - 40),
+          );
+    for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+      for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+        const targetX = x + offsetX;
+        const targetY = centerY + offsetY;
+        if (
+          targetX < 0 ||
+          targetX >= fixture.width ||
+          targetY < 0 ||
+          targetY >= fixture.height
+        ) {
+          continue;
+        }
+        const offset =
+          (targetY * fixture.width + targetX) * 3;
+        pixels[offset] = color[0];
+        pixels[offset + 1] = color[1];
+        pixels[offset + 2] = color[2];
+      }
+    }
+  }
+  return {
+    ...fixture,
+    pixels,
+    bytes: encodePng({
+      width: fixture.width,
+      height: fixture.height,
+      data: pixels,
+      channels: 3,
+      depth: 8,
+    }),
+  };
+}
+
 function assertSeriesContract(analysis, expectedCount) {
   assert.equal(analysis.series.length, expectedCount);
   assert.ok(
@@ -209,7 +264,7 @@ function assertSeriesContract(analysis, expectedCount) {
   );
 }
 
-test("separates two, three, and four colored distributions despite axes, grids, labels, and crossings", async (context) => {
+test("splits at most two colored distributions and otherwise targets only the most-irregular trace", async (context) => {
   for (const seriesCount of [2, 3, 4]) {
     await context.test(`${seriesCount} color series`, () => {
       const fixture = colorSeriesChartFixture({
@@ -257,7 +312,9 @@ test("separates two, three, and four colored distributions despite axes, grids, 
         foreground.curveSalientMask,
         foreground.curveColorMasks,
       );
-      assertSeriesContract(analysis, seriesCount);
+      const targetSeriesCount =
+        seriesCount <= 2 ? seriesCount : 1;
+      assertSeriesContract(analysis, targetSeriesCount);
       assert.equal(
         analysis.distributionSelection.distributionCount,
         seriesCount,
@@ -266,11 +323,44 @@ test("separates two, three, and four colored distributions despite axes, grids, 
         analysis.distributionSelection.selectedSeriesIndex,
         analysis.selectedSeriesIndex,
       );
+      assert.equal(
+        analysis.distributionSelection.targetDistributionCount,
+        targetSeriesCount,
+      );
+      assert.equal(
+        analysis.distributionSelection.mode,
+        seriesCount <= 2
+          ? "most-irregular"
+          : "most-irregular-only",
+      );
+      assert.deepEqual(
+        analysis.preprocessing.colorSeriesPolicy,
+        {
+          maximumIndependentSeries: 2,
+          applied: true,
+          collapsedToMostIrregular: seriesCount > 2,
+          detectedSeriesCount: seriesCount,
+          targetSeriesCount,
+          selectedSourceIndex:
+            analysis.distributionSelection.selectedIndex,
+        },
+      );
       assert.ok(
         analysis.series.every(
           (series) => series.separationMode === "color",
         ),
       );
+      if (seriesCount > 2) {
+        assert.equal(
+          analysis.series[0].sourceIndex,
+          analysis.distributionSelection.selectedIndex,
+        );
+        assert.equal(
+          analysis.series[0].irregularityScore,
+          analysis.distributionSelection.irregularityScore,
+          "the collapsed target must be the measured most-irregular trace",
+        );
+      }
 
       for (let left = 0; left < analysis.series.length; left += 1) {
         for (
@@ -327,7 +417,178 @@ test("keeps two traces independent when they closely overlap through the center 
   assertSeriesContract(analysis, 2);
 });
 
-test("separates a black distribution from red and blue series without promoting neutral chart furniture", async () => {
+test("keeps a full-width single-peak color independent from a multi-peak color through API and training", async () => {
+  const fixture = colorSeriesChartFixture({
+    width: 600,
+    height: 360,
+    seriesCount: 2,
+    stateCounts: [1, 4],
+    crossingMode: "near",
+  });
+  const foreground = foregroundFor(fixture);
+  const separated = extractColorDistributionCandidates(
+    foreground.curveColorMasks,
+    fixture.width,
+    fixture.height,
+    fixture.bounds,
+  );
+
+  assert.equal(separated.distributionCount, 2);
+  assert.deepEqual(
+    [...separated.candidates]
+      .sort((left, right) => left.sourceIndex - right.sourceIndex)
+      .map((candidate) => candidate.descriptor.stateCount),
+    [1, 4],
+  );
+
+  const analysis = await analyzeSimilarityImage(
+    fixture.bytes,
+    fixture.mimeType,
+  );
+  assertSeriesContract(analysis, 2);
+  assert.deepEqual(
+    analysis.series
+      .map((series) => series.descriptor.stateCount)
+      .sort((left, right) => left - right),
+    [1, 4],
+  );
+
+  const response = await searchSimilarityImage({
+    bytes: fixture.bytes,
+    mimeType: fixture.mimeType,
+    topK: 1,
+    corpus: publicCorpus,
+    origin: "https://dove9999.com",
+  });
+  assert.equal(response.panelCount, 1);
+  assert.equal(response.panels[0].seriesCount, 2);
+  assert.deepEqual(
+    response.panels[0].series
+      .map((series) => series.query.stateCount)
+      .sort((left, right) => left - right),
+    [1, 4],
+  );
+
+  for (const series of analysis.series) {
+    const validated = await validateTrainingWaveformImage({
+      bytes: fixture.bytes,
+      mimeType: fixture.mimeType,
+      profile: series.profile,
+      stateCount: series.descriptor.stateCount,
+      sourceSelection: {
+        panelIndex: 0,
+        panelCount: 1,
+        seriesIndex: series.seriesIndex,
+        seriesCount: 2,
+      },
+    });
+    assert.equal(validated.panelCount, 1);
+    assert.equal(validated.seriesCount, 2);
+    assert.equal(
+      validated.matchedSeriesIndex,
+      series.seriesIndex,
+    );
+    assert.ok(validated.profileSimilarity >= 0.985);
+  }
+});
+
+test("includes a single-peak color in the irregularity comparison before collapsing three colors", async () => {
+  const fixture = colorSeriesChartFixture({
+    width: 600,
+    height: 360,
+    seriesCount: 3,
+    stateCounts: [1, 4, 4],
+    crossingMode: "near",
+  });
+  const foreground = foregroundFor(fixture);
+  const separated = extractColorDistributionCandidates(
+    foreground.curveColorMasks,
+    fixture.width,
+    fixture.height,
+    fixture.bounds,
+  );
+  assert.equal(separated.distributionCount, 3);
+  assert.ok(
+    separated.candidates.some(
+      (candidate) => candidate.descriptor.stateCount === 1,
+    ),
+  );
+
+  const analysis = await analyzeSimilarityImage(
+    fixture.bytes,
+    fixture.mimeType,
+  );
+  assertSeriesContract(analysis, 1);
+  assert.equal(
+    analysis.distributionSelection.distributionCount,
+    3,
+  );
+  assert.equal(
+    analysis.distributionSelection.targetDistributionCount,
+    1,
+  );
+  assert.equal(
+    analysis.distributionSelection.mode,
+    "most-irregular-only",
+  );
+});
+
+test("rejects neutral diagonal and horizontal guides without collapsing two real colors", async (context) => {
+  for (const guideMode of ["diagonal", "horizontal"]) {
+    await context.test(`${guideMode} guide`, async () => {
+      const fixture =
+        twoColorChartWithNeutralGuideFixture(guideMode);
+      const analysis = await analyzeSimilarityImage(
+        fixture.bytes,
+        fixture.mimeType,
+      );
+      assertSeriesContract(analysis, 2);
+      assert.equal(
+        analysis.distributionSelection.distributionCount,
+        2,
+      );
+      assert.equal(
+        analysis.preprocessing.colorSeriesPolicy
+          .collapsedToMostIrregular,
+        false,
+      );
+      assert.ok(
+        analysis.series.every(
+          (series) => series.separationMode === "color",
+        ),
+      );
+
+      const response = await searchSimilarityImage({
+        bytes: fixture.bytes,
+        mimeType: fixture.mimeType,
+        topK: 1,
+        corpus: publicCorpus,
+        origin: "https://dove9999.com",
+      });
+      assert.equal(response.panelCount, 1);
+      assert.equal(response.panels[0].seriesCount, 2);
+
+      const selected = analysis.series[0];
+      const validated = await validateTrainingWaveformImage({
+        bytes: fixture.bytes,
+        mimeType: fixture.mimeType,
+        profile: selected.profile,
+        stateCount: selected.descriptor.stateCount,
+        sourceSelection: {
+          panelIndex: 0,
+          panelCount: 1,
+          seriesIndex: 0,
+          seriesCount: 2,
+        },
+      });
+      assert.equal(validated.panelCount, 1);
+      assert.equal(validated.seriesCount, 2);
+      assert.equal(validated.matchedSeriesIndex, 0);
+    });
+  }
+});
+
+test("collapses red, blue, and black traces to the most-irregular target without promoting neutral chart furniture", async () => {
   const fixture = chromaticAndNeutralSeriesFixture({
     width: 600,
     height: 360,
@@ -347,18 +608,19 @@ test("separates a black distribution from red and blue series without promoting 
     foreground.curveSalientMask,
     foreground.curveColorMasks,
   );
-  assertSeriesContract(analysis, 3);
+  assertSeriesContract(analysis, 1);
   assert.equal(
-    analysis.series.filter(
-      (series) => series.separationMode === "color",
-    ).length,
-    2,
+    analysis.distributionSelection.distributionCount,
+    3,
   );
   assert.equal(
-    analysis.series.filter(
-      (series) => series.separationMode === "achromatic",
-    ).length,
-    1,
+    analysis.distributionSelection.mode,
+    "most-irregular-only",
+  );
+  assert.equal(
+    analysis.preprocessing.colorSeriesPolicy
+      .collapsedToMostIrregular,
+    true,
   );
   assert.equal(
     analysis.series.filter(
@@ -379,17 +641,17 @@ test("separates a black distribution from red and blue series without promoting 
     origin: "https://dove9999.com",
   });
   assert.equal(response.panelCount, 1);
-  assert.equal(response.panels[0].seriesCount, 3);
-  assert.equal(response.panels[0].series.length, 3);
+  assert.equal(response.panels[0].seriesCount, 1);
+  assert.equal(response.panels[0].series.length, 1);
   assert.deepEqual(
     response.panels[0].series.map(
       (series) => series.trainingSelection,
     ),
-    [0, 1, 2].map((seriesIndex) => ({
+    [0].map((seriesIndex) => ({
       panelIndex: 0,
       panelCount: 1,
       seriesIndex,
-      seriesCount: 3,
+      seriesCount: 1,
     })),
   );
   assert.deepEqual(
@@ -427,11 +689,10 @@ test("separates a black distribution from red and blue series without promoting 
   );
   assert.deepEqual(response.profile, response.panels[0].profile);
   assert.deepEqual(response.descriptor, response.panels[0].descriptor);
-  assert.deepEqual(
-    [...response.panels[0].series]
-      .map((series) => series.separationMode)
-      .sort(),
-    ["achromatic", "color", "color"],
+  assert.ok(
+    ["achromatic", "color"].includes(
+      response.panels[0].series[0].separationMode,
+    ),
   );
   assert.ok(
     response.panels[0].series.every(
@@ -540,7 +801,7 @@ test("joins State-segment colors before pairing the distribution with a black tr
   );
 });
 
-test("keeps red, blue, and black series separate after slight chart rotation", async (context) => {
+test("keeps the most-irregular red, blue, or black target stable after slight chart rotation", async (context) => {
   const baselineFixture = chromaticAndNeutralSeriesFixture({
     width: 600,
     height: 360,
@@ -549,7 +810,7 @@ test("keeps red, blue, and black series separate after slight chart rotation", a
     baselineFixture.bytes,
     baselineFixture.mimeType,
   );
-  assertSeriesContract(baseline, 3);
+  assertSeriesContract(baseline, 1);
 
   for (const angle of [1, 2, 3]) {
     await context.test(`${angle} degree rotation`, async () => {
@@ -568,12 +829,10 @@ test("keeps red, blue, and black series separate after slight chart rotation", a
           Math.abs(analysis.preprocessing.deskewAngle) - angle,
         ) <= 0.5,
       );
-      assertSeriesContract(analysis, 3);
-      assert.deepEqual(
-        analysis.series
-          .map((series) => series.separationMode)
-          .sort(),
-        ["achromatic", "color", "color"],
+      assertSeriesContract(analysis, 1);
+      assert.equal(
+        analysis.distributionSelection.mode,
+        "most-irregular-only",
       );
       for (
         let seriesIndex = 0;
@@ -597,13 +856,7 @@ test("keeps red, blue, and black series separate after slight chart rotation", a
         origin: "https://dove9999.com",
       });
       assert.equal(response.panelCount, 1);
-      assert.equal(response.panels[0].seriesCount, 3);
-      assert.deepEqual(
-        response.panels[0].series
-          .map((series) => series.separationMode)
-          .sort(),
-        ["achromatic", "color", "color"],
-      );
+      assert.equal(response.panels[0].seriesCount, 1);
       assert.ok(
         response.panels[0].series.every(
           (series) => series.results.length === 1,
@@ -657,7 +910,7 @@ test("preserves the single-series response contract for a monochrome chart", asy
   );
 });
 
-test("search API ranks every color series independently without multiplying physical panels", async (context) => {
+test("search API ranks two color series independently and collapses larger sets", async (context) => {
   for (const seriesCount of [2, 3, 4]) {
     await context.test(`${seriesCount} ranked series`, async () => {
       const fixture = colorSeriesChartFixture({
@@ -681,16 +934,21 @@ test("search API ranks every color series independently without multiplying phys
       );
       assert.equal(response.panels.length, 1);
       const panel = response.panels[0];
-      assert.equal(panel.seriesCount, seriesCount);
-      assert.equal(panel.series.length, seriesCount);
+      const targetSeriesCount =
+        seriesCount <= 2 ? seriesCount : 1;
+      assert.equal(panel.seriesCount, targetSeriesCount);
+      assert.equal(panel.series.length, targetSeriesCount);
       assert.deepEqual(
         panel.series.map((series) => series.seriesIndex),
-        Array.from({ length: seriesCount }, (_, index) => index),
+        Array.from(
+          { length: targetSeriesCount },
+          (_, index) => index,
+        ),
       );
       assert.deepEqual(
         panel.series.map((series) => series.selected),
         Array.from(
-          { length: seriesCount },
+          { length: targetSeriesCount },
           (_, index) => index === panel.selectedSeriesIndex,
         ),
       );
@@ -699,6 +957,15 @@ test("search API ranks every color series independently without multiplying phys
           (series) =>
             series.separationMode === "color" &&
             series.query.distributionCount === seriesCount &&
+            series.query.targetDistributionCount ===
+              targetSeriesCount &&
+            series.query.distributionSelectionMode ===
+              (seriesCount <= 2
+                ? "most-irregular"
+                : "most-irregular-only") &&
+            series.query.colorSeriesPolicy
+              .collapsedToMostIrregular ===
+              (seriesCount > 2) &&
             series.results.length === 2 &&
             series.results.every(
               (result, resultIndex) =>
@@ -721,7 +988,81 @@ test("search API ranks every color series independently without multiplying phys
   }
 });
 
-test("training provenance accepts every extracted color series as an independent record", async () => {
+test("verified table-grid topology cannot overwrite a collapsed most-irregular color target", () => {
+  const collapsedFixture = colorSeriesChartFixture({
+    width: 600,
+    height: 360,
+    seriesCount: 3,
+    crossingMode: "near",
+  });
+  const collapsedForeground = foregroundFor(collapsedFixture);
+  const collapsed = analyzeForegroundMasks(
+    collapsedForeground.broadMask,
+    collapsedForeground.salientMask,
+    collapsedFixture.width,
+    collapsedFixture.height,
+    collapsedForeground.curveSalientMask,
+    collapsedForeground.curveColorMasks,
+  );
+  assertSeriesContract(collapsed, 1);
+  assert.equal(
+    collapsed.preprocessing.colorSeriesPolicy
+      .collapsedToMostIrregular,
+    true,
+  );
+
+  const independentFixture = monochromeSeriesChartFixture({
+    width: 600,
+    height: 360,
+  });
+  const independentForeground = foregroundFor(
+    independentFixture,
+  );
+  const independent = analyzeForegroundMasks(
+    independentForeground.broadMask,
+    independentForeground.salientMask,
+    independentFixture.width,
+    independentFixture.height,
+    independentForeground.curveSalientMask,
+    independentForeground.curveColorMasks,
+  );
+  const verifiedEvidence = {
+    profile: collapsed.profile,
+    descriptor: {
+      ...collapsed.descriptor,
+      observedStateCount:
+        collapsed.descriptor.stateCount,
+      regularized: false,
+    },
+    source: "table-grid-measured-topology",
+  };
+  const eligibleSingle = applyVerifiedWaveformEvidence(
+    independent,
+    verifiedEvidence,
+  );
+  assert.notStrictEqual(
+    eligibleSingle,
+    independent,
+    "the control evidence must be eligible for the normal single-series override",
+  );
+  assert.equal(
+    eligibleSingle.preprocessing.verifiedWaveformEvidence
+      .applied,
+    true,
+  );
+  const preserved = applyVerifiedWaveformEvidence(
+    collapsed,
+    verifiedEvidence,
+  );
+
+  assert.strictEqual(
+    preserved,
+    collapsed,
+    "panel-level grid evidence must preserve the selected irregular color trace",
+  );
+});
+
+test("training provenance exposes only the most-irregular record when more than two colors are detected", async () => {
   const fixture = colorSeriesChartFixture({
     width: 600,
     height: 360,
@@ -732,7 +1073,11 @@ test("training provenance accepts every extracted color series as an independent
     fixture.bytes,
     fixture.mimeType,
   );
-  assertSeriesContract(analysis, 3);
+  assertSeriesContract(analysis, 1);
+  assert.equal(
+    analysis.distributionSelection.distributionCount,
+    3,
+  );
 
   for (const series of analysis.series) {
     const validated = await validateTrainingWaveformImage({
@@ -742,11 +1087,11 @@ test("training provenance accepts every extracted color series as an independent
       stateCount: series.descriptor.stateCount,
     });
     assert.equal(validated.panelCount, 1);
-    assert.equal(validated.seriesCount, 3);
+    assert.equal(validated.seriesCount, 1);
     assert.equal(
       validated.matchedSeriesIndex,
       series.seriesIndex,
-      "training must bind the submitted profile to its source color trace",
+      "training must bind the submitted profile to the collapsed irregular target",
     );
     assert.ok(validated.profileSimilarity >= 0.985);
   }
@@ -763,8 +1108,8 @@ test("rejects arbitrary 4/9 sourceSelection coordinates on a one-chart crop", as
     fixture.bytes,
     fixture.mimeType,
   );
-  assertSeriesContract(analysis, 3);
-  const selected = analysis.series[2];
+  assertSeriesContract(analysis, 1);
+  const selected = analysis.series[0];
   await assert.rejects(
     () =>
       validateTrainingWaveformImage({
@@ -875,7 +1220,7 @@ test("sourceSelection re-detects a full document, selects its reading-order pane
   );
 });
 
-test("sourceSelection matches profile and State when JPEG hue ordering changes the extracted series index", async () => {
+test("sourceSelection matches the collapsed irregular profile when JPEG hue ordering changes", async () => {
   const baseline = colorSeriesChartFixture({
     width: 520,
     height: 330,
@@ -906,7 +1251,8 @@ test("sourceSelection matches profile and State when JPEG hue ordering changes t
     baseline.bytes,
     baseline.mimeType,
   );
-  const submitted = baselineAnalysis.series[2];
+  assertSeriesContract(baselineAnalysis, 1);
+  const submitted = baselineAnalysis.series[0];
   const validated = await validateTrainingWaveformImage({
     bytes: document.bytes,
     mimeType: document.mimeType,
@@ -915,18 +1261,18 @@ test("sourceSelection matches profile and State when JPEG hue ordering changes t
     sourceSelection: {
       panelIndex: 0,
       panelCount: 2,
-      seriesIndex: 2,
-      seriesCount: 3,
+      seriesIndex: 0,
+      seriesCount: 1,
     },
   });
 
   assert.equal(validated.panelCount, 2);
   assert.equal(validated.matchedPanelIndex, 0);
-  assert.equal(validated.seriesCount, 3);
+  assert.equal(validated.seriesCount, 1);
   assert.equal(
     validated.matchedSeriesIndex,
     0,
-    "the shape moved from submitted index 2 to source index 0 after hue reordering",
+    "the most-irregular shape must remain the sole authoritative target",
   );
   assert.ok(validated.profileSimilarity >= 0.985);
   assert.ok(

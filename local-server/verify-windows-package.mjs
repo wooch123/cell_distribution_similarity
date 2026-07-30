@@ -168,6 +168,19 @@ async function verifyService(packageDirectory, validationDirectory) {
     const health = await healthResponse.json();
     assert(health.service === "vth-training-api", "Health API is invalid.");
 
+    const similarityCapabilityResponse = await fetch(
+      `${baseUrl}/api/v1/similarity-search`,
+    );
+    const similarityCapability = await similarityCapabilityResponse.json();
+    assert(
+      similarityCapabilityResponse.status === 200 &&
+        similarityCapability.multiChart?.colorSeries
+          ?.maxIndependentSeries === 2 &&
+        similarityCapability.multiChart?.colorSeries?.overflowPolicy ===
+          "most-irregular-only",
+      "Packaged color-series capability policy is invalid.",
+    );
+
     const corpus = JSON.parse(
       await readFile(
         path.join(packageDirectory, "site", "client", "corpus-index.json"),
@@ -274,19 +287,25 @@ async function verifyService(packageDirectory, validationDirectory) {
         similarity.results[1].score >= similarity.results[2].score,
       "Packaged similarity results are not score-sorted.",
     );
-    const colorSeriesResponse = await fetch(
-      `${baseUrl}/api/v1/similarity-search?topK=2`,
-      {
-        method: "POST",
-        headers: { "content-type": "image/png" },
-        body: colorSeriesVerificationPng(),
-      },
-    );
-    assert(
-      colorSeriesResponse.status === 200,
-      "Packaged color-series search did not return 200.",
-    );
-    verifyColorSeriesSearch(await colorSeriesResponse.json(), 2);
+    for (const seriesCount of [2, 3]) {
+      const colorSeriesResponse = await fetch(
+        `${baseUrl}/api/v1/similarity-search?topK=2`,
+        {
+          method: "POST",
+          headers: { "content-type": "image/png" },
+          body: colorSeriesVerificationPng(seriesCount),
+        },
+      );
+      assert(
+        colorSeriesResponse.status === 200,
+        `Packaged ${seriesCount}-color-series search did not return 200.`,
+      );
+      verifyColorSeriesSearch(
+        await colorSeriesResponse.json(),
+        2,
+        seriesCount,
+      );
+    }
 
     const repeatedGridSample = await readFile(
       path.join(
@@ -676,6 +695,9 @@ async function main() {
         readme.includes("선택 원본 패널") &&
         readme.includes("정규화 추출 Curve") &&
         readme.includes("색상 시리즈") &&
+        readme.includes("최대 2개") &&
+        readme.includes("3개 이상의 색상 분포") &&
+        readme.includes("가장 비정규적인 산포 하나만") &&
         readme.includes("원하는") &&
         readme.includes(
           "선택하지 않은 차트와 시리즈는 학습 저장소로 보내지 않습니다",
@@ -697,12 +719,12 @@ async function main() {
       "utf8",
     );
     assert(
-      bundledServerSource.includes("v1.41.0") &&
-        !bundledServerSource.includes("v1.40.0"),
+      bundledServerSource.includes("v1.42.0") &&
+        !bundledServerSource.includes("v1.41.0"),
       "Windows package contains a stale hosted download release.",
     );
     assert(
-      manifest.version === "1.41.0" &&
+      manifest.version === "1.42.0" &&
         manifest.platform === "windows-x64" &&
         manifest.network?.mode === "offline-loopback-only" &&
         manifest.network?.externalNetworkAllowed === false &&
@@ -716,6 +738,10 @@ async function main() {
         manifest.bundled?.borderSafeDocumentBackground === true &&
         manifest.bundled?.repeatedWaveformGridRecovery === true &&
         manifest.bundled?.colorSeriesSeparation === true &&
+        manifest.bundled?.colorSeriesPolicy
+          ?.maxIndependentSeries === 2 &&
+        manifest.bundled?.colorSeriesPolicy?.overflowPolicy ===
+          "most-irregular-only" &&
         manifest.bundled?.similarityRanking ===
           "per-panel-per-series" &&
         manifest.bundled?.multiChartSample?.path ===
