@@ -605,6 +605,46 @@ test("estimates and corrects a mildly rotated plot frame", () => {
   assert.equal(bounds.axesDetected, true);
 });
 
+test("the extended five-degree deskew keeps a physical open L-axis", () => {
+  const width = 640;
+  const height = 380;
+  const mask = new Uint8Array(width * height);
+  drawVertical(mask, width, 55, 38, 340, 3);
+  drawHorizontal(mask, width, 340, 55, 590, 3);
+  for (const [left, right] of [
+    [75, 180],
+    [200, 305],
+    [325, 430],
+    [450, 565],
+  ]) {
+    drawCurve(mask, width, left, right, 325, 180);
+  }
+
+  const rotated = rotateBinaryMask(mask, width, height, 5);
+  const estimate = estimateDeskewAngle(rotated, width, height);
+  const corrected = deskewForegroundMasks(
+    rotated,
+    rotated,
+    width,
+    height,
+  );
+  const bounds = detectPlotBounds(
+    corrected.broadMask,
+    width,
+    height,
+  );
+
+  assert.equal(estimate.applied, true);
+  assert.ok(Math.abs(estimate.angle + 5) <= 0.25);
+  assert.equal(corrected.applied, true);
+  assert.equal(
+    corrected.extendedAngleFrameRejected,
+    undefined,
+  );
+  assert.equal(bounds.axisMode, "l-axis");
+  assert.equal(bounds.axesDetected, true);
+});
+
 test("builds identical broad and salience masks from RGB or RGBA pixels", () => {
   const width = 320;
   const height = 180;
@@ -756,6 +796,16 @@ test("prefers an exact salient State count over a noisy regularized count", () =
       0.82,
     ),
     true,
+  );
+  assert.equal(
+    shouldPreferSalientDescriptor(
+      { stateCount: 8, observedStateCount: 6, regularized: true },
+      { stateCount: 5, observedStateCount: 5, regularized: false },
+      3,
+      0.946596,
+    ),
+    false,
+    "two faint standard States must not switch PNG and JPEG to different Curve hypotheses",
   );
 });
 

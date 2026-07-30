@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   descriptorFromProfile,
+  detectPeaks,
   movingAverage,
   resample,
 } from "../lib/vth-shape-core.mjs";
@@ -21,6 +22,22 @@ function gaussianProfile(centers, sigma = 4, amplitudes = []) {
         profile[index],
         0.01 +
           0.99 * amplitude *
+            Math.exp(-0.5 * ((index - center) / sigma) ** 2),
+      );
+    }
+  }
+  return profile;
+}
+
+function mixedGaussianProfile(components) {
+  const profile = Array(256).fill(0.01);
+  for (const { center, sigma, amplitude = 1 } of components) {
+    for (let index = 0; index < profile.length; index += 1) {
+      profile[index] = Math.max(
+        profile[index],
+        0.01 +
+          0.99 *
+            amplitude *
             Math.exp(-0.5 * ((index - center) / sigma) ** 2),
       );
     }
@@ -94,6 +111,143 @@ test("does not promote one low-amplitude noise maximum to an eighth State", () =
   assert.equal(descriptor.observedStateCount, 7);
   assert.equal(peakIndices.length, 7);
   assert.ok(peakIndices.every((index) => index < 170));
+});
+
+test("measures a broad peak clipped at the boundary from its full inward tail", () => {
+  const profile = gaussianProfile(
+    [6, 251],
+    24,
+  );
+  for (let index = 0; index < profile.length; index += 1) {
+    profile[index] = Math.max(
+      profile[index],
+      0.01 +
+        0.99 *
+          Math.exp(-0.5 * ((index - 6) / 50) ** 2),
+    );
+  }
+  const peaks = detectPeaks(profile);
+  const descriptor = descriptorFromProfile(profile);
+
+  assert.equal(peaks.length, 2);
+  assert.ok(
+    peaks[0].prominence > 0.8,
+    "the exact edge duplicate must retain its one-sided physical prominence",
+  );
+  assert.equal(descriptor.stateCount, 2);
+  assert.equal(descriptor.observedStateCount, 2);
+  assert.equal(descriptor.regularized, false);
+  assert.equal(descriptor.peakLocations.length, 2);
+  assert.equal(descriptor.valleyLocations.length, 1);
+  assert.ok(descriptor.valleyDepths[0] > 0.9);
+});
+
+test("a shallow interior bump cannot displace either full-height boundary State", () => {
+  const profile = gaussianProfile(
+    [6, 251, 135],
+    24,
+    [1, 1, 0.12],
+  );
+  for (let index = 0; index < profile.length; index += 1) {
+    profile[index] = Math.max(
+      profile[index],
+      0.01 +
+        0.99 *
+          Math.exp(-0.5 * ((index - 6) / 50) ** 2),
+    );
+  }
+  const descriptor = descriptorFromProfile(profile);
+  const peakIndices = descriptor.peakLocations.map((location) =>
+    Math.round(location * 255),
+  );
+
+  assert.equal(descriptor.stateCount, 2);
+  assert.equal(descriptor.observedStateCount, 2);
+  assert.deepEqual(peakIndices, [6, 251]);
+  assert.equal(descriptor.valleyLocations.length, 1);
+  assert.ok(descriptor.valleyDepths[0] > 0.8);
+});
+
+test("a shallow turn joined to one broad boundary tail remains a shoulder", () => {
+  const descriptor = descriptorFromProfile(
+    mixedGaussianProfile([
+      { center: 6, sigma: 50 },
+      { center: 135, sigma: 4, amplitude: 0.12 },
+      { center: 251, sigma: 24 },
+    ]),
+  );
+
+  assert.equal(descriptor.stateCount, 2);
+  assert.equal(descriptor.observedStateCount, 2);
+  assert.deepEqual(
+    descriptor.peakLocations.map((location) =>
+      Math.round(location * 255),
+    ),
+    [6, 251],
+  );
+});
+
+test("an equally low peak with two material valleys remains a third State", () => {
+  const descriptor = descriptorFromProfile(
+    mixedGaussianProfile([
+      { center: 6, sigma: 30 },
+      { center: 135, sigma: 8, amplitude: 0.12 },
+      { center: 251, sigma: 24 },
+    ]),
+  );
+
+  assert.equal(descriptor.stateCount, 3);
+  assert.equal(descriptor.observedStateCount, 3);
+  assert.deepEqual(
+    descriptor.peakLocations.map((location) =>
+      Math.round(location * 255),
+    ),
+    [6, 135, 251],
+  );
+  assert.equal(descriptor.valleyLocations.length, 2);
+});
+
+test("a low interior State with two material valleys remains a third State", () => {
+  const profile = gaussianProfile(
+    [6, 251],
+    24,
+  );
+  for (let index = 0; index < profile.length; index += 1) {
+    profile[index] = Math.max(
+      profile[index],
+      0.01 +
+        0.99 *
+          Math.exp(-0.5 * ((index - 6) / 50) ** 2),
+      0.01 +
+        0.24 *
+          Math.exp(-0.5 * ((index - 135) / 4) ** 2),
+    );
+  }
+  const descriptor = descriptorFromProfile(profile);
+  const peakIndices = descriptor.peakLocations.map((location) =>
+    Math.round(location * 255),
+  );
+
+  assert.equal(descriptor.stateCount, 3);
+  assert.equal(descriptor.observedStateCount, 3);
+  assert.deepEqual(peakIndices, [6, 135, 251]);
+  assert.equal(descriptor.valleyLocations.length, 2);
+  assert.ok(descriptor.valleyDepths.every((depth) => depth > 0.15));
+  assert.ok(descriptor.valleyHeights.every((height) => height < 0.07));
+});
+
+test("a one-pixel edge spike cannot become a distribution State", () => {
+  const profile = gaussianProfile([50, 128, 205], 5);
+  profile[0] = 1;
+  const peaks = detectPeaks(profile);
+  const descriptor = descriptorFromProfile(profile);
+
+  assert.deepEqual(
+    peaks.map(({ index }) => index),
+    [50, 128, 205],
+  );
+  assert.equal(descriptor.stateCount, 3);
+  assert.equal(descriptor.observedStateCount, 3);
 });
 
 test("preserves six strong peaks separated by material valleys", () => {

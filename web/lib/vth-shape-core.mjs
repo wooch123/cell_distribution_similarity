@@ -254,7 +254,14 @@ export function canonicalProfileFromCurveMask(curveMask, width, height) {
 
 /**
  * @param {number[]} profile
- * @returns {{ index: number; prominence: number }[]}
+ * @returns {{
+ *   index: number;
+ *   prominence: number;
+ *   localProminence?: number;
+ *   edgeProminence?: number;
+ *   edgeRescued?: boolean;
+ *   edgeRescueEligible?: boolean;
+ * }[]}
  */
 export function detectPeaks(profile) {
   const minimumDistance = Math.max(5, Math.floor(profile.length / 28));
@@ -279,7 +286,15 @@ export function detectPeaks(profile) {
       ),
     );
     const prominence = profile[index] - Math.max(leftFloor, rightFloor);
-    if (prominence >= 0.006) candidates.push({ index, prominence });
+    if (prominence >= 0.006) {
+      candidates.push({
+        index,
+        prominence,
+        localProminence: prominence,
+        edgeProminence: 0,
+        edgeRescued: false,
+      });
+    }
   }
 
   const edgeSpan = Math.max(
@@ -303,14 +318,115 @@ export function detectPeaks(profile) {
       ),
     );
     const prominence = edgeValues[localIndex] - floor;
+    const exactCandidate = candidates.find(
+      (candidate) => candidate.index === index,
+    );
+    const halfProminenceHeight =
+      edgeValues[localIndex] - prominence * 0.5;
+    let inwardSupportWidth = 1;
+    for (
+      let supportIndex = localIndex + 1;
+      supportIndex < edgeValues.length &&
+      edgeValues[supportIndex] >= halfProminenceHeight;
+      supportIndex += 1
+    ) {
+      inwardSupportWidth += 1;
+    }
+    const touchesOuterEdge =
+      localIndex < edgeSpan;
+    const localProminence =
+      exactCandidate?.localProminence ?? 0;
+    const canRescueBroadBoundaryState =
+      touchesOuterEdge &&
+      localProminence < 0.05 &&
+      inwardSupportWidth >= minimumDistance;
+    const orderedInteriorCandidates = [...candidates].sort(
+      (left, right) => left.index - right.index,
+    );
+    const interiorSpacings = orderedInteriorCandidates
+      .slice(1)
+      .map(
+        (candidate, candidateIndex) =>
+          candidate.index -
+          orderedInteriorCandidates[candidateIndex].index,
+      );
+    const sortedInteriorSpacings = [...interiorSpacings].sort(
+      (left, right) => left - right,
+    );
+    const medianInteriorSpacing =
+      sortedInteriorSpacings[
+        Math.floor(sortedInteriorSpacings.length / 2)
+      ] ?? 0;
+    const sortedInteriorHeights = orderedInteriorCandidates
+      .map((candidate) => profile[candidate.index])
+      .sort((left, right) => left - right);
+    const medianInteriorHeight =
+      sortedInteriorHeights[
+        Math.floor(sortedInteriorHeights.length / 2)
+      ] ?? 0;
+    const nearestInteriorCandidate = mirrored
+      ? orderedInteriorCandidates.at(-1)
+      : orderedInteriorCandidates[0];
+    const boundarySpacing = nearestInteriorCandidate
+      ? Math.abs(nearestInteriorCandidate.index - index)
+      : 0;
+    const completesDenseRegularLattice =
+      touchesOuterEdge &&
+      exactCandidate == null &&
+      orderedInteriorCandidates.length >= 7 &&
+      orderedInteriorCandidates.length <= 19 &&
+      medianInteriorSpacing > 0 &&
+      sortedInteriorSpacings.at(-1) /
+        Math.max(1, sortedInteriorSpacings[0]) <=
+        1.5 &&
+      boundarySpacing >= minimumDistance &&
+      boundarySpacing >= medianInteriorSpacing * 0.72 &&
+      boundarySpacing <= medianInteriorSpacing * 1.28 &&
+      inwardSupportWidth >=
+        Math.max(4, Math.ceil(minimumDistance * 0.55)) &&
+      edgeValues[localIndex] >=
+        medianInteriorHeight * 0.72;
     if (
       edgeValues[localIndex] >= 0.12 &&
-      prominence >= 0.006 &&
-      candidates.every(
-        (candidate) => Math.abs(candidate.index - index) >= minimumDistance,
-      )
+      prominence >= 0.006
     ) {
-      candidates.push({ index, prominence });
+      if (exactCandidate) {
+        exactCandidate.edgeProminence = prominence;
+        if (canRescueBroadBoundaryState) {
+          exactCandidate.edgeRescueEligible = true;
+        }
+      } else if (
+        (canRescueBroadBoundaryState ||
+          completesDenseRegularLattice) &&
+        candidates.every(
+          (candidate) =>
+            Math.abs(candidate.index - index) >= minimumDistance,
+        )
+      ) {
+        candidates.push({
+          index,
+          prominence,
+          localProminence: 0,
+          edgeProminence: prominence,
+          edgeRescued: true,
+        });
+      }
+    }
+  }
+
+  // Preserve the established prominence balance for larger State lattices.
+  // The one-sided rescue is only needed to disambiguate a two-State curve or
+  // an exact three-candidate boundary/shoulder case. Applying it to larger
+  // lattices can over-weight both outer States relative to measured interior
+  // maxima.
+  if (candidates.length <= 3) {
+    for (const candidate of candidates) {
+      if (candidate.edgeRescueEligible !== true) continue;
+      candidate.prominence = Math.max(
+        candidate.prominence,
+        candidate.edgeProminence ?? 0,
+      );
+      candidate.edgeRescued = true;
     }
   }
 
@@ -1001,6 +1117,61 @@ export function descriptorFromProfile(profileInput, options = {}) {
         (lowerPeak - valley) / Math.max(0.05, lowerPeak),
       );
     });
+  // A broad two-State curve clipped at both x-boundaries can contain one
+  // low interior shoulder. Once the boundary maxima receive their measured
+  // one-sided prominence, that shoulder can look like a third State. Resolve
+  // only this exact three-candidate ambiguity from the two measured valleys:
+  // a genuine low State must descend materially on both sides, in absolute
+  // and relative terms. No peak is synthesized or moved.
+  let materialBoundaryTriplet = false;
+  let boundaryShoulderTriplet = false;
+  if (
+    candidates.length === 3 &&
+    candidates[0].index <= profile.length * 0.08 &&
+    candidates[2].index >= (profile.length - 1) * 0.92 &&
+    candidates[0].edgeRescued === true &&
+    candidates[2].edgeRescued === true &&
+    Number(candidates[0].edgeProminence) >= 0.05 &&
+    Number(candidates[2].edgeProminence) >= 0.05 &&
+    profile[candidates[0].index] >= 0.72 &&
+    profile[candidates[2].index] >= 0.72
+  ) {
+    const middle = candidates[1];
+    let leftValleyIndex = candidates[0].index + 1;
+    for (
+      let index = leftValleyIndex + 1;
+      index < middle.index;
+      index += 1
+    ) {
+      if (profile[index] < profile[leftValleyIndex]) {
+        leftValleyIndex = index;
+      }
+    }
+    let rightValleyIndex = middle.index + 1;
+    for (
+      let index = rightValleyIndex + 1;
+      index < candidates[2].index;
+      index += 1
+    ) {
+      if (profile[index] < profile[rightValleyIndex]) {
+        rightValleyIndex = index;
+      }
+    }
+    const middleHeight = profile[middle.index];
+    const leftDrop =
+      middleHeight - profile[leftValleyIndex];
+    const rightDrop =
+      middleHeight - profile[rightValleyIndex];
+    materialBoundaryTriplet =
+      leftDrop >= 0.08 &&
+      rightDrop >= 0.08 &&
+      leftDrop / Math.max(0.05, middleHeight) >= 0.35 &&
+      rightDrop / Math.max(0.05, middleHeight) >= 0.35 &&
+      middle.index - leftValleyIndex >= 2 &&
+      rightValleyIndex - middle.index >= 2;
+    boundaryShoulderTriplet =
+      middleHeight <= 0.25 && !materialBoundaryTriplet;
+  }
   const ascendingSpacings = [...candidateSpacings].sort(
     (left, right) => left - right,
   );
@@ -1094,7 +1265,11 @@ export function descriptorFromProfile(profileInput, options = {}) {
     ).length >=
       candidateSpacings.length - 2;
   let stateCount;
-  if (shallowOuterArtifactIndex !== null) {
+  if (boundaryShoulderTriplet) {
+    stateCount = 2;
+  } else if (materialBoundaryTriplet) {
+    stateCount = 3;
+  } else if (shallowOuterArtifactIndex !== null) {
     stateCount = Math.max(
       MIN_STATE_COUNT,
       observedCount - 1,
@@ -1147,6 +1322,38 @@ export function descriptorFromProfile(profileInput, options = {}) {
   ) {
     stateCount = hintedStateCount;
   }
+  const shallowBoundarySplitCount =
+    Number(
+      candidateSpacings[0] <= spacingMedian * 0.65 &&
+        candidateValleyDepths[0] <= 0.02,
+    ) +
+    Number(
+      candidateSpacings.at(-1) <= spacingMedian * 0.65 &&
+        candidateValleyDepths.at(-1) <= 0.02,
+    );
+  const hintedEightStateLayout =
+    hintedStateCount === 8 &&
+    stateCount === 8 &&
+    candidates.length >= 6 &&
+    candidates.length <= 10 &&
+    candidates.at(-1).index - candidates[0].index >=
+      profile.length * 0.62 &&
+    spacingMedian > 0 &&
+    trimmedEightSpacings.length >= candidates.length - 2 &&
+    Math.max(...trimmedEightSpacings) <= spacingMedian * 2 &&
+    Math.min(...trimmedEightSpacings) >= spacingMedian * 0.28;
+  const resolvedObservedCount = hintedEightStateLayout
+    ? Math.max(
+        observedCount,
+        Math.min(
+          stateCount,
+          candidates.length -
+            (candidates.length >= stateCount
+              ? shallowBoundarySplitCount
+              : 0),
+        ),
+      )
+    : observedCount;
 
   const materializedCandidates = materializeRegularizedPeaks(
     profile,
@@ -1171,16 +1378,21 @@ export function descriptorFromProfile(profileInput, options = {}) {
     topologyCandidates.length,
   );
   const peaks =
-    denseEightStateLayout || trimmedDenseEightStateLayout
-    ? selectStructuredPeaks(
-        topologyCandidates,
-        selectedPeakCount,
-        profile.length,
-      )
-    : [...topologyCandidates]
-        .sort((left, right) => right.prominence - left.prominence)
-        .slice(0, selectedPeakCount)
-        .sort((left, right) => left.index - right.index);
+    boundaryShoulderTriplet
+      ? [candidates[0], candidates[2]]
+      : denseEightStateLayout || trimmedDenseEightStateLayout
+      ? selectStructuredPeaks(
+          topologyCandidates,
+          selectedPeakCount,
+          profile.length,
+        )
+      : [...topologyCandidates]
+          .sort(
+            (left, right) =>
+              right.prominence - left.prominence,
+          )
+          .slice(0, selectedPeakCount)
+          .sort((left, right) => left.index - right.index);
 
   // `stateCount` is the physical topology contract: every returned descriptor
   // has exactly one location/width per State and exactly one valley between
@@ -1189,7 +1401,11 @@ export function descriptorFromProfile(profileInput, options = {}) {
   return descriptorFromResolvedPeaks(
     profile,
     peaks,
-    observedCount,
+    boundaryShoulderTriplet
+      ? 2
+      : materialBoundaryTriplet
+        ? 3
+        : resolvedObservedCount,
   );
 }
 

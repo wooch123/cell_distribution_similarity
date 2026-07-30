@@ -513,6 +513,7 @@ function analyzeSimilarityPixels(
     height,
     foreground.curveSalientMask,
     foreground.curveColorMasks,
+    { sourceScale },
   );
 }
 
@@ -582,6 +583,329 @@ function waveformOnlySource(detected, panel, width, height) {
     topMargin <= 0.24 &&
     bottomMargin <= 0.24
   );
+}
+
+const LOW_RESOLUTION_FRAGMENT_REASONS = new Set([
+  "arbitrary-waveform-region",
+  "frameless-curve-region",
+]);
+
+function lowResolutionFragmentationDetected(
+  detected,
+  decoded,
+) {
+  if (
+    Number(decoded?.scale) < 8 ||
+    decoded?.sourceWidth > 180 ||
+    decoded?.sourceHeight > 180 ||
+    detected?.panels?.length < 2 ||
+    detected.panels.length > 6 ||
+    !detected.panels.every(
+      (panel) =>
+        panel.axisMode === "content" &&
+        LOW_RESOLUTION_FRAGMENT_REASONS.has(
+          panel.detectionReason,
+        ),
+    )
+  ) {
+    return false;
+  }
+  const sourceArea = Math.max(
+    1,
+    decoded.width * decoded.height,
+  );
+  const areaRatios = detected.panels.map(
+    (panel) =>
+      (panel.width * panel.height) / sourceArea,
+  );
+  const commonTop = Math.max(
+    ...detected.panels.map((panel) => panel.y),
+  );
+  const commonBottom = Math.min(
+    ...detected.panels.map(
+      (panel) => panel.y + panel.height - 1,
+    ),
+  );
+  const minimumPanelHeight = Math.min(
+    ...detected.panels.map((panel) => panel.height),
+  );
+  const commonVerticalOverlapRatio =
+    Math.max(0, commonBottom - commonTop + 1) /
+    Math.max(1, minimumPanelHeight);
+  // Upscaled fragments of one source Curve occupy one shared vertical band.
+  // Real tiny frameless charts may also have small individual bounds, but
+  // charts scattered into separate rows have no common vertical overlap and
+  // must remain independent panels.
+  const oneHorizontalFragmentBand =
+    commonVerticalOverlapRatio >= 0.45;
+  return (
+    Math.max(...areaRatios) <= 0.12 &&
+    areaRatios.reduce((sum, ratio) => sum + ratio, 0) <=
+      0.2 &&
+    oneHorizontalFragmentBand
+  );
+}
+
+function lowResolutionStandaloneTopologyMismatch(
+  decoded,
+  detected,
+  extractedDescriptor,
+) {
+  const extractedStateCount = Number(
+    extractedDescriptor?.stateCount ??
+      extractedDescriptor,
+  );
+  if (
+    Number(decoded?.scale) < 4 ||
+    Math.max(
+      decoded?.sourceWidth ?? Number.POSITIVE_INFINITY,
+      decoded?.sourceHeight ?? Number.POSITIVE_INFINITY,
+    ) > 180 ||
+    detected?.panels?.length !== 1 ||
+    !isValidStateCount(extractedStateCount)
+  ) {
+    return false;
+  }
+  const independentlyDenseSixteenState =
+    extractedStateCount === 16 &&
+    Number(extractedDescriptor?.observedStateCount) === 16 &&
+    extractedDescriptor?.regularized === false &&
+    Math.min(
+      decoded.sourceWidth,
+      decoded.sourceHeight,
+    ) >= 160;
+  if (independentlyDenseSixteenState) return false;
+  const peakWidths = Array.isArray(
+    extractedDescriptor?.peakWidths,
+  )
+    ? extractedDescriptor.peakWidths.filter(Number.isFinite)
+    : [];
+  const orderedPeakWidths = [...peakWidths].sort(
+    (left, right) => left - right,
+  );
+  const medianPeakWidth =
+    orderedPeakWidths.length > 0
+      ? orderedPeakWidths[
+          Math.floor(orderedPeakWidths.length / 2)
+        ]
+      : 0;
+  const collapsedBoundaryValley =
+    Array.isArray(extractedDescriptor?.valleyDepths) &&
+    extractedDescriptor.valleyDepths.some(
+      (depth) => Number(depth) <= 0.002,
+    );
+  const degenerateBoundaryTopology =
+    extractedStateCount >= 2 &&
+    ((medianPeakWidth > 0 &&
+      Math.min(...peakWidths) <= medianPeakWidth * 0.12) ||
+      (Array.isArray(extractedDescriptor?.valleyDepths) &&
+        extractedDescriptor.valleyDepths.some(
+          (depth) => Number(depth) <= 0.025,
+        )));
+  const panel = detected.panels[0];
+  const sourceArea = Math.max(
+    1,
+    decoded.width * decoded.height,
+  );
+  const panelAreaRatio =
+    (panel.width * panel.height) / sourceArea;
+  const isolatedWaveform =
+    waveformOnlySource(
+      detected,
+      panel,
+      decoded.width,
+      decoded.height,
+    ) ||
+    (Math.max(
+      decoded.sourceWidth,
+      decoded.sourceHeight,
+    ) <= 400 &&
+      panelAreaRatio <= 0.12);
+  if (!isolatedWaveform) return false;
+  const rawAnalysis = analyzeSimilarityPixels(
+    decoded.sourceData,
+    decoded.sourceWidth,
+    decoded.sourceHeight,
+  );
+  const rawStateCount = Number(
+    rawAnalysis?.descriptor?.stateCount,
+  );
+  const extractedPeakLocations = Array.isArray(
+    extractedDescriptor?.peakLocations,
+  )
+    ? extractedDescriptor.peakLocations
+    : [];
+  const rawPeakLocations = Array.isArray(
+    rawAnalysis?.descriptor?.peakLocations,
+  )
+    ? rawAnalysis.descriptor.peakLocations
+    : [];
+  const peakLocationTolerance = Math.max(
+    0.035,
+    3 /
+      Math.max(
+        1,
+        decoded.sourceWidth,
+        decoded.sourceHeight,
+      ),
+  );
+  const exactPhysicalDescriptor = (descriptor, stateCount) => {
+    const valleyCount = Math.max(0, stateCount - 1);
+    return (
+      isValidStateCount(stateCount) &&
+      descriptor?.regularized === false &&
+      Number(descriptor?.observedStateCount) === stateCount &&
+      descriptor?.peakLocations?.length === stateCount &&
+      descriptor?.peakWidths?.length === stateCount &&
+      descriptor?.valleyLocations?.length === valleyCount &&
+      descriptor?.valleyHeights?.length === valleyCount &&
+      descriptor?.valleyDepths?.length === valleyCount &&
+      descriptor?.valleyPositionRatios?.length === valleyCount &&
+      descriptor?.peakValleyDistances?.length ===
+        valleyCount * 2 &&
+      descriptor?.tailSlopes?.length === 2
+    );
+  };
+  const exactTopologyPersistsAcrossScales =
+    exactPhysicalDescriptor(
+      extractedDescriptor,
+      extractedStateCount,
+    ) &&
+    exactPhysicalDescriptor(
+      rawAnalysis?.descriptor,
+      rawStateCount,
+    ) &&
+    rawStateCount === extractedStateCount &&
+    rawPeakLocations.length ===
+      extractedPeakLocations.length &&
+    rawPeakLocations.every(
+      (location, index) =>
+        Math.abs(
+          location - extractedPeakLocations[index],
+        ) <= peakLocationTolerance,
+    );
+  // A sub-pixel boundary turn can survive enlargement as an apparently exact
+  // State, but a real narrow tail or close peak/valley can have the same width
+  // signature. Reject that ambiguous geometry only when the State count and
+  // normalized peak locations do not persist at the original raster scale.
+  // This keeps genuine asymmetric VTH shapes while still failing closed when
+  // interpolation invents a boundary State.
+  if (degenerateBoundaryTopology) {
+    // Identical-scale persistence alone cannot legitimize a one-pixel label
+    // spur when the alleged separating valley has no measurable depth. Such
+    // a zero-depth turn is not a physical peak/valley pair at either scale.
+    if (collapsedBoundaryValley) return true;
+    return !exactTopologyPersistsAcrossScales;
+  }
+  return (
+    !isValidStateCount(rawStateCount) ||
+    rawStateCount !== extractedStateCount
+  );
+}
+
+function recoverDeskewedWholeImageDistribution(
+  detected,
+  decoded,
+) {
+  if (
+    Number(decoded?.scale) < 2 ||
+    Math.max(
+      decoded?.sourceWidth ?? Number.POSITIVE_INFINITY,
+      decoded?.sourceHeight ?? Number.POSITIVE_INFINITY,
+    ) > 400 ||
+    (detected?.panels?.length ?? 0) > 6
+  ) {
+    return detected;
+  }
+  const processedArea = Math.max(
+    1,
+    decoded.width * decoded.height,
+  );
+  const largestDetectedAreaRatio =
+    detected.panels.length > 0
+      ? Math.max(
+          ...detected.panels.map(
+            (panel) =>
+              (panel.width * panel.height) / processedArea,
+          ),
+        )
+      : 0;
+  if (largestDetectedAreaRatio > 0.2) return detected;
+
+  const analysis = analyzeSimilarityPixels(
+    decoded.data,
+    decoded.width,
+    decoded.height,
+    decoded.scale,
+  );
+  const descriptor = analysis.descriptor;
+  const peakCount = descriptor?.peakLocations?.length ?? 0;
+  const valleyCount =
+    descriptor?.valleyLocations?.length ?? 0;
+  const plotBounds = analysis.preprocessing?.bounds;
+  const plotAreaRatio = plotBounds
+    ? ((plotBounds.right - plotBounds.left + 1) *
+        (plotBounds.bottom - plotBounds.top + 1)) /
+      processedArea
+    : 0;
+  const exactPhysicalTopology =
+    analysis.preprocessing?.deskewApplied === true &&
+    plotBounds?.axesDetected === true &&
+    ["rectangle", "l-axis"].includes(plotBounds.axisMode) &&
+    plotAreaRatio >= 0.45 &&
+    analysis.distributionSelection?.targetDistributionCount ===
+      1 &&
+    peakCount >= 2 &&
+    descriptor.stateCount === peakCount &&
+    descriptor.observedStateCount === peakCount &&
+    descriptor.regularized !== true &&
+    descriptor.peakWidths?.length === peakCount &&
+    valleyCount === peakCount - 1 &&
+    descriptor.valleyHeights?.length === valleyCount &&
+    descriptor.valleyDepths?.length === valleyCount &&
+    descriptor.valleyPositionRatios?.length === valleyCount &&
+    descriptor.peakValleyDistances?.length ===
+      valleyCount * 2;
+  if (!exactPhysicalTopology) return detected;
+
+  const panel = {
+    index: 0,
+    left: 0,
+    top: 0,
+    right: decoded.width - 1,
+    bottom: decoded.height - 1,
+    x: 0,
+    y: 0,
+    width: decoded.width,
+    height: decoded.height,
+    confidence: 0.96,
+    axisMode: plotBounds.axisMode,
+    detectionReason: "whole-image-fallback",
+    verifiedWaveform: {
+      profile: [...analysis.profile],
+      descriptor,
+      source: "low-resolution-deskewed-whole-image",
+    },
+  };
+  return {
+    ...detected,
+    panels: [panel],
+    layout: { rows: 1, columns: 1 },
+    fallbackUsed: true,
+    detectedPanelCount: 1,
+    diagnostics: {
+      ...detected.diagnostics,
+      lowResolutionDeskewedWholeImageRecovery: {
+        applied: true,
+        deskewAngle:
+          analysis.preprocessing?.deskewAngle ?? 0,
+        peakCount,
+        valleyCount,
+        rejectedFragmentCount:
+          detected.panels.length,
+      },
+    },
+  };
 }
 
 function trainingProvenanceHypotheses(
@@ -1044,6 +1368,38 @@ function validateSelectedFullDocumentWaveform({
     ),
     panel.verifiedWaveform,
   );
+  const selectedDecoded = {
+    data: analysisRaster.data,
+    width: analysisRaster.width,
+    height: analysisRaster.height,
+    scale: analysisRaster.scale,
+    sourceData: sourceCrop.pixels,
+    sourceWidth: sourceCrop.width,
+    sourceHeight: sourceCrop.height,
+  };
+  const selectedDetected = {
+    panels: [
+      wholeImagePanel(
+        analysisRaster.width,
+        analysisRaster.height,
+      ),
+    ],
+    fallbackUsed: true,
+  };
+  if (
+    Number(analysisRaster.scale) >= 4 &&
+    lowResolutionStandaloneTopologyMismatch(
+      selectedDecoded,
+      selectedDetected,
+      analysis.descriptor,
+    )
+  ) {
+    distributionWaveformNotFound({
+      detected,
+      decoded,
+      reason: "low_resolution_insufficient",
+    });
+  }
   const { series: extractedSeries } =
     normalizedAnalysisSeries(analysis);
   if (
@@ -1142,17 +1498,28 @@ export async function validateTrainingWaveformImage({
   }
 
   const decoded = await decodeSimilarityImage(bytes, mimeType);
-  const detected = detectChartPanels(
+  let detected = detectChartPanels(
     decoded.data,
     decoded.width,
     decoded.height,
     3,
     { sourceScale: decoded.scale },
   );
+  detected = recoverDeskewedWholeImageDistribution(
+    detected,
+    decoded,
+  );
   if (!detected.panels.length) {
     distributionWaveformNotFound({
       detected,
       decoded,
+    });
+  }
+  if (lowResolutionFragmentationDetected(detected, decoded)) {
+    distributionWaveformNotFound({
+      detected,
+      decoded,
+      reason: "low_resolution_insufficient",
     });
   }
   if (normalizedSourceSelection) {
@@ -1163,6 +1530,30 @@ export async function validateTrainingWaveformImage({
       normalizedProfile,
       normalizedStateCount,
     });
+  }
+  if (
+    Number(decoded.scale) >= 4 &&
+    detected.panels.length === 1
+  ) {
+    const standaloneAnalysis = analyzeSimilarityPixels(
+      decoded.data,
+      decoded.width,
+      decoded.height,
+      decoded.scale,
+    );
+    if (
+      lowResolutionStandaloneTopologyMismatch(
+        decoded,
+        detected,
+        standaloneAnalysis.descriptor,
+      )
+    ) {
+      distributionWaveformNotFound({
+        detected,
+        decoded,
+        reason: "low_resolution_insufficient",
+      });
+    }
   }
   if (
     detected.panels.length !== 1 ||
@@ -1181,7 +1572,6 @@ export async function validateTrainingWaveformImage({
       reason: "candidates_ambiguous",
     });
   }
-
   const panel = detected.panels[0];
   const sourceBounds = sourcePanelBounds(
     panel,
@@ -1299,10 +1689,35 @@ export async function validateTrainingWaveformImage({
   }
 
   if (!match.accepted) {
+    const closestHypotheses = hypotheses
+      .map((hypothesis) => ({
+        candidateKind: hypothesis.candidateKind,
+        stateCount: Number(
+          hypothesis.descriptor?.stateCount,
+        ),
+        similarity: rounded(
+          alignedCurveSimilarity(
+            hypothesis.profile,
+            normalizedProfile,
+          ),
+        ),
+      }))
+      .sort(
+        (left, right) =>
+          right.similarity - left.similarity,
+      )
+      .slice(0, 6);
     throw new SimilarityApiError(
       "학습 원본의 파형과 제출한 profile이 일치하지 않습니다.",
       422,
       "training_profile_image_mismatch",
+      {
+        submittedStateCount: normalizedStateCount,
+        matchingStateSimilarity: rounded(
+          match.matchingStateSimilarity,
+        ),
+        closestHypotheses,
+      },
     );
   }
   const {
@@ -1712,6 +2127,7 @@ function wholeImagePanel(width, height, detectedPanel = null) {
     detectionReason:
       detectedPanel?.detectionReason ?? "whole-image-fallback",
     axisMode: detectedPanel?.axisMode ?? "content",
+    verifiedWaveform: detectedPanel?.verifiedWaveform,
   };
 }
 
@@ -1733,17 +2149,28 @@ export async function searchSimilarityImage({
   const safeTopK = parseTopK(topK);
   const startedAt = performance.now();
   const decoded = await decodeSimilarityImage(bytes, mimeType);
-  const detected = detectChartPanels(
+  let detected = detectChartPanels(
     decoded.data,
     decoded.width,
     decoded.height,
     3,
     { sourceScale: decoded.scale },
   );
+  detected = recoverDeskewedWholeImageDistribution(
+    detected,
+    decoded,
+  );
   if (!detected.panels.length) {
     distributionWaveformNotFound({
       detected,
       decoded,
+    });
+  }
+  if (lowResolutionFragmentationDetected(detected, decoded)) {
+    distributionWaveformNotFound({
+      detected,
+      decoded,
+      reason: "low_resolution_insufficient",
     });
   }
   // Only the verified whole-image fallback keeps the complete input. A
@@ -1834,12 +2261,25 @@ export async function searchSimilarityImage({
         seriesIndex,
         seriesCount: series.length,
       });
+      const pixelMeasuredPhysicalTopology =
+        analysis.preprocessing?.verifiedWaveformEvidence
+          ?.applied === true ||
+        analysis.preprocessing?.repeatedArchEvidence
+          ?.applied === true ||
+        analysis.preprocessing?.upperArcEvidence
+          ?.applied === true ||
+        seriesAnalysis.descriptor
+          ?.labelBoundaryFramePairRemoved === true;
+      const exactMeasuredSeriesDescriptor =
+        pixelMeasuredPhysicalTopology &&
+        seriesAnalysis.descriptor?.regularized !== true &&
+        seriesAnalysis.descriptor?.observedStateCount ===
+          seriesAnalysis.descriptor?.stateCount
+          ? seriesAnalysis.descriptor
+          : null;
       const trainingWaveform = trainingWaveformForApi(
         seriesAnalysis.profile,
-        analysis.preprocessing?.verifiedWaveformEvidence
-          ?.applied === true
-          ? seriesAnalysis.descriptor
-          : null,
+        exactMeasuredSeriesDescriptor,
       );
       return {
         seriesIndex,
@@ -1897,6 +2337,19 @@ export async function searchSimilarityImage({
     };
   });
   const primary = panelResults[0];
+  if (
+    lowResolutionStandaloneTopologyMismatch(
+      decoded,
+      detected,
+      primary.descriptor,
+    )
+  ) {
+    distributionWaveformNotFound({
+      detected,
+      decoded,
+      reason: "low_resolution_insufficient",
+    });
+  }
   const elapsed = performance.now() - startedAt;
   return {
     model: {

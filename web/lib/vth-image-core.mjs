@@ -469,7 +469,11 @@ function strongestProjectionBand(projection, radius = 1) {
  * @param {{maximumAngle?: number; step?: number}} [options]
  */
 export function estimateDeskewAngle(mask, width, height, options = {}) {
-  const maximumAngle = options.maximumAngle ?? 5;
+  // Keep a small margin beyond the common ±5° PPT rotation. The estimator
+  // deliberately treats the outermost hypothesis as inconclusive, so a
+  // maximum of exactly 5° made a genuine 5° frame land on that rejected
+  // boundary and left the Curve fragmented.
+  const maximumAngle = options.maximumAngle ?? 6;
   const step = options.step ?? 0.25;
   const activeCount = mask.reduce((sum, value) => sum + value, 0);
   if (
@@ -655,6 +659,58 @@ export function deskewForegroundMasks(
     height,
     estimate.angle,
   );
+  // The extended ±6° search exists so a genuinely framed plot rotated by
+  // exactly 5° does not land on the estimator's rejected outer boundary.
+  // Frameless multi-arch Curves can also create a strong projection near
+  // that new range, especially after JPEG encoding. Require either an
+  // independently closed plot frame or a physical open L whose horizontal
+  // and vertical strokes meet the returned bottom/left bounds. The
+  // established ≤4.75° behavior remains unchanged.
+  if (Math.abs(estimate.angle) > 4.75) {
+    const correctedBounds = detectPlotBounds(
+      rotatedBroad,
+      width,
+      height,
+    );
+    const axisAlignmentTolerance = Math.max(
+      4,
+      Math.round(Math.min(width, height) * 0.02),
+    );
+    const physicalOpenLAxes =
+      correctedBounds.axesDetected === true &&
+      correctedBounds.axisMode === "l-axis" &&
+      correctedBounds.horizontalLineCenters.some(
+        (position) =>
+          Math.abs(
+            position - correctedBounds.bottom,
+          ) <= axisAlignmentTolerance,
+      ) &&
+      correctedBounds.verticalLineCenters.some(
+        (position) =>
+          Math.abs(position - correctedBounds.left) <=
+          axisAlignmentTolerance,
+      );
+    if (
+      correctedBounds.axesDetected !== true ||
+      (correctedBounds.axisMode !== "rectangle" &&
+        !physicalOpenLAxes)
+    ) {
+      return {
+        boundsMask: broadMask,
+        broadMask,
+        salientMask,
+        curveSalientMask,
+        rawBroadMask: broadMask,
+        rawSalientMask: salientMask,
+        rawCurveSalientMask: curveSalientMask,
+        ...estimate,
+        proposedAngle: estimate.angle,
+        angle: 0,
+        applied: false,
+        extendedAngleFrameRejected: true,
+      };
+    }
+  }
   const rotatedSalient = rotateBinaryMask(
     salientMask,
     width,
@@ -1277,9 +1333,11 @@ function hasHorizontalContinuation(
   span,
 ) {
   let supportedColumns = 0;
+  let scannedColumns = 0;
   for (let step = 1; step <= span; step += 1) {
     const localX = x + direction * step;
     if (localX < 0 || localX >= width) break;
+    scannedColumns += 1;
     const tolerance = Math.max(2, Math.ceil(step * 0.55));
     let supported = false;
     for (
@@ -1294,7 +1352,11 @@ function hasHorizontalContinuation(
     }
     if (supported) supportedColumns += 1;
   }
-  return supportedColumns >= Math.max(3, Math.floor(span * 0.55));
+  return (
+    scannedColumns >= 3 &&
+    supportedColumns >=
+      Math.max(3, Math.floor(scannedColumns * 0.55))
+  );
 }
 
 /**
@@ -1316,7 +1378,12 @@ export function suppressPlotLabels(mask, width, height) {
     Math.floor(width * height * 0.000025),
   );
   const maximumGlyphWidth = Math.max(9, Math.floor(width * 0.055));
-  const maximumGlyphHeight = Math.max(9, Math.floor(height * 0.13));
+  // A label that has already been rotated and then downsampled can occupy
+  // roughly one sixth of the tight content-only Curve crop even though each
+  // source glyph was small. Keep that low-resolution case inside the glyph
+  // gate; the width, density and multi-glyph baseline checks below still
+  // prevent a rounded distribution lobe from being classified as text.
+  const maximumGlyphHeight = Math.max(9, Math.floor(height * 0.18));
 
   for (let start = 0; start < mask.length; start += 1) {
     if (!mask[start] || visited[start]) continue;
@@ -1401,6 +1468,7 @@ export function suppressPlotLabels(mask, width, height) {
       height: componentHeight,
       centerX: (minX + maxX) / 2,
       centerY: (minY + maxY) / 2,
+      averageInkPerColumn,
       compactGlyph,
       joinedTextBlob,
     });
@@ -1410,7 +1478,7 @@ export function suppressPlotLabels(mask, width, height) {
     .filter((component) => component.compactGlyph)
     .sort(
       (left, right) =>
-        left.centerY - right.centerY || left.minX - right.minX,
+        left.minX - right.minX || left.centerY - right.centerY,
     );
   const glyphGroups = [];
   for (const glyph of glyphs) {
@@ -1422,11 +1490,18 @@ export function suppressPlotLabels(mask, width, height) {
         Math.min(glyph.height, last.height) * 0.42,
       );
       const horizontalGap = glyph.minX - last.maxX - 1;
+      const maximumHorizontalGap = Math.max(
+        12,
+        Math.min(
+          width * 0.025,
+          Math.max(glyph.width, last.width) * 1.25,
+        ),
+      );
       if (
         Math.abs(glyph.centerY - group.centerY) <=
           baselineTolerance &&
         horizontalGap >= -Math.min(glyph.width, last.width) * 0.35 &&
-        horizontalGap <= Math.max(12, width * 0.025)
+        horizontalGap <= maximumHorizontalGap
       ) {
         matchingGroup = group;
         break;
@@ -1476,7 +1551,10 @@ export function suppressPlotLabels(mask, width, height) {
       localCoefficientOfVariation(centerGaps) <= 0.18 &&
       localCoefficientOfVariation(
         ordered.map((member) => member.width * member.height),
-      ) <= 0.22;
+      ) <= 0.22 &&
+      localCoefficientOfVariation(
+        ordered.map((member) => member.pixels.length),
+      ) <= 0.18;
     return !regularMarkerSequence;
   });
   const glyphLabelGroupCount = labelGroups.length;
@@ -1555,6 +1633,44 @@ export function suppressPlotLabels(mask, width, height) {
       height - 1,
       Math.max(...group.members.map((member) => member.maxY)) + 1,
     );
+    const memberSet = new Set(group.members);
+    // Detached legend swatches and neighbouring glyph groups can provide ink
+    // on both sides of a removed label without any Curve crossing the box.
+    // Interpolate only when a separate, sparse, vertically varying trace
+    // actually overlaps the removal region.
+    const crossesBroadTrace = components.some((component) => {
+      const componentDensity =
+        component.pixels.length /
+        Math.max(1, component.width * component.height);
+      const aspectRatio =
+        component.width / Math.max(1, component.height);
+      const sparseFullTrace =
+        component.width >= Math.max(18, width * 0.12) &&
+        component.height >= Math.max(8, height * 0.1) &&
+        component.averageInkPerColumn <= 7.5;
+      // Bilinear enlargement of a physically tiny, coloured Gaussian lobe
+      // makes the stroke look dense and can leave each State just below the
+      // full-trace width threshold. Its two-dimensional rounded envelope is
+      // still unlike a leader, swatch, glyph or straight callout, so retain
+      // this narrow near-square lobe case when it really crosses the label.
+      const denseUpscaledLobe =
+        component.width >= Math.max(18, width * 0.11) &&
+        component.height >= Math.max(8, height * 0.1) &&
+        component.averageInkPerColumn <= component.height * 0.35 &&
+        componentDensity <= 0.36 &&
+        aspectRatio >= 0.7 &&
+        aspectRatio <= 1.75;
+      return (
+        !memberSet.has(component) &&
+        !component.compactGlyph &&
+        !component.joinedTextBlob &&
+        (sparseFullTrace || denseUpscaledLobe) &&
+        component.maxX >= left &&
+        component.minX <= right &&
+        component.maxY >= top &&
+        component.minY <= bottom
+      );
+    });
     components.forEach((component, componentIndex) => {
       if (
         component.maxX >= left &&
@@ -1575,12 +1691,14 @@ export function suppressPlotLabels(mask, width, height) {
       }
     }
 
+    if (!crossesBroadTrace) continue;
+
     const leftColumn = left - 1;
     const rightColumn = right + 1;
     if (leftColumn < 0 || rightColumn >= width) continue;
     const continuationSpan = Math.max(
-      5,
-      Math.min(14, Math.round(memberHeight * 0.8)),
+      18,
+      Math.min(48, Math.round(memberHeight * 1.8)),
     );
     const leftCenters = columnRunCenters(
       mask,

@@ -1885,6 +1885,468 @@ function measurePhysicalOneDimensionalSharedLattice(
   };
 }
 
+function cropBinaryMaskToBounds(
+  sourceMask,
+  sourceWidth,
+  bounds,
+) {
+  const width = bounds.right - bounds.left + 1;
+  const height = bounds.bottom - bounds.top + 1;
+  const output = new Uint8Array(width * height);
+  for (let localY = 0; localY < height; localY += 1) {
+    const sourceStart =
+      (bounds.top + localY) * sourceWidth + bounds.left;
+    output.set(
+      sourceMask.subarray(sourceStart, sourceStart + width),
+      localY * width,
+    );
+  }
+  return { mask: output, width, height };
+}
+
+function translateLatticeBand(band, offset) {
+  return {
+    ...band,
+    start: band.start + offset,
+    end: band.end + offset,
+    coordinate:
+      Number.isFinite(band.coordinate)
+        ? band.coordinate + offset
+        : band.coordinate,
+  };
+}
+
+function translateLocalLatticeToSource(
+  lattice,
+  enclosingBounds,
+  kind,
+) {
+  return {
+    ...lattice,
+    localPhysicalLattice: true,
+    localTwoDimensionalSharedLattice: kind === "2d",
+    localOneDimensionalSharedLattice: kind === "1d",
+    horizontalBands: lattice.horizontalBands.map((band) =>
+      translateLatticeBand(band, enclosingBounds.top),
+    ),
+    verticalBands: lattice.verticalBands.map((band) =>
+      translateLatticeBand(band, enclosingBounds.left),
+    ),
+    bounds: {
+      left: enclosingBounds.left + lattice.bounds.left,
+      top: enclosingBounds.top + lattice.bounds.top,
+      right: enclosingBounds.left + lattice.bounds.right,
+      bottom: enclosingBounds.top + lattice.bounds.bottom,
+    },
+  };
+}
+
+/**
+ * A compact chart board can occupy only a small fraction of an FHD slide, so
+ * document-wide line thresholds intentionally ignore its shared boundaries.
+ * Re-measure only an independently detected enclosing rectangle in local
+ * coordinates. Geometry merely proposes the lattice: the existing
+ * table-embedded recovery still has to prove exact peak/valley topology in
+ * every physical cell before any panel is returned.
+ */
+function measureLocalEnclosingPhysicalLattice(
+  measuredCandidates,
+  broadMask,
+  width,
+  height,
+) {
+  if (!broadMask) return null;
+  const enclosingRectangles = measuredCandidates
+    .filter((candidate) => {
+      if (
+        candidate.axisMode !== "rectangle" ||
+        candidate.detectionReason !== "closed-plot-frame" ||
+        // A panel-wide coherent trace, chromatic or achromatic, already
+        // proves that this rectangle is one physical chart. Its internal
+        // guide lines must never be reinterpreted as a local chart board. A
+        // true enclosing board has discontinuities between its cells.
+        ((candidate.curveEvidence.colorSeriesCount ?? 0) >= 1 ||
+          (candidate.curveEvidence.valid === true &&
+            candidate.curveEvidence.tableGridArtifact !== true &&
+            candidate.curveEvidence.textGlyphArtifact !== true &&
+            candidate.curveEvidence.horizontalCoverage >= 0.82 &&
+            candidate.curveEvidence.continuousCoverage >= 0.72 &&
+            candidate.curveEvidence.verticalVariation >= 0.18 &&
+            candidate.curveEvidence.directionChangeCount >= 3))
+      ) {
+        return false;
+      }
+      const candidateWidth =
+        candidate.right - candidate.left + 1;
+      const candidateHeight =
+        candidate.bottom - candidate.top + 1;
+      const areaRatio =
+        area(candidate) / Math.max(1, width * height);
+      return (
+        // A local board must be wide enough to contain a physical cohort.
+        // Without this guard, the guide lines inside one ordinary plot can
+        // be reinterpreted as a four-cell board and veto that real plot.
+        candidateWidth >=
+          Math.max(160, Math.round(width * 0.2)) &&
+        candidateHeight >= 48 &&
+        areaRatio >= 0.006 &&
+        areaRatio <= 0.72
+      );
+    })
+    .sort(
+      (left, right) =>
+        area(right) - area(left) ||
+        right.confidence - left.confidence,
+    )
+    .slice(0, 8);
+
+  for (const enclosing of enclosingRectangles) {
+    const cropped = cropBinaryMaskToBounds(
+      broadMask,
+      width,
+      enclosing,
+    );
+    const localDocumentLattice =
+      analyzeAxisAlignedDocumentLattice(
+        cropped.mask,
+        cropped.width,
+        cropped.height,
+      );
+    const localRows =
+      (localDocumentLattice.horizontalBandCount ?? 0) - 1;
+    const localColumns =
+      (localDocumentLattice.verticalBandCount ?? 0) - 1;
+    if (
+      localDocumentLattice.tableGridArtifact &&
+      localRows >= 2 &&
+      localColumns >= 2 &&
+      localRows * localColumns >= 4 &&
+      localRows * localColumns <= MAXIMUM_CHART_PANELS &&
+      Array.isArray(localDocumentLattice.horizontalBands) &&
+      Array.isArray(localDocumentLattice.verticalBands)
+    ) {
+      return translateLocalLatticeToSource(
+        localDocumentLattice,
+        enclosing,
+        "2d",
+      );
+    }
+
+    const localMinimumWidth = Math.max(
+      3,
+      Math.round(
+        cropped.width *
+          COMPACT_MINIMUM_PANEL_WIDTH_RATIO,
+      ),
+    );
+    const localMinimumHeight = Math.max(
+      3,
+      Math.round(
+        cropped.height *
+          COMPACT_MINIMUM_PANEL_HEIGHT_RATIO,
+      ),
+    );
+    const localOneDimensionalLattice =
+      measurePhysicalOneDimensionalSharedLattice(
+        cropped.mask,
+        cropped.width,
+        cropped.height,
+        localMinimumWidth,
+        localMinimumHeight,
+      );
+    if (
+      localOneDimensionalLattice &&
+      localOneDimensionalLattice.rows *
+        localOneDimensionalLattice.columns >=
+        4
+    ) {
+      return translateLocalLatticeToSource(
+        localOneDimensionalLattice,
+        enclosing,
+        "1d",
+      );
+    }
+  }
+  return null;
+}
+
+/**
+ * Dense guide lines can make one full plot look like a document table. Rescue
+ * only the enclosing physical rectangle, never an internal grid cell, and
+ * only after grid removal exposes an exact, observed multi-peak waveform.
+ * This proof is deliberately stronger than generic Curve validity so a table
+ * containing icons or short sparklines remains rejected.
+ */
+function measureEnclosingGridWaveformRescue(
+  proposalCandidates,
+  curveEvidenceMask,
+  curveColorMasks,
+  width,
+  height,
+  documentLattice,
+) {
+  if (!curveEvidenceMask) {
+    return null;
+  }
+  const horizontalBandCount =
+    documentLattice?.horizontalBandCount ?? 0;
+  const verticalBandCount =
+    documentLattice?.verticalBandCount ?? 0;
+  const latticeBounds = documentLattice.bounds;
+  // Bilinear API upscaling can turn the outer physical frame into a
+  // spatially recovered rectangle and make the otherwise dense guide lattice
+  // miss the document-table threshold. Keep that precise structural signal
+  // available without relaxing table classification for the full document.
+  const denseLatticeSignal =
+    documentLattice?.tableGridArtifact === true ||
+    (horizontalBandCount >= 3 &&
+      verticalBandCount >= 3 &&
+      latticeBounds &&
+      area(latticeBounds) >= width * height * 0.25);
+  if (!denseLatticeSignal) return null;
+
+  const uniqueCandidates = [...new Set(proposalCandidates)];
+  const candidates = uniqueCandidates
+    .filter((candidate) => {
+      const closedPhysicalFrame =
+        candidate.detectionReason === "closed-plot-frame";
+      const strongSpatialFrame =
+        candidate.detectionReason ===
+          "arbitrary-waveform-region" &&
+        candidate.spatialFrameRecovered === true &&
+        candidate.spatialFrameSupport >= 0.9;
+      if (
+        candidate.axisMode !== "rectangle" ||
+        (!closedPhysicalFrame && !strongSpatialFrame) ||
+        candidate.curveEvidence.valid !== true ||
+        candidate.curveEvidence.textGlyphArtifact === true ||
+        candidate.curveEvidence.closedLoopArtifact === true ||
+        candidate.curveEvidence.closedTwoBranchArtifact ===
+          true ||
+        candidate.curveEvidence.thinEnough === false ||
+        candidate.curveEvidence.verticalVariation < 0.2
+      ) {
+        return false;
+      }
+      const areaRatio =
+        area(candidate) / Math.max(1, width * height);
+      const latticeCoverage = latticeBounds
+        ? intersectionArea(candidate, latticeBounds) /
+          Math.max(1, area(candidate))
+        : 0;
+      return areaRatio >= 0.25 && latticeCoverage >= 0.7;
+    })
+    .sort(
+      (left, right) =>
+        Number(
+          right.detectionReason === "closed-plot-frame",
+        ) -
+          Number(
+            left.detectionReason === "closed-plot-frame",
+          ) ||
+        area(right) - area(left) ||
+        right.confidence - left.confidence,
+    )
+    .slice(0, 4);
+
+  for (const candidate of candidates) {
+    const enclosedOpenLAxes = uniqueCandidates.filter(
+      (child) =>
+        child !== candidate &&
+        child.axisMode === "l-axis" &&
+        child.curveEvidence?.valid === true &&
+        area(child) <= area(candidate) * 0.35 &&
+        intersectionArea(candidate, child) /
+          Math.max(1, area(child)) >=
+          0.8,
+    );
+    const activatedByPhysicalTableFrame =
+      candidate.detectionReason === "closed-plot-frame" &&
+      documentLattice?.tableGridArtifact === true;
+    const activatedByUpscaledSpatialFrame =
+      candidate.spatialFrameRecovered === true &&
+      candidate.spatialFrameSupport >= 0.9 &&
+      enclosedOpenLAxes.length >= 2;
+    candidate.enclosingGridWaveformDiagnostics = {
+      attempted: true,
+      horizontalBandCount,
+      verticalBandCount,
+      enclosedOpenLAxisCount: enclosedOpenLAxes.length,
+      activatedByPhysicalTableFrame,
+      activatedByUpscaledSpatialFrame,
+    };
+    if (
+      !activatedByPhysicalTableFrame &&
+      !activatedByUpscaledSpatialFrame
+    ) {
+      continue;
+    }
+
+    // An enclosing dashboard/card can contain several real plots. Never let
+    // its aggregate upper contour replace independently credible non-open-L
+    // children, even if that contour happens to contain three arches.
+    const credibleIndependentChild =
+      uniqueCandidates.find((child) => {
+        if (
+          child === candidate ||
+          child.axisMode === "l-axis" ||
+          child.curveEvidence?.valid !== true ||
+          child.curveEvidence.textGlyphArtifact === true
+        ) {
+          return false;
+        }
+        const childAreaRatio =
+          area(child) / Math.max(1, area(candidate));
+        const childCoverage =
+          intersectionArea(candidate, child) /
+          Math.max(1, area(child));
+        return (
+          childAreaRatio >= 0.02 &&
+          childAreaRatio <= 0.65 &&
+          childCoverage >= 0.8 &&
+          intersectionOverUnion(candidate, child) < 0.72
+        );
+      });
+    if (credibleIndependentChild) {
+      candidate.enclosingGridWaveformDiagnostics = {
+        ...candidate.enclosingGridWaveformDiagnostics,
+        rejectedReason: "credible-independent-child",
+      };
+      continue;
+    }
+
+    // Spatial recovery starts from Curve ink, so its rectangle may begin
+    // below the physical frame top after upscaling. The enclosed open-L
+    // hypotheses independently preserve that top/bottom extent. Use them
+    // only to restore the proof crop; the exact upper-arc contract below is
+    // still authoritative.
+    const topologyBounds = activatedByUpscaledSpatialFrame
+      ? {
+          ...candidate,
+          top: Math.min(
+            candidate.top,
+            ...enclosedOpenLAxes.map((child) => child.top),
+          ),
+          bottom: Math.max(
+            candidate.bottom,
+            ...enclosedOpenLAxes.map(
+              (child) => child.bottom,
+            ),
+          ),
+        }
+      : candidate;
+    const localCurve = cropBinaryMaskToBounds(
+      curveEvidenceMask,
+      width,
+      topologyBounds,
+    );
+    const cleanedCurve = removeGridLinesPreservingCurves(
+      localCurve.mask,
+      localCurve.width,
+      localCurve.height,
+    ).mask;
+    const cleanedColorMasks = (
+      Array.isArray(curveColorMasks)
+        ? curveColorMasks
+        : []
+    ).map((colorMask) => {
+      const cropped = cropBinaryMaskToBounds(
+        colorMask,
+        width,
+        topologyBounds,
+      );
+      return removeGridLinesPreservingCurves(
+        cropped.mask,
+        cropped.width,
+        cropped.height,
+      ).mask;
+    });
+    const topology = extractUpperArcPeakEvidence(
+      cleanedCurve,
+      cleanedCurve,
+      cleanedColorMasks.length
+        ? cleanedColorMasks
+        : [cleanedCurve],
+      localCurve.width,
+      localCurve.height,
+      { minimumPeakCount: 3 },
+    );
+    const peakCount = topology.peakCount ?? 0;
+    const descriptor = topology.descriptor;
+    const valleyCount = peakCount - 1;
+    candidate.enclosingGridWaveformDiagnostics = {
+      ...candidate.enclosingGridWaveformDiagnostics,
+      topologyAccepted: topology.accepted === true,
+      topologyReason: topology.reason ?? "UNKNOWN",
+      peakCount,
+      measuredPeakCount:
+        topology.measuredPeakCount ?? peakCount,
+      valleyCount:
+        descriptor?.valleyLocations?.length ?? 0,
+      spanRatio: topology.spanRatio ?? 0,
+      gapCoefficientOfVariation:
+        topology.gapCoefficientOfVariation ?? null,
+      descriptorRegularized:
+        descriptor?.regularized === true,
+    };
+    const exactTopology =
+      topology.accepted === true &&
+      peakCount >= 3 &&
+      topology.spanRatio >= 0.55 &&
+      descriptor &&
+      descriptor.regularized !== true &&
+      descriptor.stateCount === peakCount &&
+      descriptor.observedStateCount === peakCount &&
+      descriptor.peakLocations?.length === peakCount &&
+      descriptor.peakWidths?.length === peakCount &&
+      descriptor.valleyLocations?.length === valleyCount &&
+      descriptor.valleyHeights?.length === valleyCount &&
+      descriptor.valleyDepths?.length === valleyCount &&
+      descriptor.valleyPositionRatios?.length ===
+        valleyCount &&
+      descriptor.peakValleyDistances?.length ===
+        valleyCount * 2 &&
+      descriptor.tailSlopes?.length === 2;
+    if (!exactTopology) continue;
+
+    return {
+      ...candidate,
+      left: topologyBounds.left,
+      top: topologyBounds.top,
+      right: topologyBounds.right,
+      bottom: topologyBounds.bottom,
+      confidence: clamp(
+        Math.max(candidate.confidence, 0.93),
+        0,
+        0.99,
+      ),
+      detectionReason: "enclosing-grid-waveform",
+      enclosingGridWaveformRescue: true,
+      enclosingGridWaveformPeakCount: peakCount,
+      enclosingGridWaveformValleyCount: valleyCount,
+      enclosingGridWaveformSuppressedOpenLAxisCount:
+        enclosedOpenLAxes.length,
+      curveEvidence: {
+        ...candidate.curveEvidence,
+        valid: true,
+        measuredPeakCount: peakCount,
+        measuredPeakTopologyAccepted: true,
+        enclosingGridWaveformRescue: true,
+        enclosingGridWaveformPeakCount: peakCount,
+        enclosingGridWaveformValleyCount: valleyCount,
+        enclosingGridWaveformSuppressedOpenLAxisCount:
+          enclosedOpenLAxes.length,
+      },
+      verifiedWaveform: {
+        profile: [...topology.profile],
+        descriptor,
+        source: "enclosing-grid-upper-arc-topology",
+      },
+    };
+  }
+  return null;
+}
+
 function area(bounds) {
   return (
     Math.max(0, bounds.right - bounds.left + 1) *
@@ -3615,7 +4077,12 @@ export function measureChartCurveEvidence(
     rawRepeatedGlyphTopology.sparseRibbonComponentCount >= 1 &&
     rawRepeatedGlyphTopology.dominantSparseRibbonWidth >= 0.5 &&
     verticalVariation >= 0.8 &&
-    directionChangeCount <= 1 &&
+    directionChangeCount <=
+      (rawRepeatedGlyphTopology.glyphLikeComponentCount >= 6 &&
+      rawRepeatedGlyphTopology.glyphInkFraction >= 0.6 &&
+      rawRepeatedGlyphTopology.medianDensity >= 0.16
+        ? 3
+        : 1) &&
     curvedSegmentCount <= 1 &&
     !localizedSinglePeak;
   const insetDenseGlyphArtifact =
@@ -9425,6 +9892,7 @@ function recoverStrictRepeatedWaveformGridCandidates(
   if (!columnFit || !rowFit) return null;
 
   const occupiedCells = new Set();
+  const measuredFrameByCell = new Map();
   for (const anchor of anchors) {
     let bestColumn = -1;
     let bestColumnDistance = Number.POSITIVE_INFINITY;
@@ -9460,7 +9928,36 @@ function recoverStrictRepeatedWaveformGridCandidates(
       bestColumnDistance <= frameWidth * 0.24 &&
       bestRowDistance <= frameHeight * 0.24
     ) {
-      occupiedCells.add(`${bestRow}:${bestColumn}`);
+      const cellKey = `${bestRow}:${bestColumn}`;
+      occupiedCells.add(cellKey);
+      if (
+        anchor.axisMode === "rectangle" &&
+        anchor.detectionReason === "closed-plot-frame"
+      ) {
+        const existing = measuredFrameByCell.get(cellKey);
+        const anchorWidth =
+          anchor.right - anchor.left + 1;
+        const anchorHeight =
+          anchor.bottom - anchor.top + 1;
+        const frameScore =
+          (anchor.confidence ?? 0) -
+          bestColumnDistance /
+            Math.max(1, frameWidth) -
+          bestRowDistance /
+            Math.max(1, frameHeight) -
+          Math.abs(anchorWidth - frameWidth) /
+            Math.max(1, frameWidth) *
+            0.1 -
+          Math.abs(anchorHeight - frameHeight) /
+            Math.max(1, frameHeight) *
+            0.1;
+        if (!existing || frameScore > existing.frameScore) {
+          measuredFrameByCell.set(cellKey, {
+            candidate: anchor,
+            frameScore,
+          });
+        }
+      }
     }
   }
   if (
@@ -9471,6 +9968,9 @@ function recoverStrictRepeatedWaveformGridCandidates(
   }
 
   const candidates = [];
+  const preserveCompleteMeasuredGrid =
+    occupiedCells.size === expectedCellCount &&
+    measuredFrameByCell.size === expectedCellCount;
   for (
     let row = 0;
     row < rowFit.positions.length;
@@ -9491,18 +9991,36 @@ function recoverStrictRepeatedWaveformGridCandidates(
         0,
         height - 1,
       );
-      const candidate = {
-        left,
-        top,
-        right: Math.min(width - 1, left + frameWidth - 1),
-        bottom: Math.min(
-          height - 1,
-          top + frameHeight - 1,
-        ),
-        axisMode: "rectangle",
-        detectionScale: "repeated-grid",
-        detectionReason: "repeated-waveform-grid",
-      };
+      const measuredFrame = preserveCompleteMeasuredGrid
+        ? measuredFrameByCell.get(`${row}:${column}`)
+            ?.candidate
+        : null;
+      // When every expected cell already has an independently measured
+      // physical frame, retain those variable source bounds. Replacing them
+      // with one median projected size clips narrow/offset peaks and can add
+      // neighbouring labels. Projection remains the recovery path whenever
+      // even one physical frame is missing.
+      const candidate = measuredFrame
+        ? {
+            ...measuredFrame,
+            repeatedGridStructuralRescue: true,
+          }
+        : {
+            left,
+            top,
+            right: Math.min(
+              width - 1,
+              left + frameWidth - 1,
+            ),
+            bottom: Math.min(
+              height - 1,
+              top + frameHeight - 1,
+            ),
+            axisMode: "rectangle",
+            detectionScale: "repeated-grid",
+            detectionReason: "repeated-waveform-grid",
+            repeatedGridStructuralRescue: true,
+          };
       const curveEvidence = measureChartCurveEvidence(
         candidate,
         curveEvidenceMask,
@@ -9518,7 +10036,10 @@ function recoverStrictRepeatedWaveformGridCandidates(
           0,
           0.98,
         ),
-        curveEvidence,
+        curveEvidence: {
+          ...curveEvidence,
+          repeatedGridStructuralRescue: true,
+        },
       });
     }
   }
@@ -9539,6 +10060,10 @@ function recoverStrictRepeatedWaveformGridCandidates(
     frameHeight,
     columnStep: columnFit.step,
     rowStep: rowFit.step,
+    preservedMeasuredFrameCount:
+      preserveCompleteMeasuredGrid
+        ? measuredFrameByCell.size
+        : 0,
   };
 }
 
@@ -10350,14 +10875,8 @@ function recoverChromaticRepeatedWaveformGridCandidates(
       const projectedCandidate = {
         left: Math.max(0, columnBand.start - paddingX),
         top: Math.max(0, rowBand.start - paddingY),
-        right: Math.min(
-          width - 1,
-          columnBand.end + paddingX,
-        ),
-        bottom: Math.min(
-          height - 1,
-          rowBand.end + paddingY,
-        ),
+        right: Math.min(width - 1, columnBand.end + paddingX),
+        bottom: Math.min(height - 1, rowBand.end + paddingY),
         axisMode: "content",
         detectionScale: "repeated-grid",
         detectionReason: "repeated-waveform-grid",
@@ -10445,6 +10964,9 @@ function recoverChromaticRepeatedWaveformGridCandidates(
       let measuredPeakTopologyReason = "NOT_MEASURED";
       let measuredWaveformEvidence = null;
       let fullHeightDistributionCell = false;
+      let maximumInternalCurveBlankRun = 0;
+      let centralCurveDiscontinuity = false;
+      let separatedLobeBaselineGap = false;
       if (cellInk >= 8) {
         const localWidth =
           candidate.right - candidate.left + 1;
@@ -10494,6 +11016,135 @@ function recoverChromaticRepeatedWaveformGridCandidates(
               localHeight,
             ).mask,
           );
+        const activeCurveColumns = new Uint8Array(
+          localWidth,
+        );
+        for (const localColorMask of localCurveColorMasks) {
+          for (let localX = 0; localX < localWidth; localX += 1) {
+            if (activeCurveColumns[localX]) continue;
+            for (
+              let localY = 0;
+              localY < localHeight;
+              localY += 1
+            ) {
+              if (
+                localColorMask[
+                  localY * localWidth + localX
+                ]
+              ) {
+                activeCurveColumns[localX] = 1;
+                break;
+              }
+            }
+          }
+        }
+        const firstActiveColumn =
+          activeCurveColumns.findIndex(Boolean);
+        let lastActiveColumn = -1;
+        for (
+          let localX = activeCurveColumns.length - 1;
+          localX >= 0;
+          localX -= 1
+        ) {
+          if (activeCurveColumns[localX]) {
+            lastActiveColumn = localX;
+            break;
+          }
+        }
+        let blankRun = 0;
+        let longestBlankLeftColumn = -1;
+        let longestBlankRightColumn = -1;
+        for (
+          let localX = Math.max(0, firstActiveColumn);
+          localX <= lastActiveColumn;
+          localX += 1
+        ) {
+          if (activeCurveColumns[localX]) {
+            if (blankRun > maximumInternalCurveBlankRun) {
+              maximumInternalCurveBlankRun = blankRun;
+              longestBlankLeftColumn =
+                localX - blankRun - 1;
+              longestBlankRightColumn = localX;
+            }
+            blankRun = 0;
+          } else {
+            blankRun += 1;
+          }
+        }
+        if (blankRun > maximumInternalCurveBlankRun) {
+          maximumInternalCurveBlankRun = blankRun;
+          longestBlankLeftColumn =
+            lastActiveColumn - blankRun;
+          longestBlankRightColumn = lastActiveColumn + 1;
+        }
+        centralCurveDiscontinuity =
+          firstActiveColumn >= 0 &&
+          lastActiveColumn > firstActiveColumn &&
+          maximumInternalCurveBlankRun >=
+            Math.max(4, Math.ceil(localWidth * 0.18));
+        if (
+          centralCurveDiscontinuity &&
+          longestBlankLeftColumn >= 0 &&
+          longestBlankRightColumn < localWidth
+        ) {
+          let curveBottom = -1;
+          let leftBoundaryBottom = -1;
+          let rightBoundaryBottom = -1;
+          for (const localColorMask of localCurveColorMasks) {
+            for (
+              let localY = 0;
+              localY < localHeight;
+              localY += 1
+            ) {
+              const rowStart = localY * localWidth;
+              for (
+                let localX = 0;
+                localX < localWidth;
+                localX += 1
+              ) {
+                if (!localColorMask[rowStart + localX]) {
+                  continue;
+                }
+                curveBottom = Math.max(curveBottom, localY);
+                if (
+                  Math.abs(
+                    localX - longestBlankLeftColumn,
+                  ) <= 2
+                ) {
+                  leftBoundaryBottom = Math.max(
+                    leftBoundaryBottom,
+                    localY,
+                  );
+                }
+                if (
+                  Math.abs(
+                    localX - longestBlankRightColumn,
+                  ) <= 2
+                ) {
+                  rightBoundaryBottom = Math.max(
+                    rightBoundaryBottom,
+                    localY,
+                  );
+                }
+              }
+            }
+          }
+          const baselineTolerance = Math.max(
+            3,
+            Math.ceil(localHeight * 0.08),
+          );
+          // Two independently complete lobes can have no ink whatsoever in
+          // a deep log-scale valley. Their facing endpoints still return to
+          // the same physical baseline. A destructively erased centre leaves
+          // at least one clipped endpoint above that baseline, so retain the
+          // former without reopening the partial-cell fragment rescue.
+          separatedLobeBaselineGap =
+            curveBottom >= 0 &&
+            leftBoundaryBottom >=
+              curveBottom - baselineTolerance &&
+            rightBoundaryBottom >=
+              curveBottom - baselineTolerance;
+        }
         if (requireTableWaveformGridProof) {
           const physicalWidth =
             physicalCellBounds.right -
@@ -10618,8 +11269,13 @@ function recoverChromaticRepeatedWaveformGridCandidates(
               localWidth,
               localHeight,
               {
-                minimumPeakCount:
-                  requireTableWaveformGridProof ? 1 : 2,
+                // A repeated waveform cohort is proved by the neighbouring
+                // multi-peak cells below, so a genuine one-State member may
+                // be measured without weakening the document-level table
+                // rejection gate. Keeping this physical singleton evidence
+                // also prevents a later high-ratio API upscale from turning
+                // one broad cap into several interpolation extrema.
+                minimumPeakCount: 1,
               },
             )
           : achromaticUpperArc?.accepted
@@ -10670,6 +11326,9 @@ function recoverChromaticRepeatedWaveformGridCandidates(
         measuredPeakTopologyAccepted =
           measuredPeakTopology.accepted === true &&
           measuredPeakCount >= 1 &&
+          (!centralCurveDiscontinuity ||
+            (separatedLobeBaselineGap &&
+              measuredPeakCount >= 2)) &&
           measuredPeakTopology.descriptor
             ?.valleyLocations?.length ===
             measuredPeakCount - 1;
@@ -10713,7 +11372,9 @@ function recoverChromaticRepeatedWaveformGridCandidates(
                 ...measuredPeakTopology.descriptor.tailSlopes,
               ],
             },
-            source: "table-grid-measured-topology",
+            source: requireTableWaveformGridProof
+              ? "table-grid-measured-topology"
+              : "repeated-grid-measured-topology",
           };
           // Deep log-scale valleys split a dense six-or-more-State trace into
           // short segments, so the generic single-path metric can look weak
@@ -10768,6 +11429,9 @@ function recoverChromaticRepeatedWaveformGridCandidates(
           measuredPeakCount,
           measuredPeakTopologyAccepted,
           measuredPeakTopologyReason,
+          maximumInternalCurveBlankRun,
+          centralCurveDiscontinuity,
+          separatedLobeBaselineGap,
           fullHeightDistributionCell,
           fullHeightCurveHorizontalSpan:
             fullHeightCurveExtent.horizontalSpan,
@@ -10781,6 +11445,8 @@ function recoverChromaticRepeatedWaveformGridCandidates(
             fullHeightCurveEvidence?.textGlyphArtifact === true,
           fullHeightIsolatedGlyphArtifact:
             fullHeightCurveEvidence?.isolatedGlyphArtifact === true,
+          repeatedGridRow: row,
+          repeatedGridColumn: column,
         },
         measuredWaveformEvidence,
       });
@@ -10792,7 +11458,7 @@ function recoverChromaticRepeatedWaveformGridCandidates(
       : Math.max(4, Math.ceil(expectedCellCount * 0.5));
   const minimumMeasuredTopologyCells =
     requireTableWaveformGridProof
-      ? expectedCellCount
+      ? Math.max(3, Math.ceil(expectedCellCount * 0.75))
       : 0;
   const minimumPlotGridCells =
     requireTableWaveformGridProof
@@ -10808,6 +11474,33 @@ function recoverChromaticRepeatedWaveformGridCandidates(
         minimumMeasuredTopologyCells
       : measuredMultiPeakCellCount >=
         minimumMeasuredMultiPeakCells;
+  const verifiedTableCandidates =
+    requireTableWaveformGridProof
+      ? candidates.filter(
+          (candidate) =>
+            candidate.curveEvidence
+              .measuredPeakTopologyAccepted === true &&
+            candidate.measuredWaveformEvidence,
+        )
+      : candidates;
+  const verifiedTableRows = new Set(
+    verifiedTableCandidates.map(
+      (candidate) =>
+        candidate.curveEvidence.repeatedGridRow,
+    ),
+  );
+  const verifiedTableColumns = new Set(
+    verifiedTableCandidates.map(
+      (candidate) =>
+        candidate.curveEvidence.repeatedGridColumn,
+    ),
+  );
+  const tableVerifiedCellsSpanLattice =
+    !requireTableWaveformGridProof ||
+    (verifiedTableRows.size >=
+      Math.min(2, rowFit.bands.length) &&
+      verifiedTableColumns.size >=
+        Math.min(2, columnFit.bands.length));
   const plotGridWaveformProof =
     requireTableWaveformGridProof &&
     plotGridCellCount >= minimumPlotGridCells;
@@ -10826,30 +11519,41 @@ function recoverChromaticRepeatedWaveformGridCandidates(
   const tableEmbeddedWaveformGridProof =
     requireTableWaveformGridProof &&
     measuredWaveformGridProof &&
+    tableVerifiedCellsSpanLattice &&
     tableLatticeShapeConsistent &&
     (plotGridWaveformProof ||
       fullHeightDistributionGridProof);
+  const minimumWaveformCellCount =
+    requireTableWaveformGridProof
+      ? minimumMeasuredTopologyCells
+      : expectedCellCount;
+  const minimumChromaticCellCount = Math.ceil(
+    expectedCellCount *
+      (requireTableWaveformGridProof ? 0.75 : 0.9),
+  );
   if (
-    chromaticCellCount <
-      Math.ceil(expectedCellCount * 0.9) ||
-    waveformCellCount !== expectedCellCount ||
+    chromaticCellCount < minimumChromaticCellCount ||
+    waveformCellCount < minimumWaveformCellCount ||
     turningCellCount <
       Math.ceil(expectedCellCount * 0.75) ||
     !measuredWaveformGridProof ||
     (requireTableWaveformGridProof &&
       (!tableLatticeShapeConsistent ||
+        !tableVerifiedCellsSpanLattice ||
         (!plotGridWaveformProof &&
           !fullHeightDistributionGridProof)))
   ) {
     return retryWithAchromaticProjection();
   }
-  if (tableEmbeddedWaveformGridProof) {
+  if (measuredWaveformGridProof) {
     for (const candidate of candidates) {
-      candidate.tableEmbeddedWaveformGridProof = true;
-      candidate.curveEvidence.tableEmbeddedWaveformGridProof =
-        true;
-      candidate.curveEvidence.tableEmbeddedRescueMode =
-        tableEmbeddedRescueMode;
+      if (tableEmbeddedWaveformGridProof) {
+        candidate.tableEmbeddedWaveformGridProof = true;
+        candidate.curveEvidence.tableEmbeddedWaveformGridProof =
+          true;
+        candidate.curveEvidence.tableEmbeddedRescueMode =
+          tableEmbeddedRescueMode;
+      }
       if (candidate.measuredWaveformEvidence) {
         candidate.verifiedWaveform =
           candidate.measuredWaveformEvidence;
@@ -10859,8 +11563,12 @@ function recoverChromaticRepeatedWaveformGridCandidates(
   for (const candidate of candidates) {
     delete candidate.measuredWaveformEvidence;
   }
+  const retainedCandidates =
+    requireTableWaveformGridProof
+      ? verifiedTableCandidates
+      : candidates;
   return {
-    candidates,
+    candidates: retainedCandidates,
     anchorCount: measuredCandidates.length,
     occupiedCellCount: occupiedCells.size,
     minimumOccupiedCellCount:
@@ -10881,6 +11589,7 @@ function recoverChromaticRepeatedWaveformGridCandidates(
     measuredWaveformGridProof,
     tableEmbeddedWaveformGridProof,
     tableEmbeddedRescueMode,
+    tableVerifiedCellsSpanLattice,
     tableLatticeShapeConsistent,
     tableProjectionBoundsAligned,
     medianProjectedRowCoverage,
@@ -11372,6 +12081,1679 @@ function candidateCoveredByRotatedLattice(
 }
 
 /**
+ * A compact 2 × 2 chart board is geometrically indistinguishable from a
+ * table at document level.  The table veto must remain the default, but four
+ * independently closed physical frames can override it when every cell has a
+ * high-coverage, thin, non-text waveform and the centres form an exact 2 × 2
+ * lattice.  Keeping this proof deliberately fixed to four cells avoids
+ * weakening the general table path.
+ */
+function measureSmallPhysicalWaveformGridProof(
+  measuredCandidates,
+  documentLattice,
+  width,
+  height,
+) {
+  if (
+    !documentLattice?.tableGridArtifact ||
+    measuredCandidates.length < 4
+  ) {
+    return null;
+  }
+  const candidates = measuredCandidates.filter(
+    (candidate) =>
+      candidate.axisMode === "rectangle" &&
+      candidate.detectionReason === "closed-plot-frame" &&
+      candidate.curveEvidence.valid &&
+      !candidate.curveEvidence.tableGridArtifact &&
+      !candidate.curveEvidence.textGlyphArtifact &&
+      !candidate.curveEvidence.angularPolylineArtifact &&
+      !candidate.curveEvidence.closedLoopArtifact &&
+      !candidate.curveEvidence.closedTwoBranchArtifact &&
+      candidate.curveEvidence.thinEnough !== false &&
+      candidate.curveEvidence.score >= 0.88 &&
+      candidate.curveEvidence.horizontalCoverage >= 0.82 &&
+      candidate.curveEvidence.continuousCoverage >= 0.72 &&
+      candidate.curveEvidence.verticalVariation >= 0.22 &&
+      (candidate.curveEvidence.localizedSinglePeak === true ||
+        candidate.curveEvidence.directionChangeCount >= 3),
+  );
+  if (
+    candidates.length !== 4 ||
+    candidates.filter(
+      (candidate) =>
+        candidate.curveEvidence.directionChangeCount >= 5,
+    ).length < 2
+  ) {
+    return null;
+  }
+
+  const widths = candidates.map(
+    (candidate) => candidate.right - candidate.left + 1,
+  );
+  const heights = candidates.map(
+    (candidate) => candidate.bottom - candidate.top + 1,
+  );
+  const typicalWidth = medianMeasurement(widths);
+  const typicalHeight = medianMeasurement(heights);
+  if (
+    Math.max(...widths) > Math.min(...widths) * 1.25 ||
+    Math.max(...heights) > Math.min(...heights) * 1.25
+  ) {
+    return null;
+  }
+
+  const byVerticalCenter = [...candidates].sort(
+    (left, right) =>
+      (left.top + left.bottom) / 2 -
+        (right.top + right.bottom) / 2 ||
+      left.left - right.left,
+  );
+  const rows = [
+    byVerticalCenter.slice(0, 2).sort(
+      (left, right) => left.left - right.left,
+    ),
+    byVerticalCenter.slice(2).sort(
+      (left, right) => left.left - right.left,
+    ),
+  ];
+  const rowCenters = rows.map(
+    (row) =>
+      row.reduce(
+        (sum, candidate) =>
+          sum + (candidate.top + candidate.bottom) / 2,
+        0,
+      ) / row.length,
+  );
+  const columnCenters = [0, 1].map(
+    (column) =>
+      rows.reduce(
+        (sum, row) =>
+          sum + (row[column].left + row[column].right) / 2,
+        0,
+      ) / rows.length,
+  );
+  const verticalAlignmentTolerance = Math.max(
+    3,
+    typicalHeight * 0.12,
+  );
+  const horizontalAlignmentTolerance = Math.max(
+    3,
+    typicalWidth * 0.12,
+  );
+  const exactTwoByTwo =
+    rowCenters[1] - rowCenters[0] >= typicalHeight * 0.7 &&
+    columnCenters[1] - columnCenters[0] >= typicalWidth * 0.7 &&
+    rows.every(
+      (row, rowIndex) =>
+        row.every(
+          (candidate) =>
+            Math.abs(
+              (candidate.top + candidate.bottom) / 2 -
+                rowCenters[rowIndex],
+            ) <= verticalAlignmentTolerance,
+        ),
+    ) &&
+    [0, 1].every((column) =>
+      rows.every(
+        (row) =>
+          Math.abs(
+            (row[column].left + row[column].right) / 2 -
+              columnCenters[column],
+          ) <= horizontalAlignmentTolerance,
+      ),
+    );
+  if (!exactTwoByTwo) return null;
+
+  const bounds = {
+    left: Math.min(...candidates.map((candidate) => candidate.left)),
+    top: Math.min(...candidates.map((candidate) => candidate.top)),
+    right: Math.max(...candidates.map((candidate) => candidate.right)),
+    bottom: Math.max(...candidates.map((candidate) => candidate.bottom)),
+  };
+  const latticeBounds = documentLattice.bounds;
+  if (
+    !latticeBounds ||
+    intersectionArea(bounds, latticeBounds) /
+      Math.max(1, area(bounds)) <
+      0.82 ||
+    area(bounds) < width * height * 0.35
+  ) {
+    return null;
+  }
+  return {
+    candidates: new Set(candidates),
+    rows: 2,
+    columns: 2,
+  };
+}
+
+/**
+ * Prove a larger board from independently closed physical plots rather than
+ * from the shared rules inside any one plot. This is intentionally a cohort
+ * proof: one locally table-like, low-saturation Curve cannot bypass the table
+ * veto unless the surrounding closed frames form a complete regular lattice
+ * and nearly all of them independently expose a coloured waveform.
+ */
+function measureCandidateVthDistributionContract(
+  candidate,
+  curveEvidenceMask,
+  curveColorMasks,
+  width,
+) {
+    const waveform =
+      extractCandidateUpperArcWaveformEvidence(
+        candidate,
+        curveEvidenceMask,
+        curveColorMasks,
+        width,
+      );
+    if (!waveform) {
+      return {
+        accepted: false,
+        localizedAccepted: false,
+        floatingPeriodicTrace: false,
+        waveform: null,
+        diagnostics: null,
+      };
+    }
+
+    const localWidth =
+      candidate.right - candidate.left + 1;
+    const localHeight =
+      candidate.bottom - candidate.top + 1;
+    const localCurveMask = new Uint8Array(
+      localWidth * localHeight,
+    );
+    const localColorUnionMask = new Uint8Array(
+      localWidth * localHeight,
+    );
+    for (
+      let localY = 0;
+      localY < localHeight;
+      localY += 1
+    ) {
+      const sourceStart =
+        (candidate.top + localY) * width +
+        candidate.left;
+      localCurveMask.set(
+        curveEvidenceMask.subarray(
+          sourceStart,
+          sourceStart + localWidth,
+        ),
+        localY * localWidth,
+      );
+      for (const colorMask of curveColorMasks ?? []) {
+        const colorSlice = colorMask.subarray(
+          sourceStart,
+          sourceStart + localWidth,
+        );
+        for (
+          let localX = 0;
+          localX < localWidth;
+          localX += 1
+        ) {
+          localColorUnionMask[
+            localY * localWidth + localX
+          ] ||= colorSlice[localX];
+        }
+      }
+    }
+    const cleanedCurveMask =
+      removeGridLinesPreservingCurves(
+        localCurveMask,
+        localWidth,
+        localHeight,
+      ).mask;
+    let top = localHeight;
+    let bottom = -1;
+    let left = localWidth;
+    let right = -1;
+    let pixelCount = 0;
+    for (let localY = 0; localY < localHeight; localY += 1) {
+      for (let localX = 0; localX < localWidth; localX += 1) {
+        if (
+          !cleanedCurveMask[
+            localY * localWidth + localX
+          ]
+        ) {
+          continue;
+        }
+        top = Math.min(top, localY);
+        bottom = Math.max(bottom, localY);
+        left = Math.min(left, localX);
+        right = Math.max(right, localX);
+        pixelCount += 1;
+      }
+    }
+    const bottomReach =
+      bottom / Math.max(1, localHeight - 1);
+    const verticalSpan =
+      (bottom - top + 1) / Math.max(1, localHeight);
+    const profile = waveform.profile;
+    const edgeSampleCount = Math.max(
+      3,
+      Math.round(profile.length * 0.06),
+    );
+    const mean = (values) =>
+      values.reduce((sum, value) => sum + value, 0) /
+      Math.max(1, values.length);
+    const leftFloor = mean(
+      profile.slice(0, edgeSampleCount),
+    );
+    const rightFloor = mean(
+      profile.slice(-edgeSampleCount),
+    );
+    const sampleProfile = (location) =>
+      profile[
+        clamp(
+          Math.round(location * (profile.length - 1)),
+          0,
+          profile.length - 1,
+        )
+      ];
+    const peakHeights =
+      waveform.descriptor.peakLocations.map(
+        sampleProfile,
+      );
+    const valleyHeights =
+      waveform.descriptor.valleyLocations.map(
+        sampleProfile,
+      );
+    const topologyGate =
+      peakHeights.every((value) => value >= 0.72) &&
+      valleyHeights.every((value) => value <= 0.58);
+    const bothFloorsLow =
+      leftFloor <= 0.66 && rightFloor <= 0.66;
+    const physicalClipTolerance = Math.max(
+      2,
+      Math.round((localWidth - 1) * 0.025),
+    );
+    const peakLocations =
+      waveform.descriptor.peakLocations;
+    const boundaryCurveMask = localColorUnionMask.some(
+      (value) => value,
+    )
+      ? localColorUnionMask
+      : cleanedCurveMask;
+    const boundaryHasHighCurve = (side) => {
+      const start =
+        side === "left"
+          ? 0
+          : Math.max(
+              0,
+              localWidth - 1 - physicalClipTolerance,
+            );
+      const end =
+        side === "left"
+          ? Math.min(
+              localWidth - 1,
+              physicalClipTolerance,
+            )
+          : localWidth - 1;
+      let highPixelCount = 0;
+      for (
+        let localY = 0;
+        localY <= Math.floor((localHeight - 1) * 0.45);
+        localY += 1
+      ) {
+        for (let localX = start; localX <= end; localX += 1) {
+          if (
+            boundaryCurveMask[
+              localY * localWidth + localX
+            ]
+          ) {
+            highPixelCount += 1;
+          }
+        }
+      }
+      return highPixelCount >= 2;
+    };
+    const unmodeledHighBoundaryContact =
+      (boundaryHasHighCurve("left") &&
+        peakLocations[0] > 0.2) ||
+      (boundaryHasHighCurve("right") &&
+        peakLocations.at(-1) < 0.8);
+    const leftPhysicalClip =
+      leftFloor > 0.66 &&
+      left <= physicalClipTolerance &&
+      peakLocations[0] <= 0.12;
+    const rightPhysicalClip =
+      rightFloor > 0.66 &&
+      localWidth - 1 - right <= physicalClipTolerance &&
+      peakLocations.at(-1) >= 0.88;
+    const oneSidedPhysicalClip =
+      (leftPhysicalClip && rightFloor <= 0.66) ||
+      (rightPhysicalClip && leftFloor <= 0.66);
+    const deepBothFloorsLow =
+      leftFloor <= 0.35 && rightFloor <= 0.35;
+    const deepOneSidedPhysicalClip =
+      (leftPhysicalClip && rightFloor <= 0.35) ||
+      (rightPhysicalClip && leftFloor <= 0.35);
+    const touchesDistributionFloor =
+      pixelCount >= 8 &&
+      bottomReach >= 0.72 &&
+      verticalSpan >= 0.48;
+    return {
+      accepted:
+        touchesDistributionFloor &&
+        topologyGate &&
+        (bothFloorsLow || oneSidedPhysicalClip) &&
+        !unmodeledHighBoundaryContact,
+      localizedAccepted:
+        touchesDistributionFloor &&
+        topologyGate &&
+        (deepBothFloorsLow || deepOneSidedPhysicalClip) &&
+        (!unmodeledHighBoundaryContact ||
+          (deepBothFloorsLow && bottomReach >= 0.82)),
+      // A smooth periodic KPI trace can satisfy the generic turn-count and
+      // colour gates. Unlike a log-scale VTH distribution, however, it
+      // floats into or out of the frame instead of terminating at both
+      // density floors. Keep this negative signature cohort-local so an
+      // isolated real chart is never invalidated by this proof.
+      floatingPeriodicTrace:
+        touchesDistributionFloor &&
+        topologyGate &&
+        (unmodeledHighBoundaryContact ||
+          (bottomReach < 0.82 &&
+            (leftFloor > 0.66 || rightFloor > 0.66) &&
+            !oneSidedPhysicalClip)),
+      waveform,
+      diagnostics: {
+        leftFloor,
+        rightFloor,
+        bottomReach,
+        verticalSpan,
+        topologyGate,
+        bothFloorsLow,
+        deepBothFloorsLow,
+        oneSidedPhysicalClip,
+        deepOneSidedPhysicalClip,
+        unmodeledHighBoundaryContact,
+      },
+    };
+}
+
+function measurePhysicalWaveformFrameCohortProof(
+  measuredCandidates,
+  curveEvidenceMask,
+  curveColorMasks,
+  width,
+  height,
+) {
+  const measureVthDistributionContract = (candidate) =>
+    measureCandidateVthDistributionContract(
+      candidate,
+      curveEvidenceMask,
+      curveColorMasks,
+      width,
+    );
+  const eligibleCandidates = measuredCandidates.filter(
+    (candidate) =>
+      candidate.axisMode === "rectangle" &&
+      candidate.detectionReason === "closed-plot-frame" &&
+      candidate.curveEvidence.valid === true &&
+      candidate.curveEvidence.tableGridArtifact !== true &&
+      candidate.curveEvidence.textGlyphArtifact !== true &&
+      candidate.curveEvidence.angularPolylineArtifact !== true &&
+      candidate.curveEvidence.closedLoopArtifact !== true &&
+      candidate.curveEvidence.closedTwoBranchArtifact !== true &&
+      candidate.curveEvidence.thinEnough !== false &&
+      candidate.curveEvidence.score >= 0.9 &&
+      candidate.curveEvidence.horizontalCoverage >= 0.88 &&
+      candidate.curveEvidence.continuousCoverage >= 0.4 &&
+      candidate.curveEvidence.verticalVariation >= 0.32 &&
+      candidate.curveEvidence.directionChangeCount >= 3,
+  );
+  const provenCandidates = eligibleCandidates.map(
+    (candidate) => {
+      const contract =
+        measureVthDistributionContract(candidate);
+      candidate.curveEvidence
+        .physicalWaveformFrameVthContract =
+        contract.accepted === true;
+      return { candidate, contract };
+    },
+  );
+  const candidates = provenCandidates.map(
+    ({ candidate }) => candidate,
+  );
+  if (
+    candidates.length < 6 ||
+    candidates.length > MAXIMUM_CHART_PANELS ||
+    candidates.filter(
+      (candidate) =>
+        (candidate.curveEvidence.colorSeriesCount ?? 0) >= 1,
+    ).length < Math.ceil(candidates.length * 0.75)
+  ) {
+    return null;
+  }
+
+  const widths = candidates.map(
+    (candidate) => candidate.right - candidate.left + 1,
+  );
+  const heights = candidates.map(
+    (candidate) => candidate.bottom - candidate.top + 1,
+  );
+  const typicalWidth = medianMeasurement(widths);
+  const typicalHeight = medianMeasurement(heights);
+  if (
+    Math.max(...widths) > Math.min(...widths) * 1.35 ||
+    Math.max(...heights) > Math.min(...heights) * 1.35
+  ) {
+    return null;
+  }
+
+  const clusterCenters = (axis, tolerance) => {
+    const values = candidates
+      .map((candidate) =>
+        axis === "horizontal"
+          ? (candidate.left + candidate.right) / 2
+          : (candidate.top + candidate.bottom) / 2,
+      )
+      .sort((left, right) => left - right);
+    const clusters = [];
+    for (const value of values) {
+      const current = clusters.at(-1);
+      if (
+        !current ||
+        Math.abs(value - current.center) > tolerance
+      ) {
+        clusters.push({
+          center: value,
+          values: [value],
+        });
+        continue;
+      }
+      current.values.push(value);
+      current.center =
+        current.values.reduce(
+          (sum, member) => sum + member,
+          0,
+        ) / current.values.length;
+    }
+    return clusters.map((cluster) => cluster.center);
+  };
+  const columnCenters = clusterCenters(
+    "horizontal",
+    Math.max(4, typicalWidth * 0.22),
+  );
+  const rowCenters = clusterCenters(
+    "vertical",
+    Math.max(4, typicalHeight * 0.22),
+  );
+  if (
+    rowCenters.length < 2 ||
+    columnCenters.length < 2 ||
+    rowCenters.length * columnCenters.length !==
+      candidates.length
+  ) {
+    return null;
+  }
+  const regularSpacing = (centers) => {
+    if (centers.length <= 2) return true;
+    const gaps = centers
+      .slice(1)
+      .map((center, index) => center - centers[index]);
+    return Math.max(...gaps) <= Math.min(...gaps) * 1.25;
+  };
+  if (
+    !regularSpacing(rowCenters) ||
+    !regularSpacing(columnCenters)
+  ) {
+    return null;
+  }
+
+  const occupiedCells = new Set();
+  for (const candidate of candidates) {
+    const centerX =
+      (candidate.left + candidate.right) / 2;
+    const centerY =
+      (candidate.top + candidate.bottom) / 2;
+    const column = columnCenters
+      .map((center, index) => ({
+        index,
+        distance: Math.abs(centerX - center),
+      }))
+      .sort(
+        (left, right) => left.distance - right.distance,
+      )[0];
+    const row = rowCenters
+      .map((center, index) => ({
+        index,
+        distance: Math.abs(centerY - center),
+      }))
+      .sort(
+        (left, right) => left.distance - right.distance,
+      )[0];
+    if (
+      column.distance > typicalWidth * 0.22 ||
+      row.distance > typicalHeight * 0.22
+    ) {
+      return null;
+    }
+    const key = `${row.index}:${column.index}`;
+    if (occupiedCells.has(key)) return null;
+    occupiedCells.add(key);
+  }
+
+  const bounds = {
+    left: Math.min(
+      ...candidates.map((candidate) => candidate.left),
+    ),
+    top: Math.min(
+      ...candidates.map((candidate) => candidate.top),
+    ),
+    right: Math.max(
+      ...candidates.map((candidate) => candidate.right),
+    ),
+    bottom: Math.max(
+      ...candidates.map((candidate) => candidate.bottom),
+    ),
+  };
+  if (area(bounds) < width * height * 0.15) return null;
+  if (
+    provenCandidates.some(
+      ({ contract }) => contract.accepted !== true,
+    )
+  ) {
+    if (
+      provenCandidates.every(
+        ({ contract }) =>
+          contract.floatingPeriodicTrace === true,
+      )
+    ) {
+      for (const { candidate } of provenCandidates) {
+        candidate.curveEvidence
+          .physicalWaveformFrameCohortRejected = true;
+      }
+    }
+    return null;
+  }
+  for (const { candidate, contract } of provenCandidates) {
+    candidate.verifiedWaveform = contract.waveform;
+  }
+  return {
+    candidates: new Set(candidates),
+    rows: rowCenters.length,
+    columns: columnCenters.length,
+  };
+}
+
+function extractCandidateUpperArcWaveformEvidence(
+  candidate,
+  curveEvidenceMask,
+  curveColorMasks,
+  width,
+) {
+  const localWidth = candidate.right - candidate.left + 1;
+  const localHeight = candidate.bottom - candidate.top + 1;
+  if (localWidth < 8 || localHeight < 8) return null;
+  const cropMask = (sourceMask) => {
+    const cropped = new Uint8Array(
+      localWidth * localHeight,
+    );
+    for (
+      let localY = 0;
+      localY < localHeight;
+      localY += 1
+    ) {
+      const sourceStart =
+        (candidate.top + localY) * width + candidate.left;
+      cropped.set(
+        sourceMask.subarray(
+          sourceStart,
+          sourceStart + localWidth,
+        ),
+        localY * localWidth,
+      );
+    }
+    return removeGridLinesPreservingCurves(
+      cropped,
+      localWidth,
+      localHeight,
+    ).mask;
+  };
+  const localCurveMask = cropMask(curveEvidenceMask);
+  const croppedColorMasks =
+    Array.isArray(curveColorMasks) && curveColorMasks.length
+      ? curveColorMasks.map(cropMask)
+      : [];
+  // A document may contain chromatic decoration outside an achromatic plot.
+  // In that case the global colour-mask array is non-empty, but every local
+  // colour crop is blank. Feeding those empty masks to the topology extractor
+  // hides a perfectly valid neutral Curve, so fall back to the local salience
+  // mask only when no colour actually survives inside this candidate.
+  const localColorMasks = croppedColorMasks.some((mask) =>
+    mask.some((value) => value),
+  )
+    ? croppedColorMasks
+    : [localCurveMask];
+  const topology = extractUpperArcPeakEvidence(
+    localCurveMask,
+    localCurveMask,
+    localColorMasks,
+    localWidth,
+    localHeight,
+    { minimumPeakCount: 1 },
+  );
+  const peakCount = topology.peakCount ?? 0;
+  if (
+    topology.accepted !== true ||
+    peakCount < 1 ||
+    topology.descriptor?.valleyLocations?.length !==
+      peakCount - 1 ||
+    topology.descriptor.regularized === true ||
+    topology.descriptor.observedStateCount !==
+      topology.descriptor.stateCount
+  ) {
+    return null;
+  }
+  return {
+    profile: [...topology.profile],
+    descriptor: {
+      ...topology.descriptor,
+      peakLocations: [
+        ...topology.descriptor.peakLocations,
+      ],
+      peakWidths: [...topology.descriptor.peakWidths],
+      valleyHeights: [
+        ...topology.descriptor.valleyHeights,
+      ],
+      valleyLocations: [
+        ...topology.descriptor.valleyLocations,
+      ],
+      valleyDepths: [
+        ...topology.descriptor.valleyDepths,
+      ],
+      valleyPositionRatios: [
+        ...topology.descriptor.valleyPositionRatios,
+      ],
+      peakValleyDistances: [
+        ...topology.descriptor.peakValleyDistances,
+      ],
+      tailSlopes: [...topology.descriptor.tailSlopes],
+    },
+    source: "mixed-table-physical-frame-topology",
+  };
+}
+
+/**
+ * Re-measure the final physical bounds of a repeated-grid panel before its
+ * crop is enlarged independently by the API. Projected cell bands are useful
+ * for discovering a board, but the final native panel can expose a shallow
+ * peak that those bands clip (or vice versa). Only an already-applied strict
+ * repeated-arch/upper-arc result is authoritative here.
+ */
+function extractCandidateNativeWaveformEvidence(
+  candidate,
+  broadMask,
+  salientMask,
+  curveEvidenceMask,
+  curveColorMasks,
+  width,
+  sourceScale = 1,
+) {
+  const localWidth = candidate.right - candidate.left + 1;
+  const localHeight = candidate.bottom - candidate.top + 1;
+  if (localWidth < 8 || localHeight < 8) return null;
+  const cropMask = (sourceMask) => {
+    const cropped = new Uint8Array(
+      localWidth * localHeight,
+    );
+    for (
+      let localY = 0;
+      localY < localHeight;
+      localY += 1
+    ) {
+      const sourceStart =
+        (candidate.top + localY) * width + candidate.left;
+      cropped.set(
+        sourceMask.subarray(
+          sourceStart,
+          sourceStart + localWidth,
+        ),
+        localY * localWidth,
+      );
+    }
+    return cropped;
+  };
+  const localBroadMask = cropMask(broadMask);
+  const localSalientMask = cropMask(salientMask);
+  const localCurveMask = cropMask(curveEvidenceMask);
+  const localColorMasks =
+    Array.isArray(curveColorMasks) && curveColorMasks.length
+      ? curveColorMasks.map(cropMask)
+      : [];
+  const analysis = analyzeForegroundMasks(
+    localBroadMask,
+    localSalientMask,
+    localWidth,
+    localHeight,
+    localCurveMask,
+    localColorMasks,
+    { sourceScale },
+  );
+  const strictPhysicalEvidenceApplied =
+    analysis.preprocessing?.repeatedArchEvidence?.applied ===
+      true ||
+    analysis.preprocessing?.upperArcEvidence?.applied === true;
+  const descriptor = analysis.descriptor;
+  const peakCount = descriptor?.peakLocations?.length ?? 0;
+  const valleyCount = descriptor?.valleyLocations?.length ?? 0;
+  const exactTopology =
+    strictPhysicalEvidenceApplied &&
+    peakCount >= 1 &&
+    descriptor.stateCount === peakCount &&
+    descriptor.observedStateCount === peakCount &&
+    descriptor.regularized !== true &&
+    descriptor.peakWidths?.length === peakCount &&
+    valleyCount === peakCount - 1 &&
+    descriptor.valleyHeights?.length === valleyCount &&
+    descriptor.valleyDepths?.length === valleyCount &&
+    descriptor.valleyPositionRatios?.length === valleyCount &&
+    descriptor.peakValleyDistances?.length ===
+      valleyCount * 2 &&
+    descriptor.tailSlopes?.length === 2;
+  if (!exactTopology) return null;
+  return {
+    profile: [...analysis.profile],
+    descriptor: {
+      ...descriptor,
+      peakLocations: [...descriptor.peakLocations],
+      peakWidths: [...descriptor.peakWidths],
+      valleyHeights: [...descriptor.valleyHeights],
+      valleyLocations: [...descriptor.valleyLocations],
+      valleyDepths: [...descriptor.valleyDepths],
+      valleyPositionRatios: [
+        ...descriptor.valleyPositionRatios,
+      ],
+      peakValleyDistances: [
+        ...descriptor.peakValleyDistances,
+      ],
+      tailSlopes: [...descriptor.tailSlopes],
+    },
+    source: "repeated-grid-native-physical-topology",
+  };
+}
+
+/**
+ * A mixed office table can legitimately contain only a sparse subset of
+ * waveform charts, so the complete-grid rescue must stay disabled. Deep-floor
+ * cells are retained independently. Moderate-floor cells join them only when
+ * at least three distributed deep anchors and six exact, physically framed
+ * VTH contracts prove a chart cohort. Every retained cell already has exact
+ * pixel-derived topology, so text, numeric cells and shape boxes cannot
+ * satisfy the proof.
+ */
+function measureMixedTableWaveformCohortProof(
+  measuredCandidates,
+  spatialCandidates,
+  curveEvidenceMask,
+  curveColorMasks,
+  width,
+  documentLattice,
+) {
+  if (!documentLattice?.tableGridArtifact) return null;
+  const latticeBounds = documentLattice.bounds;
+  if (!latticeBounds) return null;
+  const latticeWidth =
+    latticeBounds.right - latticeBounds.left + 1;
+  const latticeHeight =
+    latticeBounds.bottom - latticeBounds.top + 1;
+  // Apply the same pixel contract regardless of how much white slide margin
+  // surrounds the table. A percentage threshold made byte-identical VTH/KPI
+  // cells change classification when only the canvas width changed.
+  const physicallyMeasured = [
+    ...new Set([...measuredCandidates, ...spatialCandidates]),
+  ]
+    .filter((candidate) => {
+      const centerX =
+        (candidate.left + candidate.right) / 2;
+      const centerY =
+        (candidate.top + candidate.bottom) / 2;
+      const physicalFrame =
+        candidate.axisMode === "rectangle" &&
+        (candidate.detectionReason ===
+          "closed-plot-frame" ||
+          (candidate.detectionReason ===
+            "arbitrary-waveform-region" &&
+            candidate.spatialFrameRecovered === true &&
+            candidate.spatialFrameSupport >= 0.9));
+      return (
+        physicalFrame &&
+        centerX >= latticeBounds.left &&
+        centerX <= latticeBounds.right &&
+        centerY >= latticeBounds.top &&
+        centerY <= latticeBounds.bottom &&
+        candidate.curveEvidence.tableGridArtifact !== true &&
+        candidate.curveEvidence.textGlyphArtifact !== true &&
+        candidate.curveEvidence.angularPolylineArtifact !==
+          true &&
+        candidate.curveEvidence.closedLoopArtifact !== true &&
+        candidate.curveEvidence.closedTwoBranchArtifact !==
+          true &&
+        candidate.curveEvidence.thinEnough !== false &&
+        candidate.curveEvidence.score >= 0.55 &&
+        candidate.curveEvidence.horizontalCoverage >= 0.4 &&
+        candidate.curveEvidence.continuousCoverage >= 0.08 &&
+        candidate.curveEvidence.verticalVariation >= 0.25
+      );
+    })
+    .map((candidate) => {
+      const contract =
+        measureCandidateVthDistributionContract(
+          candidate,
+          curveEvidenceMask,
+          curveColorMasks,
+          width,
+        );
+      candidate.curveEvidence.localizedVthContract = {
+        accepted: contract.localizedAccepted === true,
+        diagnostics: contract.diagnostics,
+        peakCount:
+          contract.waveform?.descriptor.peakLocations.length ??
+          0,
+      };
+      return { candidate, contract };
+    })
+    .sort(
+      (left, right) =>
+        Number(
+          right.candidate.detectionReason ===
+            "closed-plot-frame",
+        ) -
+          Number(
+            left.candidate.detectionReason ===
+              "closed-plot-frame",
+          ) ||
+        area(right.candidate) - area(left.candidate),
+    );
+  const independentProofs = (proofs) => {
+    const independent = [];
+    for (const proof of proofs) {
+      if (
+        independent.some(
+          ({ candidate }) =>
+            intersectionArea(candidate, proof.candidate) /
+              Math.max(
+                1,
+                Math.min(
+                  area(candidate),
+                  area(proof.candidate),
+                ),
+              ) >=
+            0.8,
+        )
+      ) {
+        continue;
+      }
+      independent.push(proof);
+    }
+    return independent;
+  };
+  let independentPhysicalPlots = independentProofs(
+    physicallyMeasured.filter(
+      ({ contract }) =>
+        contract.localizedAccepted === true &&
+        contract.waveform != null,
+    ),
+  );
+  let independentAcceptedPhysicalPlots =
+    independentProofs(
+      physicallyMeasured.filter(
+        ({ contract }) =>
+          (contract.accepted === true ||
+            contract.localizedAccepted === true) &&
+        contract.waveform != null,
+      ),
+    );
+  // A compressed sparkline table can make an entire row look like one framed
+  // multi-peak distribution after JPEG repair removes the internal cell
+  // borders. Two or more such near-full-width rows are a repeated table
+  // pattern, not independent plots, when each only satisfies the one-sided
+  // clipping fallback. Keep true row-wide plots whose two tails reach the
+  // floor, and keep an isolated row-wide chart for the single-chart proof.
+  const oneSidedRowArtifacts = independentPhysicalPlots.filter(
+    ({ candidate, contract }) =>
+      candidate.detectionReason ===
+        "arbitrary-waveform-region" &&
+      candidate.spatialFrameRecovered === true &&
+      candidate.right - candidate.left + 1 >=
+        latticeWidth * 0.72 &&
+      candidate.bottom - candidate.top + 1 <=
+        latticeHeight * 0.32 &&
+      contract.diagnostics?.bothFloorsLow !== true &&
+      contract.diagnostics?.oneSidedPhysicalClip === true,
+  );
+  if (oneSidedRowArtifacts.length >= 2) {
+    const artifacts = new Set(
+      oneSidedRowArtifacts.map(({ candidate }) => candidate),
+    );
+    independentPhysicalPlots =
+      independentPhysicalPlots.filter(
+        ({ candidate }) => !artifacts.has(candidate),
+      );
+    independentAcceptedPhysicalPlots =
+      independentAcceptedPhysicalPlots.filter(
+        ({ candidate }) => !artifacts.has(candidate),
+      );
+  }
+  const localizedAnchorBounds =
+    independentPhysicalPlots.length
+      ? {
+          left: Math.min(
+            ...independentPhysicalPlots.map(
+              ({ candidate }) => candidate.left,
+            ),
+          ),
+          top: Math.min(
+            ...independentPhysicalPlots.map(
+              ({ candidate }) => candidate.top,
+            ),
+          ),
+          right: Math.max(
+            ...independentPhysicalPlots.map(
+              ({ candidate }) => candidate.right,
+            ),
+          ),
+          bottom: Math.max(
+            ...independentPhysicalPlots.map(
+              ({ candidate }) => candidate.bottom,
+            ),
+          ),
+        }
+      : null;
+  const acceptedPhysicalCohortProved =
+    independentPhysicalPlots.length >= 3 &&
+    independentAcceptedPhysicalPlots.length >= 6 &&
+    independentAcceptedPhysicalPlots.length <=
+      MAXIMUM_CHART_PANELS &&
+    localizedAnchorBounds.right -
+      localizedAnchorBounds.left +
+      1 >=
+      latticeWidth * 0.55 &&
+    localizedAnchorBounds.bottom -
+      localizedAnchorBounds.top +
+      1 >=
+      latticeHeight * 0.35;
+  const retainedIndependentPhysicalPlots =
+    acceptedPhysicalCohortProved
+      ? independentAcceptedPhysicalPlots
+      : independentPhysicalPlots;
+  const localizedPhysicalProof =
+    independentPhysicalPlots.length
+      ? {
+          candidates: new Set(
+            retainedIndependentPhysicalPlots.map(
+              ({ candidate }) => candidate,
+            ),
+          ),
+          anchorCount: independentPhysicalPlots.length,
+          recoveredCount:
+            retainedIndependentPhysicalPlots.length -
+            independentPhysicalPlots.length,
+          acceptedPhysicalCohortProved,
+        }
+      : null;
+  for (const {
+    candidate,
+    contract,
+  } of retainedIndependentPhysicalPlots) {
+    candidate.verifiedWaveform = contract.waveform;
+  }
+  const anchors = measuredCandidates
+    .filter(
+      (candidate) => {
+        return (
+          candidate.axisMode === "rectangle" &&
+          candidate.detectionReason ===
+            "closed-plot-frame" &&
+          candidate.curveEvidence.valid === true &&
+          candidate.curveEvidence.guideGridWaveformRescue ===
+            true &&
+          candidate.curveEvidence.tableGridArtifact !== true &&
+          candidate.curveEvidence.textGlyphArtifact !== true &&
+          candidate.curveEvidence.angularPolylineArtifact !==
+            true &&
+          candidate.curveEvidence.closedLoopArtifact !== true &&
+          candidate.curveEvidence.closedTwoBranchArtifact !==
+            true &&
+          candidate.curveEvidence.thinEnough !== false &&
+          candidate.curveEvidence.score >= 0.95 &&
+          candidate.curveEvidence.horizontalCoverage >= 0.9 &&
+          candidate.curveEvidence.continuousCoverage >= 0.8 &&
+          candidate.curveEvidence.verticalVariation >= 0.3
+        );
+      },
+    )
+    .map((candidate) => {
+      const contract =
+        measureCandidateVthDistributionContract(
+          candidate,
+          curveEvidenceMask,
+          curveColorMasks,
+          width,
+        );
+      return {
+        candidate,
+        waveform: contract.waveform,
+        contract,
+      };
+    })
+    .filter(
+      ({ waveform, contract }) =>
+        waveform && contract.accepted === true,
+    );
+  if (anchors.length < 3) {
+    return localizedPhysicalProof;
+  }
+
+  const anchorBounds = {
+    left: Math.min(
+      ...anchors.map(({ candidate }) => candidate.left),
+    ),
+    top: Math.min(
+      ...anchors.map(({ candidate }) => candidate.top),
+    ),
+    right: Math.max(
+      ...anchors.map(({ candidate }) => candidate.right),
+    ),
+    bottom: Math.max(
+      ...anchors.map(({ candidate }) => candidate.bottom),
+    ),
+  };
+  if (
+    anchorBounds.right - anchorBounds.left + 1 <
+      latticeWidth * 0.55 ||
+    anchorBounds.bottom - anchorBounds.top + 1 <
+      latticeHeight * 0.35
+  ) {
+    return localizedPhysicalProof;
+  }
+
+  const targets = spatialCandidates
+    .filter((candidate) => {
+      const separatedPhysicalArches =
+        candidate.curveEvidence
+          .rawRepeatedGlyphSimpleArchComponentCount >= 2 &&
+        candidate.curveEvidence
+          .rawRepeatedGlyphSimpleArchComponentFraction >=
+          0.8 &&
+        candidate.curveEvidence
+          .rawRepeatedGlyphSimpleArchInkFraction >= 0.75 &&
+        candidate.curveEvidence
+          .rawRepeatedGlyphSimpleArchHorizontalCoverage >=
+          0.35;
+      return (
+        candidate.axisMode === "rectangle" &&
+        candidate.spatialFrameRecovered === true &&
+          candidate.spatialFrameSupport >= 0.95 &&
+          candidate.curveEvidence.valid === true &&
+          (candidate.curveEvidence.localizedSinglePeak ===
+            true ||
+            separatedPhysicalArches) &&
+        candidate.curveEvidence.tableGridArtifact !== true &&
+        candidate.curveEvidence.textGlyphArtifact !== true &&
+        candidate.curveEvidence.angularPolylineArtifact !==
+          true &&
+        candidate.curveEvidence.closedLoopArtifact !== true &&
+        candidate.curveEvidence.closedTwoBranchArtifact !==
+          true &&
+        candidate.curveEvidence.thinEnough !== false &&
+        candidate.curveEvidence.score >=
+          (separatedPhysicalArches ? 0.72 : 0.9) &&
+        candidate.curveEvidence.horizontalCoverage >=
+          (separatedPhysicalArches ? 0.44 : 0.5) &&
+        candidate.curveEvidence.continuousCoverage >=
+          (separatedPhysicalArches ? 0.2 : 0.5) &&
+        candidate.curveEvidence.verticalVariation >= 0.4 &&
+        !anchors.some(
+          ({ candidate: anchor }) =>
+            intersectionArea(anchor, candidate) >=
+            Math.min(area(anchor), area(candidate)) * 0.5,
+        )
+      );
+    })
+    .map((candidate) => {
+      const contract =
+        measureCandidateVthDistributionContract(
+          candidate,
+          curveEvidenceMask,
+          curveColorMasks,
+          width,
+        );
+      return {
+        candidate,
+        waveform: contract.waveform,
+        contract,
+      };
+    })
+    .filter(
+      ({ waveform, contract }) =>
+        contract.accepted === true &&
+        waveform?.descriptor.peakLocations.length >= 1,
+    );
+  if (
+    targets.length < 1 ||
+    anchors.length + targets.length < 6 ||
+    anchors.length + targets.length >
+      MAXIMUM_CHART_PANELS
+  ) {
+    return localizedPhysicalProof;
+  }
+
+  for (const { candidate, waveform } of [
+    ...anchors,
+    ...targets,
+  ]) {
+    if (waveform) candidate.verifiedWaveform = waveform;
+  }
+  const candidates = new Set(
+    localizedPhysicalProof?.candidates ?? [],
+  );
+  for (const { candidate } of [...anchors, ...targets]) {
+    if (
+      [...candidates].some(
+        (existing) =>
+          intersectionArea(existing, candidate) /
+            Math.max(
+              1,
+              Math.min(area(existing), area(candidate)),
+            ) >=
+          0.8,
+      )
+    ) {
+      continue;
+    }
+    candidates.add(candidate);
+  }
+  return {
+    candidates,
+    anchorCount:
+      localizedPhysicalProof?.anchorCount ??
+      anchors.length,
+    recoveredCount:
+      candidates.size -
+      (localizedPhysicalProof?.anchorCount ?? anchors.length),
+  };
+}
+
+/**
+ * Preserve one independently framed distribution inside an otherwise
+ * ordinary office table. A document lattice on its own is not evidence that
+ * every nested rectangle is tabular content: the chart can be the sole
+ * waveform in the document. Keep this exception deliberately narrower than
+ * the mixed-table cohort rescue. It requires a complete physical plot frame,
+ * either one coherent arch or multiple independently measured physical
+ * arches, exact upper-arc topology, and exactly one such target in the table.
+ * Unframed bell icons and table sparklines therefore remain excluded.
+ */
+function measureIsolatedNestedTableSinglePeakProof(
+  measuredCandidates,
+  spatialCandidates,
+  frameSupportMask,
+  frameSearchMask,
+  curveEvidenceMask,
+  curveColorMasks,
+  width,
+  height,
+  documentLattice,
+) {
+  if (!documentLattice?.tableGridArtifact) return null;
+  const latticeBounds = documentLattice.bounds;
+  if (!latticeBounds) return null;
+
+  const directFrameSupport = (candidate) => {
+    const supportedEdge = (
+      orientation,
+      coordinate,
+      start,
+      end,
+    ) =>
+      Math.max(
+        edgeSupport(
+          frameSupportMask,
+          width,
+          height,
+          orientation,
+          coordinate,
+          start,
+          end,
+        ),
+        frameSearchMask === frameSupportMask
+          ? 0
+          : edgeSupport(
+              frameSearchMask,
+              width,
+              height,
+              orientation,
+              coordinate,
+              start,
+              end,
+            ),
+      );
+    const supports = [
+      supportedEdge(
+        "horizontal",
+        candidate.top,
+        candidate.left,
+        candidate.right,
+      ),
+      supportedEdge(
+        "horizontal",
+        candidate.bottom,
+        candidate.left,
+        candidate.right,
+      ),
+      supportedEdge(
+        "vertical",
+        candidate.left,
+        candidate.top,
+        candidate.bottom,
+      ),
+      supportedEdge(
+        "vertical",
+        candidate.right,
+        candidate.top,
+        candidate.bottom,
+      ),
+    ];
+    return {
+      minimum: Math.min(...supports),
+      mean:
+        supports.reduce((sum, value) => sum + value, 0) /
+        supports.length,
+    };
+  };
+
+  const targets = [...measuredCandidates, ...spatialCandidates]
+    .filter((candidate) => {
+      const centerX =
+        (candidate.left + candidate.right) / 2;
+      const centerY =
+        (candidate.top + candidate.bottom) / 2;
+      const insideDocumentLattice =
+        centerX >= latticeBounds.left &&
+        centerX <= latticeBounds.right &&
+        centerY >= latticeBounds.top &&
+        centerY <= latticeBounds.bottom;
+      const recoveredSpatialFrame =
+        candidate.axisMode === "rectangle" &&
+        candidate.detectionReason ===
+          "arbitrary-waveform-region" &&
+        candidate.spatialFrameRecovered === true &&
+        candidate.spatialFrameSupport >= 0.95;
+      const measuredFramelessBounds =
+        candidate.axisMode === "content" &&
+        candidate.detectionReason ===
+          "frameless-curve-region";
+      if (
+        !insideDocumentLattice ||
+        (!recoveredSpatialFrame && !measuredFramelessBounds)
+      ) {
+        return false;
+      }
+      const frameSupport = directFrameSupport(candidate);
+      candidate.isolatedNestedFrameSupport = frameSupport;
+      const separatedPhysicalArches =
+        candidate.curveEvidence
+          .rawRepeatedGlyphSimpleArchComponentCount >= 2 &&
+        candidate.curveEvidence
+          .rawRepeatedGlyphSimpleArchComponentFraction >=
+          0.8 &&
+        candidate.curveEvidence
+          .rawRepeatedGlyphSimpleArchInkFraction >= 0.75 &&
+        candidate.curveEvidence
+          .rawRepeatedGlyphSimpleArchHorizontalCoverage >=
+          0.35;
+      return (
+        frameSupport.minimum >= 0.95 &&
+        frameSupport.mean >= 0.98 &&
+        candidate.curveEvidence.valid === true &&
+        (candidate.curveEvidence.localizedSinglePeak === true ||
+          separatedPhysicalArches) &&
+        candidate.curveEvidence.tableGridArtifact !== true &&
+        candidate.curveEvidence.textGlyphArtifact !== true &&
+        candidate.curveEvidence.angularPolylineArtifact !==
+          true &&
+        candidate.curveEvidence.closedLoopArtifact !== true &&
+        candidate.curveEvidence.closedTwoBranchArtifact !==
+          true &&
+        candidate.curveEvidence.thinEnough !== false &&
+        candidate.curveEvidence.score >=
+          (separatedPhysicalArches ? 0.72 : 0.9) &&
+        candidate.curveEvidence.horizontalCoverage >=
+          (separatedPhysicalArches ? 0.44 : 0.5) &&
+        candidate.curveEvidence.continuousCoverage >=
+          (separatedPhysicalArches ? 0.2 : 0.5) &&
+        candidate.curveEvidence.verticalVariation >= 0.4
+      );
+    })
+    .map((candidate) => ({
+      candidate,
+      waveform: extractCandidateUpperArcWaveformEvidence(
+        candidate,
+        curveEvidenceMask,
+        curveColorMasks,
+        width,
+      ),
+    }))
+    .filter(
+      ({ waveform }) =>
+        waveform?.descriptor.peakLocations.length >= 1 &&
+        waveform.descriptor.valleyLocations.length ===
+          waveform.descriptor.peakLocations.length - 1,
+    );
+  if (!targets.length) return null;
+  const targetGroups = [];
+  for (const target of targets) {
+    const group = targetGroups.find(({ bounds }) => {
+      const overlap = intersectionArea(
+        bounds,
+        target.candidate,
+      );
+      return (
+        overlap /
+          Math.max(
+            1,
+            Math.min(area(bounds), area(target.candidate)),
+          ) >=
+        0.9
+      );
+    });
+    if (group) {
+      group.targets.push(target);
+      if (area(target.candidate) > area(group.bounds)) {
+        group.bounds = target.candidate;
+      }
+    } else {
+      targetGroups.push({
+        bounds: target.candidate,
+        targets: [target],
+      });
+    }
+  }
+  // One isolated exception must represent one physical plot. Multiple
+  // unrelated framed bells inside a table need the stricter cohort path.
+  if (targetGroups.length !== 1) return null;
+  const recoveredTargets = targetGroups[0].targets;
+  for (const { candidate, waveform } of recoveredTargets) {
+    candidate.verifiedWaveform = waveform;
+  }
+  return {
+    candidates: new Set(
+      recoveredTargets.map(({ candidate }) => candidate),
+    ),
+    recoveredCount: 1,
+  };
+}
+
+function mapRotatedPanelToSource(
+  panel,
+  correctionAngle,
+  width,
+  height,
+) {
+  const radians = (-correctionAngle * Math.PI) / 180;
+  const cosine = Math.cos(radians);
+  const sine = Math.sin(radians);
+  const centerX = (width - 1) / 2;
+  const centerY = (height - 1) / 2;
+  const inverseRotate = (x, y) => {
+    const localX = x - centerX;
+    const localY = y - centerY;
+    return {
+      x: cosine * localX - sine * localY + centerX,
+      y: sine * localX + cosine * localY + centerY,
+    };
+  };
+  const sourceCorners = [
+    [panel.left, panel.top],
+    [panel.right, panel.top],
+    [panel.left, panel.bottom],
+    [panel.right, panel.bottom],
+  ].map(([x, y]) => inverseRotate(x, y));
+  const left = clamp(
+    Math.floor(Math.min(...sourceCorners.map(({ x }) => x))),
+    0,
+    width - 1,
+  );
+  const top = clamp(
+    Math.floor(Math.min(...sourceCorners.map(({ y }) => y))),
+    0,
+    height - 1,
+  );
+  const right = clamp(
+    Math.ceil(Math.max(...sourceCorners.map(({ x }) => x))),
+    left,
+    width - 1,
+  );
+  const bottom = clamp(
+    Math.ceil(Math.max(...sourceCorners.map(({ y }) => y))),
+    top,
+    height - 1,
+  );
+  return {
+    ...panel,
+    left,
+    top,
+    right,
+    bottom,
+    x: left,
+    y: top,
+    width: right - left + 1,
+    height: bottom - top + 1,
+    confidence: clamp((panel.confidence ?? 0.7) * 0.98, 0, 0.98),
+    detectionReason: "small-angle-repeated-waveform-grid",
+  };
+}
+
+/**
+ * PPT rasterisation commonly rotates each mini-chart by roughly three
+ * degrees.  A document-wide deskew estimate is unreliable when neighbouring
+ * panels use opposite signs, but two bounded orientation hypotheses let the
+ * existing strict repeated-grid proof vote on the document.  No generic
+ * candidate is accepted here: the corrected pass must recover at least six
+ * repeated waveform cells and independently prove that the document is not a
+ * table.
+ */
+function recoverSmallAngleRepeatedGridPanels(
+  broadMask,
+  edgeEvidenceMask,
+  curveEvidenceMask,
+  curveColorMasks,
+  width,
+  height,
+  options,
+) {
+  if (
+    !Array.isArray(curveColorMasks) ||
+    !curveColorMasks.length
+  ) {
+    return null;
+  }
+  const strictRecoveries = [];
+  const supplementalRecoveries = [];
+  for (const correctionAngle of [-3, 3]) {
+    const rotatedColorMasks = curveColorMasks.map((colorMask) =>
+      rotateBinaryMask(
+        colorMask,
+        width,
+        height,
+        correctionAngle,
+      ),
+    );
+    const detected = detectChartPanelsFromMask(
+      rotateBinaryMask(
+        broadMask,
+        width,
+        height,
+        correctionAngle,
+      ),
+      width,
+      height,
+      {
+        ...options,
+        edgeEvidenceMask: rotateBinaryMask(
+          edgeEvidenceMask ?? broadMask,
+          width,
+          height,
+          correctionAngle,
+        ),
+        curveEvidenceMask: rotateBinaryMask(
+          curveEvidenceMask,
+          width,
+          height,
+          correctionAngle,
+        ),
+        curveColorMasks: rotatedColorMasks,
+        fallbackToWholeImage: false,
+        smallAngleRecovery: false,
+      },
+    );
+    const repeatedGrid =
+      detected.diagnostics?.repeatedGridRecovery;
+    const tableEvidence =
+      detected.diagnostics?.tableLatticeDominant;
+    const safeRepeatedGrid =
+      detected.panels.length >=
+        MINIMUM_DENSE_SEPARATION_CANDIDATES &&
+      repeatedGrid?.applied === true &&
+      detected.panels.every(
+        (panel) =>
+          panel.detectionReason ===
+          "repeated-waveform-grid",
+      ) &&
+      tableEvidence?.axisAligned !== true &&
+      tableEvidence?.sharedFrame !== true &&
+      tableEvidence?.rotated !== true &&
+      detected.fallbackUsed !== true;
+    const safeSupplementalPanels =
+      detected.panels.length >=
+        MINIMUM_DENSE_SEPARATION_CANDIDATES &&
+      tableEvidence?.axisAligned !== true &&
+      tableEvidence?.sharedFrame !== true &&
+      tableEvidence?.rotated !== true &&
+      detected.fallbackUsed !== true &&
+      detected.panels.every(
+        (panel) =>
+          panel.detectionReason !==
+          "whole-image-fallback",
+      );
+    if (!safeRepeatedGrid && !safeSupplementalPanels) {
+      continue;
+    }
+    const panels = detected.panels.map((panel) =>
+      mapRotatedPanelToSource(
+        panel,
+        correctionAngle,
+        width,
+        height,
+      ),
+    );
+    const recovery = {
+      correctionAngle,
+      panels,
+      recoveryMode:
+        repeatedGrid?.recoveryMode ?? "supplemental",
+      frameWidth: repeatedGrid?.frameWidth ?? null,
+      frameHeight: repeatedGrid?.frameHeight ?? null,
+    };
+    if (safeSupplementalPanels) {
+      supplementalRecoveries.push(recovery);
+    }
+    if (safeRepeatedGrid) {
+      strictRecoveries.push(recovery);
+    }
+  }
+  if (!strictRecoveries.length) return null;
+  strictRecoveries.sort(
+    (left, right) =>
+      right.panels.length - left.panels.length ||
+      right.panels.reduce(
+        (sum, panel) => sum + panel.confidence,
+        0,
+      ) -
+        left.panels.reduce(
+          (sum, panel) => sum + panel.confidence,
+          0,
+        ),
+  );
+  const best = strictRecoveries[0];
+  const supplementalPanels = supplementalRecoveries
+    .filter(
+      (recovery) =>
+        recovery.correctionAngle !== best.correctionAngle,
+    )
+    .flatMap((recovery) => recovery.panels)
+    .filter(
+      (panel) =>
+        panel.width >=
+          Math.max(1, (best.frameWidth ?? panel.width) * 0.45) &&
+        panel.height >=
+          Math.max(1, (best.frameHeight ?? panel.height) * 0.5),
+    );
+  if (!supplementalPanels.length) return best;
+
+  // A board may contain neighbouring charts rotated in opposite directions.
+  // Either global correction can recover the right number of grid cells while
+  // substituting a cell-shaped placeholder for several physical frames. Keep
+  // the tighter crop from both independently safe hypotheses, but only when
+  // deduplication preserves the already proven best candidate count. This
+  // cannot expand the recovery or weaken its repeated-grid/table gates.
+  const mergedPanels = [
+    ...best.panels,
+    ...supplementalPanels,
+  ]
+    .sort(
+      (left, right) =>
+        area(left) - area(right) ||
+        right.confidence - left.confidence,
+    )
+    .reduce((selected, candidate) => {
+      const duplicatesExisting = selected.some(
+        (existing) =>
+          intersectionArea(existing, candidate) >=
+          Math.min(area(existing), area(candidate)) * 0.4,
+      );
+      if (!duplicatesExisting) selected.push(candidate);
+      return selected;
+    }, []);
+  if (mergedPanels.length !== best.panels.length) {
+    return best;
+  }
+  const occupiesExactlyOnePrimarySlot = (candidate) =>
+    best.panels.filter(
+      (primary) =>
+        intersectionArea(primary, candidate) >=
+        Math.min(area(primary), area(candidate)) * 0.4,
+    ).length === 1;
+  const everyPrimarySlotOccupiedOnce = best.panels.every(
+    (primary) =>
+      mergedPanels.filter(
+        (candidate) =>
+          intersectionArea(primary, candidate) >=
+          Math.min(area(primary), area(candidate)) * 0.4,
+      ).length === 1,
+  );
+  if (
+    !mergedPanels.every(occupiesExactlyOnePrimarySlot) ||
+    !everyPrimarySlotOccupiedOnce
+  ) {
+    return best;
+  }
+  return {
+    ...best,
+    correctionAngles: supplementalRecoveries.map(
+      ({ correctionAngle }) => correctionAngle,
+    ),
+    multiHypothesis: true,
+    panels: mergedPanels,
+  };
+}
+
+/**
  * Detect independent chart panels from a precomputed foreground mask.
  *
  * The mask-level API is useful when the caller already shares preprocessing
@@ -11395,6 +13777,7 @@ function candidateCoveredByRotatedLattice(
  *   recoverLowResolution?: boolean;
  *   maximumLineGap?: number;
  *   sourceScale?: number;
+ *   smallAngleRecovery?: boolean;
  * }} [options]
  */
 export function detectChartPanelsFromMask(
@@ -11467,6 +13850,10 @@ export function detectChartPanelsFromMask(
       width,
       height,
     );
+  const sourceScale = Math.max(
+    1,
+    Number(options.sourceScale) || 1,
+  );
   const excessiveDenseDocumentGrid =
     axisAlignedDocumentLattice.tableGridArtifact &&
     (axisAlignedDocumentLattice.horizontalBandCount ?? 0) >=
@@ -11910,6 +14297,64 @@ export function detectChartPanelsFromMask(
       curveEvidence,
     };
   });
+  const smallPhysicalWaveformGridProof =
+    measureSmallPhysicalWaveformGridProof(
+      measuredCandidates,
+      axisAlignedDocumentLattice,
+      width,
+      height,
+    );
+  const physicalWaveformFrameCohortProof =
+    measurePhysicalWaveformFrameCohortProof(
+      measuredCandidates,
+      curveEvidenceMask,
+      options.curveColorMasks,
+      width,
+      height,
+    );
+  const proposedLocalEnclosingPhysicalLattice =
+    !axisAlignedDocumentLattice.tableGridArtifact
+      ? measureLocalEnclosingPhysicalLattice(
+          measuredCandidates,
+          mask,
+          width,
+          height,
+        )
+      : null;
+  const localLatticeBounds =
+    proposedLocalEnclosingPhysicalLattice?.bounds;
+  const independentWaveformsOutsideLocalLattice =
+    localLatticeBounds
+      ? measuredCandidates.filter((candidate) => {
+          if (
+            candidate.curveEvidence.valid !== true ||
+            candidate.curveEvidence.tableGridArtifact === true ||
+            candidate.curveEvidence.textGlyphArtifact === true
+          ) {
+            return false;
+          }
+          const centerX =
+            (candidate.left + candidate.right) / 2;
+          const centerY =
+            (candidate.top + candidate.bottom) / 2;
+          return (
+            centerX < localLatticeBounds.left ||
+            centerX > localLatticeBounds.right ||
+            centerY < localLatticeBounds.top ||
+            centerY > localLatticeBounds.bottom
+          );
+        })
+      : [];
+  // A report can place one ordinary numeric table beside a much larger chart
+  // cohort. Its local lattice must not globally switch the unrelated charts
+  // into the stricter table-cell recovery path. A genuine compact chart board
+  // has its waveform evidence inside the enclosing lattice; six independently
+  // valid outside waveforms prove that the local rectangle is a distractor.
+  const localEnclosingPhysicalLattice =
+    independentWaveformsOutsideLocalLattice.length >=
+    MINIMUM_DENSE_SEPARATION_CANDIDATES
+      ? null
+      : proposedLocalEnclosingPhysicalLattice;
   const dominantMultiSeriesWaveform =
     measuredCandidates.find(
       (candidate) =>
@@ -11920,6 +14365,15 @@ export function detectChartPanelsFromMask(
         area(candidate) / Math.max(1, width * height) >=
           0.3,
     ) ?? null;
+  const dominantMultiSeriesWaveformContract =
+    dominantMultiSeriesWaveform
+      ? measureCandidateVthDistributionContract(
+          dominantMultiSeriesWaveform,
+          curveEvidenceMask,
+          options.curveColorMasks,
+          width,
+        )
+      : null;
   // Run the bounded spatial pass independently of an expected chart count.
   // Its own topology/frame guards reject isolated State arcs, so one, three or
   // eleven arbitrarily placed plots receive the same recovery opportunity as
@@ -11933,6 +14387,48 @@ export function detectChartPanelsFromMask(
       width,
       height,
     );
+  const mixedTableWaveformCohortProof =
+    measureMixedTableWaveformCohortProof(
+      measuredCandidates,
+      rawArbitraryWaveformRecovery.candidates,
+      curveEvidenceMask,
+      options.curveColorMasks,
+      width,
+      axisAlignedDocumentLattice,
+    );
+  const isolatedNestedTableSinglePeakProof =
+    measureIsolatedNestedTableSinglePeakProof(
+      measuredCandidates,
+      rawArbitraryWaveformRecovery.candidates,
+      edgeEvidenceMask ?? workingMask,
+      workingMask,
+      curveEvidenceMask,
+      options.curveColorMasks,
+      width,
+      height,
+      axisAlignedDocumentLattice,
+    );
+  const enclosingGridWaveformRescue =
+    measureEnclosingGridWaveformRescue(
+      [
+        ...measuredCandidates,
+        ...rawArbitraryWaveformRecovery.candidates,
+      ],
+      curveEvidenceMask,
+      options.curveColorMasks,
+      width,
+      height,
+      axisAlignedDocumentLattice,
+    );
+  const enclosingGridWaveformContract =
+    enclosingGridWaveformRescue
+      ? measureCandidateVthDistributionContract(
+          enclosingGridWaveformRescue,
+          curveEvidenceMask,
+          options.curveColorMasks,
+          width,
+        )
+      : null;
   const largestMeasuredCandidateAreaRatio =
     measuredCandidates.reduce(
       (maximum, candidate) =>
@@ -12024,6 +14520,8 @@ export function detectChartPanelsFromMask(
       ? axisAlignedDocumentLattice
       : localOneDimensionalSharedLattice
         ? localOneDimensionalSharedLattice
+      : localEnclosingPhysicalLattice
+        ? localEnclosingPhysicalLattice
       : rotatedDocumentTableGridArtifact
         ? getExtendedDeskewedDocument().lattice
         : null;
@@ -12038,12 +14536,14 @@ export function detectChartPanelsFromMask(
           columns: proofLattice.verticalBandCount - 1,
           horizontalBands:
             proofLattice === axisAlignedDocumentLattice ||
+            proofLattice.localPhysicalLattice === true ||
             proofLattice.localOneDimensionalSharedLattice ===
               true
               ? proofLattice.horizontalBands
               : null,
           verticalBands:
             proofLattice === axisAlignedDocumentLattice ||
+            proofLattice.localPhysicalLattice === true ||
             proofLattice.localOneDimensionalSharedLattice ===
               true
               ? proofLattice.verticalBands
@@ -12061,6 +14561,7 @@ export function detectChartPanelsFromMask(
       true,
       axisAlignedDocumentLattice.tableGridArtifact ||
         Boolean(localOneDimensionalSharedLattice) ||
+        Boolean(localEnclosingPhysicalLattice) ||
         rotatedDocumentTableGridArtifact,
       tableLatticeShape,
     );
@@ -12071,6 +14572,9 @@ export function detectChartPanelsFromMask(
         ...(deskewedPhysicalFrameRecovery
           ? [deskewedPhysicalFrameRecovery.candidate]
           : []),
+        ...(enclosingGridWaveformRescue
+          ? [enclosingGridWaveformRescue]
+          : []),
         ...repeatedGridRecovery.candidates,
       ]
     : [
@@ -12078,6 +14582,9 @@ export function detectChartPanelsFromMask(
         ...arbitraryWaveformRecovery.candidates,
         ...(deskewedPhysicalFrameRecovery
           ? [deskewedPhysicalFrameRecovery.candidate]
+          : []),
+        ...(enclosingGridWaveformRescue
+          ? [enclosingGridWaveformRescue]
           : []),
       ];
   const geometricRejectedNonChartCount = measuredCandidates.reduce(
@@ -12171,17 +14678,56 @@ export function detectChartPanelsFromMask(
         locallyVerifiedTinyWaveform
           ? 0
           : minimumCandidateAreaRatio;
+      // A near-document-scale plot with a dense internal guide grid makes the
+      // global lattice detector see a spreadsheet even though the
+      // straight-line-suppressed residual proves one continuous, multi-turn
+      // Curve through every guide cell. This proof is intentionally limited
+      // to one large closed frame with complete guide crossings; repeated
+      // cell sparklines and ordinary text tables do not form that residual.
+      const guideGridDocumentScaleStructuralRescue =
+        candidateAreaRatio >= 0.65 &&
+        candidate.axisMode === "rectangle" &&
+        candidate.detectionReason ===
+          "closed-plot-frame" &&
+        candidate.curveEvidence.valid === true &&
+        candidate.curveEvidence.guideGridWaveformRescue ===
+          true &&
+        candidate.curveEvidence.guideGridStructuralProof ===
+          true &&
+        candidate.curveEvidence
+          .guideGridResidualTextGlyphArtifact !== true &&
+        candidate.curveEvidence.horizontalCoverage >= 0.85 &&
+        candidate.curveEvidence.continuousCoverage >= 0.8 &&
+        candidate.curveEvidence.directionChangeCount >= 3 &&
+        candidate.curveEvidence.guideGridCrossingCount >= 4 &&
+        candidate.curveEvidence.guideGridCrossingCount ===
+          candidate.curveEvidence.guideGridInternalBandCount;
       const latticeBounds =
         axisAlignedDocumentLattice.bounds;
       const centerX =
         (candidate.left + candidate.right) / 2;
       const centerY =
         (candidate.top + candidate.bottom) / 2;
+      // A table-enclosing upper contour may accidentally expose several
+      // smooth turns. Only the exact rescue candidate may bypass a table
+      // lattice, and only after its physical Curve reaches the log-density
+      // floor with matching measured peaks and valleys.
+      const enclosingGridStructuralRescue =
+        candidate === enclosingGridWaveformRescue &&
+        enclosingGridWaveformContract?.accepted === true;
       const coveredByAxisAlignedTable =
         axisAlignedDocumentLattice.tableGridArtifact &&
-        candidate.curveEvidence.guideGridWaveformRescue !==
-          true &&
-        (candidate.curveEvidence.colorSeriesCount ?? 0) < 2 &&
+        !guideGridDocumentScaleStructuralRescue &&
+        !enclosingGridStructuralRescue &&
+        !smallPhysicalWaveformGridProof?.candidates.has(
+          candidate,
+        ) &&
+        !mixedTableWaveformCohortProof?.candidates.has(
+          candidate,
+        ) &&
+        !isolatedNestedTableSinglePeakProof?.candidates.has(
+          candidate,
+        ) &&
         latticeBounds &&
         ((centerX >= latticeBounds.left &&
           centerX <= latticeBounds.right &&
@@ -12190,11 +14736,67 @@ export function detectChartPanelsFromMask(
           intersectionArea(candidate, latticeBounds) /
             Math.max(1, area(candidate)) >=
             0.35);
+      // Bilinear re-expansion can soften a compact 2 × 2 office table until
+      // its four independent sparklines look like one shallow, document-wide
+      // arch. Keep the dominant 3/4-line lattice as structural evidence in
+      // this narrowly scoped low-resolution case. A genuine one-State VTH
+      // plot is preserved by its independently measured floor-reaching
+      // distribution contract.
+      const sparseLowResolutionLattice =
+        sourceScale >= 2 &&
+        axisAlignedDocumentLattice.dominant === true &&
+        axisAlignedDocumentLattice.tableGridArtifact !== true &&
+        (axisAlignedDocumentLattice.horizontalBandCount ?? 0) >=
+          3 &&
+        (axisAlignedDocumentLattice.horizontalBandCount ?? 0) <=
+          4 &&
+        (axisAlignedDocumentLattice.verticalBandCount ?? 0) >=
+          3 &&
+        (axisAlignedDocumentLattice.verticalBandCount ?? 0) <=
+          4 &&
+        (axisAlignedDocumentLattice.intersectionCount ?? 0) >=
+          Math.ceil(
+            (axisAlignedDocumentLattice.horizontalBandCount ??
+              0) *
+              (axisAlignedDocumentLattice.verticalBandCount ??
+                0) *
+              0.6,
+          );
+      const shallowEnclosingLatticeTrace =
+        sparseLowResolutionLattice &&
+        candidate.axisMode === "rectangle" &&
+        candidate.detectionReason ===
+          "closed-plot-frame" &&
+        candidateAreaRatio >= 0.35 &&
+        candidate.curveEvidence.valid === true &&
+        candidate.curveEvidence.verticalVariation <= 0.18 &&
+        candidate.curveEvidence.directionChangeCount <= 2 &&
+        candidate.curveEvidence.horizontalCoverage >= 0.85 &&
+        candidate.curveEvidence.continuousCoverage >= 0.6 &&
+        latticeBounds &&
+        intersectionArea(candidate, latticeBounds) /
+          Math.max(1, area(candidate)) >=
+          0.75;
+      const shallowEnclosingLatticeContract =
+        shallowEnclosingLatticeTrace
+          ? measureCandidateVthDistributionContract(
+              candidate,
+              curveEvidenceMask,
+              options.curveColorMasks,
+              width,
+            )
+          : null;
+      const coveredBySparseLowResolutionTable =
+        shallowEnclosingLatticeTrace &&
+        shallowEnclosingLatticeContract?.accepted !== true;
       const coveredByRotatedTable =
         rotatedDocumentTableGridArtifact &&
-        candidate.curveEvidence.guideGridWaveformRescue !==
-          true &&
-        (candidate.curveEvidence.colorSeriesCount ?? 0) < 2 &&
+        !mixedTableWaveformCohortProof?.candidates.has(
+          candidate,
+        ) &&
+        !isolatedNestedTableSinglePeakProof?.candidates.has(
+          candidate,
+        ) &&
         (candidateCoveredByRotatedLattice(
           candidate,
           getExtendedDeskewedDocument(),
@@ -12207,6 +14809,13 @@ export function detectChartPanelsFromMask(
             candidate.spatialFrameRecovered !== true));
       const coveredByLocalTable =
         candidate.axisMode !== "content" &&
+        !enclosingGridStructuralRescue &&
+        !physicalWaveformFrameCohortProof?.candidates.has(
+          candidate,
+        ) &&
+        !mixedTableWaveformCohortProof?.candidates.has(
+          candidate,
+        ) &&
         candidate.curveEvidence.guideGridWaveformRescue !==
           true &&
         candidate.curveEvidence
@@ -12229,10 +14838,22 @@ export function detectChartPanelsFromMask(
           height,
         );
       const localOneDimensionalBounds =
-        localOneDimensionalSharedLattice?.bounds;
+        (
+          localOneDimensionalSharedLattice ??
+          localEnclosingPhysicalLattice
+        )?.bounds;
       const coveredByLocalOneDimensionalLattice =
         Boolean(localOneDimensionalBounds) &&
         !repeatedGridRecovery &&
+        !physicalWaveformFrameCohortProof?.candidates.has(
+          candidate,
+        ) &&
+        !mixedTableWaveformCohortProof?.candidates.has(
+          candidate,
+        ) &&
+        !isolatedNestedTableSinglePeakProof?.candidates.has(
+          candidate,
+        ) &&
         candidate.curveEvidence.guideGridWaveformRescue !==
           true &&
         ((centerX >= localOneDimensionalBounds.left &&
@@ -12350,19 +14971,63 @@ export function detectChartPanelsFromMask(
         candidate.repeatedGridStructuralRescue === true &&
         candidate.curveEvidence
           .repeatedGridStructuralRescue === true;
+      const mixedTableStructuralRescue =
+        mixedTableWaveformCohortProof?.candidates.has(
+          candidate,
+        ) &&
+        candidate.verifiedWaveform?.descriptor
+          ?.regularized !== true &&
+        candidate.verifiedWaveform.descriptor
+          .observedStateCount ===
+          candidate.verifiedWaveform.descriptor.stateCount &&
+        candidate.verifiedWaveform.descriptor.peakLocations
+          .length ===
+          candidate.verifiedWaveform.descriptor.stateCount &&
+        candidate.verifiedWaveform.descriptor.valleyLocations
+          .length ===
+          candidate.verifiedWaveform.descriptor.stateCount - 1;
+      // A dominant multi-series plot can make its own guide grid look like a
+      // document table. The candidate was selected above only after passing
+      // the independent curve contract, rejecting table-grid curve evidence,
+      // exposing at least two coherent colour series, and covering 30% of the
+      // document. Rescue that exact candidate identity only; a generic colour
+      // or size exemption would also admit coloured office tables.
+      const dominantMultiSeriesStructuralRescue =
+        candidate === dominantMultiSeriesWaveform &&
+        dominantMultiSeriesWaveformContract?.accepted === true;
+      const rejectedByPhysicalWaveformFrameCohort =
+        measuredCandidates.some(
+          (frame) =>
+            frame.curveEvidence
+              .physicalWaveformFrameCohortRejected === true &&
+            intersectionArea(frame, candidate) /
+              Math.max(
+                1,
+                Math.min(area(frame), area(candidate)),
+              ) >=
+              0.65,
+        );
       const acceptedByFinalFilter =
         (candidate.curveEvidence.valid ||
-          repeatedGridStructuralRescue) &&
+          repeatedGridStructuralRescue ||
+          mixedTableStructuralRescue ||
+          dominantMultiSeriesStructuralRescue) &&
         (!candidate.curveEvidence.textGlyphArtifact ||
-          repeatedGridStructuralRescue) &&
+          repeatedGridStructuralRescue ||
+          mixedTableStructuralRescue ||
+          dominantMultiSeriesStructuralRescue) &&
         !weakFramelessArtifact &&
         !weakUnframedSpatialOutline &&
         !boxedProcessWaveIcon &&
         !weakMonotoneMicroArtifact &&
         !weakMicroNearDominant &&
         !weakMicroInsideDeskewedFrame &&
+        !rejectedByPhysicalWaveformFrameCohort &&
         (repeatedGridStructuralRescue ||
+          mixedTableStructuralRescue ||
+          dominantMultiSeriesStructuralRescue ||
           (!coveredByAxisAlignedTable &&
+            !coveredBySparseLowResolutionTable &&
             !coveredByRotatedTable &&
             !coveredByLocalTable &&
             !coveredByLocalOneDimensionalLattice)) &&
@@ -12372,7 +15037,11 @@ export function detectChartPanelsFromMask(
       candidate.finalFilterDiagnostics = {
         accepted: acceptedByFinalFilter,
         locallyVerifiedTinyWaveform,
+        guideGridDocumentScaleStructuralRescue,
+        dominantMultiSeriesStructuralRescue,
+        enclosingGridStructuralRescue,
         coveredByAxisAlignedTable,
+        coveredBySparseLowResolutionTable,
         coveredByRotatedTable,
         coveredByLocalTable,
         coveredByLocalOneDimensionalLattice,
@@ -12383,11 +15052,33 @@ export function detectChartPanelsFromMask(
         weakMonotoneMicroArtifact,
         weakMicroNearDominant,
         weakMicroInsideDeskewedFrame,
+        rejectedByPhysicalWaveformFrameCohort,
         effectiveMinimumCandidateAreaRatio,
       };
       return acceptedByFinalFilter;
     },
   );
+  const sparseLowResolutionTableArtifact =
+    candidatePool.some(
+      (candidate) =>
+        candidate.finalFilterDiagnostics
+          ?.coveredBySparseLowResolutionTable === true,
+    );
+  if (
+    enclosingGridWaveformRescue &&
+    candidates.includes(enclosingGridWaveformRescue)
+  ) {
+    candidates = candidates.filter(
+      (candidate) =>
+        candidate === enclosingGridWaveformRescue ||
+        intersectionArea(
+          enclosingGridWaveformRescue,
+          candidate,
+        ) /
+          Math.max(1, area(candidate)) <
+          0.5,
+    );
+  }
   if (repeatedGridRecovery) {
     const recoveredCandidates = candidates.filter(
       (candidate) =>
@@ -12516,6 +15207,40 @@ export function detectChartPanelsFromMask(
     // chart pasted onto an office slide.
     candidates = [];
   }
+  let smallAngleRepeatedGridRecovery = null;
+  const acceptedSpatialCandidateCount = candidates.length;
+  const arbitraryEvidenceAcceptedCount =
+    rawArbitraryWaveformRecovery.evidenceAcceptedCount ?? 0;
+  const shouldAttemptSmallAngleRecovery =
+    options.smallAngleRecovery !== false &&
+    Boolean(curveColorUnionMask) &&
+    acceptedSpatialCandidateCount < 12 &&
+    (acceptedSpatialCandidateCount === 0 ||
+      (acceptedSpatialCandidateCount >=
+        MINIMUM_DENSE_SEPARATION_CANDIDATES &&
+        arbitraryEvidenceAcceptedCount >=
+          acceptedSpatialCandidateCount * 3));
+  if (shouldAttemptSmallAngleRecovery) {
+    const recoveredSmallAngleGrid =
+      recoverSmallAngleRepeatedGridPanels(
+        mask,
+        edgeEvidenceMask ?? mask,
+        curveEvidenceMask,
+        options.curveColorMasks,
+        width,
+        height,
+        options,
+      );
+    if (
+      recoveredSmallAngleGrid &&
+      recoveredSmallAngleGrid.panels.length >
+        acceptedSpatialCandidateCount
+    ) {
+      smallAngleRepeatedGridRecovery =
+        recoveredSmallAngleGrid;
+      candidates = recoveredSmallAngleGrid.panels;
+    }
+  }
   const framelessUsed = candidates.some(
     (candidate) =>
       candidate.detectionReason === "frameless-curve-region",
@@ -12599,6 +15324,26 @@ export function detectChartPanelsFromMask(
             candidate.curveEvidence.tableGridArtifact === true,
           textGlyphArtifact:
             candidate.curveEvidence.textGlyphArtifact === true,
+          localizedVthContract:
+            candidate.curveEvidence.localizedVthContract ??
+            null,
+          closedLoopArtifact:
+            candidate.curveEvidence.closedLoopArtifact === true,
+          closedTwoBranchArtifact:
+            candidate.curveEvidence
+              .closedTwoBranchArtifact === true,
+          enclosingGridWaveformRescue:
+            candidate.enclosingGridWaveformRescue === true,
+          enclosingGridWaveformPeakCount:
+            candidate.enclosingGridWaveformPeakCount ?? 0,
+          enclosingGridWaveformValleyCount:
+            candidate.enclosingGridWaveformValleyCount ?? 0,
+          enclosingGridWaveformSuppressedOpenLAxisCount:
+            candidate
+              .enclosingGridWaveformSuppressedOpenLAxisCount ??
+            0,
+          enclosingGridWaveformDiagnostics:
+            candidate.enclosingGridWaveformDiagnostics ?? null,
           repeatedIndependentStateArray:
             candidate.curveEvidence
               .repeatedIndependentStateArray === true,
@@ -12806,6 +15551,51 @@ export function detectChartPanelsFromMask(
                 .requireTurningTopologyOutsideGrid === true,
           }
         : { applied: false },
+      smallPhysicalWaveformGridProof: {
+        applied: Boolean(smallPhysicalWaveformGridProof),
+        rows: smallPhysicalWaveformGridProof?.rows ?? 0,
+        columns:
+          smallPhysicalWaveformGridProof?.columns ?? 0,
+      },
+      physicalWaveformFrameCohortProof: {
+        applied: Boolean(
+          physicalWaveformFrameCohortProof,
+        ),
+        rows:
+          physicalWaveformFrameCohortProof?.rows ?? 0,
+        columns:
+          physicalWaveformFrameCohortProof?.columns ?? 0,
+        candidateCount:
+          physicalWaveformFrameCohortProof?.candidates
+            .size ?? 0,
+      },
+      mixedTableWaveformCohortProof: {
+        applied: Boolean(mixedTableWaveformCohortProof),
+        anchorCount:
+          mixedTableWaveformCohortProof?.anchorCount ?? 0,
+        recoveredCount:
+          mixedTableWaveformCohortProof?.recoveredCount ?? 0,
+      },
+      smallAngleRepeatedGridRecovery:
+        smallAngleRepeatedGridRecovery
+          ? {
+              applied: true,
+              correctionAngle:
+                smallAngleRepeatedGridRecovery.correctionAngle,
+              correctionAngles:
+                smallAngleRepeatedGridRecovery
+                  .correctionAngles ?? [
+                  smallAngleRepeatedGridRecovery.correctionAngle,
+                ],
+              multiHypothesis:
+                smallAngleRepeatedGridRecovery
+                  .multiHypothesis === true,
+              recoveredCandidateCount:
+                smallAngleRepeatedGridRecovery.panels.length,
+              recoveryMode:
+                smallAngleRepeatedGridRecovery.recoveryMode,
+            }
+          : { applied: false },
       arbitraryWaveformRecovery: {
         attempted:
           arbitraryWaveformRecovery.attempted === true,
@@ -13030,6 +15820,7 @@ export function detectChartPanelsFromMask(
           0.5,
     );
   const wholeImageSeriesEvidence =
+    !smallAngleRepeatedGridRecovery &&
     (maximumCandidateAreaRatio < 0.22 ||
       dominantMultiSeriesWaveform) &&
     !independentCandidateOutsideDominant
@@ -13064,7 +15855,9 @@ export function detectChartPanelsFromMask(
   const dominantDocumentTableArtifact =
     axisAlignedDocumentLattice.tableGridArtifact ||
     sharedFrameGridArtifact ||
+    sparseLowResolutionTableArtifact ||
     Boolean(localOneDimensionalSharedLattice) ||
+    Boolean(localEnclosingPhysicalLattice) ||
     rotatedDocumentTableGridArtifact;
   // Whole-image color-series recovery is intentionally tolerant of broken
   // plot frames. A colored spreadsheet can satisfy the same per-hue path
@@ -13173,7 +15966,9 @@ export function detectChartPanelsFromMask(
     const fallbackTableGridArtifact =
       axisAlignedDocumentLattice.tableGridArtifact ||
       sharedFrameGridArtifact ||
+      sparseLowResolutionTableArtifact ||
       Boolean(localOneDimensionalSharedLattice) ||
+      Boolean(localEnclosingPhysicalLattice) ||
       getExtendedDeskewedDocument().tableGridArtifact;
     if (
       wholeImageCurveEvidence.valid &&
@@ -13217,6 +16012,34 @@ export function detectChartPanelsFromMask(
     // diagrams must not silently become a synthetic Curve and enter training
     // or retrieval.
     rejectedNonChartCount += 1;
+  }
+  if (repeatedGridRecovery?.measuredWaveformGridProof) {
+    for (const candidate of candidates) {
+      if (
+        candidate.detectionReason !==
+        "repeated-waveform-grid"
+      ) {
+        continue;
+      }
+      const nativeWaveformEvidence =
+        extractCandidateNativeWaveformEvidence(
+          candidate,
+          mask,
+          edgeEvidenceMask ?? mask,
+          curveEvidenceMask,
+          options.curveColorMasks,
+          width,
+          options.sourceScale,
+        );
+      if (nativeWaveformEvidence) {
+        // Final physical bounds outrank the projected cell measurement. This
+        // resolves shallow edge peaks without trusting labels or a 1/2/4/8/16
+        // product prior, and the API preserves the same measured topology
+        // after its independent high-ratio crop upscale.
+        candidate.verifiedWaveform =
+          nativeWaveformEvidence;
+      }
+    }
   }
   const selected = selectHighestQualityPanels(
     candidates,

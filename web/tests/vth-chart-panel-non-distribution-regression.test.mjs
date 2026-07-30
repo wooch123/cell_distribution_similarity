@@ -20,7 +20,11 @@ import {
   searchSimilarityImage,
   validateTrainingWaveformImage,
 } from "../lib/vth-similarity-api-core.mjs";
-import { shadedNumericTablePng } from "./helpers/table-fixtures.mjs";
+import { coloredFloatingSineTableFixture } from "./helpers/color-series-fixtures.mjs";
+import {
+  shadedNumericTablePng,
+  sparklineTablePng,
+} from "./helpers/table-fixtures.mjs";
 
 const publicCorpus = JSON.parse(
   await readFile(
@@ -867,6 +871,43 @@ function downsampleRgbNearest(source, width, height) {
   return { rgb, width, height };
 }
 
+function resizeRgbBilinear(source, width, height) {
+  const rgb = new Uint8Array(width * height * 3);
+  const xRatio = source.width / width;
+  const yRatio = source.height / height;
+  for (let y = 0; y < height; y += 1) {
+    const sourceY = (y + 0.5) * yRatio - 0.5;
+    const top = Math.max(0, Math.floor(sourceY));
+    const bottom = Math.min(source.height - 1, top + 1);
+    const yWeight = Math.max(0, sourceY - top);
+    for (let x = 0; x < width; x += 1) {
+      const sourceX = (x + 0.5) * xRatio - 0.5;
+      const left = Math.max(0, Math.floor(sourceX));
+      const right = Math.min(source.width - 1, left + 1);
+      const xWeight = Math.max(0, sourceX - left);
+      const targetOffset = (y * width + x) * 3;
+      const topLeftOffset = (top * source.width + left) * 3;
+      const topRightOffset = (top * source.width + right) * 3;
+      const bottomLeftOffset =
+        (bottom * source.width + left) * 3;
+      const bottomRightOffset =
+        (bottom * source.width + right) * 3;
+      for (let channel = 0; channel < 3; channel += 1) {
+        const topValue =
+          source.rgb[topLeftOffset + channel] * (1 - xWeight) +
+          source.rgb[topRightOffset + channel] * xWeight;
+        const bottomValue =
+          source.rgb[bottomLeftOffset + channel] * (1 - xWeight) +
+          source.rgb[bottomRightOffset + channel] * xWeight;
+        rgb[targetOffset + channel] = Math.round(
+          topValue * (1 - yWeight) + bottomValue * yWeight,
+        );
+      }
+    }
+  }
+  return { rgb, width, height };
+}
+
 function encodeTableFixture(source, jpegQuality) {
   if (jpegQuality === undefined) {
     return {
@@ -1452,6 +1493,64 @@ test("rejects colored sparkline tables across grid sizes, broken borders, JPEG, 
         },
       );
     });
+  }
+});
+
+test("rejects bilinear low-resolution sparkline and floating KPI tables", async (context) => {
+  const decodedSparkline = decodePng(sparklineTablePng());
+  const floatingKpi = coloredFloatingSineTableFixture();
+  const sources = [
+    {
+      name: "sparkline-table",
+      width: decodedSparkline.width,
+      height: decodedSparkline.height,
+      rgb: decodedSparkline.data,
+    },
+    {
+      name: "colored-floating-sine-table",
+      width: floatingKpi.width,
+      height: floatingKpi.height,
+      rgb: floatingKpi.pixels,
+    },
+  ];
+
+  for (const source of sources) {
+    for (const [width, height] of [
+      [480, 270],
+      [240, 135],
+    ]) {
+      await context.test(
+        `${source.name}-${width}x${height}-bilinear`,
+        async () => {
+          const input = encodeTableFixture(
+            resizeRgbBilinear(source, width, height),
+          );
+          assert.equal(input.width, width);
+          assert.equal(input.height, height);
+          assert.equal(input.mimeType, "image/png");
+
+          await assert.rejects(
+            () =>
+              searchSimilarityImage({
+                bytes: input.bytes,
+                mimeType: input.mimeType,
+                topK: 1,
+                corpus: publicCorpus,
+                origin: "https://dove9999.com",
+              }),
+            (error) => {
+              assert.ok(error instanceof SimilarityApiError);
+              assert.equal(error.status, 422);
+              assert.equal(
+                error.code,
+                "distribution_waveform_not_found",
+              );
+              return true;
+            },
+          );
+        },
+      );
+    }
   }
 });
 

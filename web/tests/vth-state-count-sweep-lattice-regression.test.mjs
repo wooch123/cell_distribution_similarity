@@ -15,6 +15,10 @@ const publicCorpus = JSON.parse(
   ),
 );
 
+// Ground truth is the number of physically rendered lobes, counted from the
+// source pixels—not the title text. Several synthetic slides deliberately
+// contain a mismatch (for example, "State Count 09" can show ten lobes), so
+// using panel order or OCR here would violate shape-only retrieval.
 const FIXTURES = [
   {
     name: "scatter-outliers-1672.png",
@@ -23,6 +27,12 @@ const FIXTURES = [
     width: 1672,
     height: 941,
     maximumGridRight: 1150,
+    visiblePeakCounts: [
+      1, 2, 3, 4,
+      5, 6, 7, 8,
+      10, 10, 11, 12,
+      14, 15, 16, 17,
+    ],
   },
   {
     name: "clean-open-axes-1672.png",
@@ -31,6 +41,12 @@ const FIXTURES = [
     width: 1672,
     height: 941,
     maximumGridRight: 1150,
+    visiblePeakCounts: [
+      1, 2, 3, 4,
+      5, 5, 7, 8,
+      8, 8, 10, 12,
+      13, 14, 15, 16,
+    ],
   },
   {
     name: "annotated-framed-1672.png",
@@ -39,6 +55,12 @@ const FIXTURES = [
     width: 1672,
     height: 941,
     maximumGridRight: 1280,
+    visiblePeakCounts: [
+      1, 2, 3, 4,
+      5, 6, 7, 8,
+      9, 10, 10, 12,
+      13, 15, 17, 18,
+    ],
   },
   {
     name: "annotated-open-1280.png",
@@ -47,6 +69,12 @@ const FIXTURES = [
     width: 1280,
     height: 720,
     maximumGridRight: 1000,
+    visiblePeakCounts: [
+      1, 2, 3, 4,
+      5, 6, 7, 8,
+      9, 10, 10, 12,
+      13, 15, 17, 18,
+    ],
   },
 ];
 
@@ -128,6 +156,19 @@ test("recovers every 1-to-16 State sweep panel from all four supplied office-sli
 });
 
 test("similarity API preserves all sixteen sweep panels and excludes document distractors", async () => {
+  const titleCounts = Array.from(
+    { length: 16 },
+    (_unused, index) => index + 1,
+  );
+  assert.ok(
+    loadedFixtures.some(
+      ({ visiblePeakCounts }) =>
+        !visiblePeakCounts.every(
+          (count, index) => count === titleCounts[index],
+        ),
+    ),
+    "the regression must remain independent of State-count labels",
+  );
   for (const fixture of loadedFixtures) {
     const response = await searchSimilarityImage({
       bytes: fixture.bytes,
@@ -141,6 +182,22 @@ test("similarity API preserves all sixteen sweep panels and excludes document di
     assert.equal(response.panelDetection.analyzedPanelCount, 16);
     assert.equal(response.panelDetection.truncated, false);
     for (const [panelIndex, panel] of response.panels.entries()) {
+      const visiblePeakCount =
+        fixture.visiblePeakCounts[panelIndex];
+      assert.equal(
+        panel.query.peakCount,
+        visiblePeakCount,
+        `${fixture.name}/panel-${panelIndex + 1}: API must preserve the native physical peak count`,
+      );
+      assert.equal(
+        panel.query.observedStateCount,
+        visiblePeakCount,
+      );
+      assert.equal(panel.query.regularized, false);
+      assert.equal(
+        panel.query.valleyCount,
+        visiblePeakCount - 1,
+      );
       for (const series of panel.series) {
         assert.equal(
           series.query.topologyConsistent,

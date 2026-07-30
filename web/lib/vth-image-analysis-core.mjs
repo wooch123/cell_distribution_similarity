@@ -11,6 +11,7 @@ import {
   canonicalProfileFromCurveMask,
   clamp,
   descriptorFromProfile,
+  detectPeaks,
   isValidStateCount,
   movingAverage,
   resample,
@@ -1868,13 +1869,14 @@ function predictiveTrackY(track, x) {
   return track.lastY + slope * Math.min(4, x - track.lastX);
 }
 
-function observeTrack(track, x, y) {
+function observeTrack(track, x, y, independent = false) {
   track.values[x] = y;
   track.previousX = track.lastX;
   track.previousY = track.lastY;
   track.lastX = x;
   track.lastY = y;
   track.observedColumns += 1;
+  if (independent) track.independentColumns += 1;
 }
 
 function trackColumnCenters(centersByColumn, width, height, trackCount) {
@@ -1885,6 +1887,7 @@ function trackColumnCenters(centersByColumn, width, height, trackCount) {
     lastX: Number.NaN,
     lastY: Number.NaN,
     observedColumns: 0,
+    independentColumns: 0,
   }));
   const firstMultiColumn = centersByColumn.findIndex(
     (centers) => centers.length >= trackCount,
@@ -1901,6 +1904,7 @@ function trackColumnCenters(centersByColumn, width, height, trackCount) {
       firstCenters[
         Math.round(fraction * (firstCenters.length - 1))
       ],
+      true,
     );
   }
 
@@ -1956,6 +1960,7 @@ function trackColumnCenters(centersByColumn, width, height, trackCount) {
         tracks[proposal.trackIndex],
         x,
         centers[proposal.centerIndex],
+        true,
       );
       assignedTracks.add(proposal.trackIndex);
       assignedCenters.add(proposal.centerIndex);
@@ -2010,11 +2015,25 @@ export function extractCurveDistributionCandidates(mask, width, height) {
     height,
     trackCount,
   );
+  const minimumIndependentColumns = Math.max(
+    minimumMultiColumns,
+    Math.floor(width * 0.3),
+  );
+  // A glyph, arrow or callout can branch from one real Curve for a short
+  // horizontal interval. Track interpolation then lets both branches share
+  // the same single-run Curve after they rejoin, inflating observedColumns.
+  // Count only columns that physically contain separate ink runs so a partial
+  // annotation cannot materialize as a full distribution series.
   const candidates = [];
   for (let trackIndex = 0; trackIndex < tracks.length; trackIndex += 1) {
     const track = tracks[trackIndex];
     const observedColumns = track.observedColumns;
-    if (observedColumns < minimumMultiColumns) continue;
+    if (
+      observedColumns < minimumMultiColumns ||
+      track.independentColumns < minimumIndependentColumns
+    ) {
+      continue;
+    }
     const profile = canonicalTrackProfile(track.values, height);
     if (!profile) continue;
     const descriptor = descriptorFromProfile(profile);
@@ -2035,6 +2054,7 @@ export function extractCurveDistributionCandidates(mask, width, height) {
         descriptor,
       ),
       observedColumnRatio: observedColumns / width,
+      independentColumnRatio: track.independentColumns / width,
       sourceIndex: trackIndex,
       separationMode: "geometry",
     });
@@ -2392,14 +2412,16 @@ export function shouldPreferSalientDescriptor(
   artifactLineCount = 0,
   profileSimilarity = 1,
 ) {
-  const primaryHasOneFaintStandardState =
+  const primaryHasFaintStandardStates =
     primaryDescriptor.regularized === true &&
     [4, 8, 16].includes(primaryDescriptor.stateCount) &&
-    primaryDescriptor.observedStateCount ===
-      primaryDescriptor.stateCount - 1 &&
+    primaryDescriptor.observedStateCount >=
+      primaryDescriptor.stateCount - 2 &&
+    primaryDescriptor.observedStateCount <=
+      primaryDescriptor.stateCount &&
     salientDescriptor.stateCount <=
       primaryDescriptor.stateCount - 3;
-  if (primaryHasOneFaintStandardState) return false;
+  if (primaryHasFaintStandardStates) return false;
   return (
     isValidStateCount(salientDescriptor.stateCount) &&
     primaryDescriptor.regularized === true &&
@@ -2436,6 +2458,7 @@ export function shouldPreferRetrievalSalientDescriptor(
  * @param {number} height
  * @param {Uint8Array} [curveSalientMask]
  * @param {Uint8Array[]} [curveColorMasks]
+ * @param {{sourceScale?: number}} [options]
  */
 export function analyzeForegroundMasks(
   broadMask,
@@ -2444,7 +2467,12 @@ export function analyzeForegroundMasks(
   height,
   curveSalientMask = salientMask,
   curveColorMasks = [],
+  options = {},
 ) {
+  const sourceScale = Math.max(
+    1,
+    Number(options.sourceScale) || 1,
+  );
   const deskewed = deskewForegroundMasks(
     broadMask,
     salientMask,
@@ -3035,11 +3063,18 @@ export function analyzeForegroundMasks(
     // small PPT panels than the broad grayscale foreground.
     selectedProfile = chromaticUnionCandidate.profile;
     const primarySupportsMissingColorStates =
-      primaryDescriptor.regularized === true &&
+      (primaryDescriptor.regularized === true ||
+        primaryDescriptor.observedStateCount ===
+          primaryDescriptor.stateCount) &&
       [4, 8, 16].includes(primaryDescriptor.stateCount) &&
       primaryDescriptor.observedStateCount >= 4 &&
-      primaryDescriptor.stateCount >
-        chromaticUnionCandidate.descriptor.stateCount &&
+      (primaryDescriptor.stateCount >
+        chromaticUnionCandidate.descriptor.stateCount ||
+        (primaryDescriptor.stateCount ===
+          chromaticUnionCandidate.descriptor.stateCount &&
+          primaryDescriptor.observedStateCount >
+            chromaticUnionCandidate.descriptor
+              .observedStateCount)) &&
       primaryDescriptor.stateCount -
         chromaticUnionCandidate.descriptor.stateCount <=
         3 &&
@@ -3109,6 +3144,174 @@ export function analyzeForegroundMasks(
       descriptor = applicableUpperArcCandidate.descriptor;
     }
     displacedPrimary = null;
+  }
+  const lowResolutionLabelContentFallback =
+    bounds.axesDetected !== true &&
+    bounds.axisMode === "content" &&
+    descriptor.stateCount === 4 &&
+    descriptor.regularized === true;
+  const labelBoundaryPeakCandidates =
+    sourceScale >= 3 &&
+    ((bounds.axesDetected === true &&
+      bounds.axisMode === "rectangle") ||
+      lowResolutionLabelContentFallback) &&
+    descriptor.observedStateCount === 6 &&
+    (primaryMask.removedLabelComponents ?? 0) >= 2
+      ? detectPeaks(
+          movingAverage(resample(selectedProfile), 2),
+        )
+      : [];
+  const rawLabelBoundaryPeakLocations =
+    labelBoundaryPeakCandidates.length === 6
+      ? labelBoundaryPeakCandidates.map(
+          ({ index }) =>
+            index / Math.max(1, selectedProfile.length - 1),
+        )
+      : null;
+  const labelBoundaryPeakLocations =
+    rawLabelBoundaryPeakLocations;
+  if (labelBoundaryPeakLocations) {
+    const innerLocations = labelBoundaryPeakLocations.slice(1, -1);
+    const innerGaps = innerLocations
+      .slice(1)
+      .map(
+        (location, index) =>
+          location - innerLocations[index],
+      );
+    const sortedInnerGaps = [...innerGaps].sort(
+      (left, right) => left - right,
+    );
+    const medianInnerGap =
+      sortedInnerGaps[Math.floor(sortedInnerGaps.length / 2)] ?? 0;
+    const leftOuterGap =
+      labelBoundaryPeakLocations[1] -
+      labelBoundaryPeakLocations[0];
+    const rightOuterGap =
+      labelBoundaryPeakLocations[5] -
+      labelBoundaryPeakLocations[4];
+    const leftOuterPeak =
+      labelBoundaryPeakCandidates[0];
+    const leftInnerPeak =
+      labelBoundaryPeakCandidates[1];
+    const rightInnerPeak =
+      labelBoundaryPeakCandidates.at(-2);
+    const rightOuterPeak =
+      labelBoundaryPeakCandidates.at(-1);
+    const lowerOuterFrameShoulders =
+      selectedProfile[leftOuterPeak.index] <=
+        selectedProfile[leftInnerPeak.index] * 0.85 &&
+      selectedProfile[rightOuterPeak.index] <=
+        selectedProfile[rightInnerPeak.index] * 0.85;
+    const peakMinimumDistance = Math.max(
+      5,
+      Math.floor(selectedProfile.length / 28),
+    );
+    const peakEdgeSpan = Math.max(
+      peakMinimumDistance * 2,
+      Math.floor(selectedProfile.length / 10),
+    );
+    const leftEdgeSearchSentinel =
+      (peakEdgeSpan - 1) /
+      Math.max(1, selectedProfile.length - 1);
+    const rightEdgeSearchSentinel =
+      1 - leftEdgeSearchSentinel;
+    const edgeSearchSentinelTolerance =
+      2 / Math.max(1, selectedProfile.length - 1);
+    const monotoneEdgeSearchShoulders =
+      lowerOuterFrameShoulders &&
+      Math.abs(
+        labelBoundaryPeakLocations[0] -
+          leftEdgeSearchSentinel,
+      ) <= edgeSearchSentinelTolerance &&
+      Math.abs(
+        labelBoundaryPeakLocations[5] -
+          rightEdgeSearchSentinel,
+      ) <= edgeSearchSentinelTolerance;
+    const innerPeakWidths = descriptor.peakWidths.slice(1, -1);
+    const medianInnerPeakWidth =
+      repeatedArchMedian(innerPeakWidths);
+    const narrowOuterFramePeaks =
+      descriptor.peakWidths.length === 6 &&
+      medianInnerPeakWidth > 0 &&
+      descriptor.peakWidths[0] <=
+        medianInnerPeakWidth * 0.42 &&
+      descriptor.peakWidths[5] <=
+        medianInnerPeakWidth * 0.42;
+    const independentlyNarrowBoundaryPair =
+      descriptor.peakWidths.length === 6 &&
+      narrowOuterFramePeaks;
+    const regularizedFourStateBoundaryPair =
+      descriptor.stateCount === 4 &&
+      descriptor.regularized === true &&
+      monotoneEdgeSearchShoulders;
+    const exactSixStatePhysicalFramePair =
+      descriptor.stateCount === 6 &&
+      descriptor.regularized !== true &&
+      independentlyNarrowBoundaryPair &&
+      (labelBoundaryPeakLocations[0] <= 0.02 ||
+        labelBoundaryPeakLocations[5] >= 0.98);
+    const clippedFramePair =
+      labelBoundaryPeakLocations[0] <= 0.1 &&
+      labelBoundaryPeakLocations[5] >= 0.9 &&
+      innerLocations.at(-1) - innerLocations[0] >= 0.65 &&
+      medianInnerGap > 0 &&
+      Math.max(...innerGaps) /
+        Math.max(1e-6, Math.min(...innerGaps)) <=
+        1.45 &&
+      leftOuterGap <= medianInnerGap * 0.65 &&
+      rightOuterGap <= medianInnerGap * 0.65 &&
+      (regularizedFourStateBoundaryPair ||
+        exactSixStatePhysicalFramePair);
+    if (clippedFramePair) {
+      const frameCleanedProfile = [...selectedProfile];
+      const firstInteriorPeak = Math.round(
+        innerLocations[0] *
+          (frameCleanedProfile.length - 1),
+      );
+      const lastInteriorPeak = Math.round(
+        innerLocations.at(-1) *
+          (frameCleanedProfile.length - 1),
+      );
+      for (
+        let index = firstInteriorPeak - 1;
+        index >= 0;
+        index -= 1
+      ) {
+        frameCleanedProfile[index] = Math.min(
+          frameCleanedProfile[index],
+          frameCleanedProfile[index + 1],
+        );
+      }
+      for (
+        let index = lastInteriorPeak + 1;
+        index < frameCleanedProfile.length;
+        index += 1
+      ) {
+        frameCleanedProfile[index] = Math.min(
+          frameCleanedProfile[index],
+          frameCleanedProfile[index - 1],
+        );
+      }
+      const guided = tryDescriptorFromPeakHints(
+        frameCleanedProfile,
+        innerLocations,
+      );
+      if (guided.ok) {
+        // Thick low-resolution plot frames can survive two pixels inside the
+        // nominal rectangle after bilinear enlargement. When a removed label
+        // coexists with one narrow edge turn at both ends, retain the four
+        // independently measured interior arches instead of materializing the
+        // frame fringes as two extra States.
+        selectedProfile = frameCleanedProfile;
+        descriptor = {
+          ...guided.descriptor,
+          observedStateCount:
+            guided.descriptor.stateCount,
+          regularized: false,
+          labelBoundaryFramePairRemoved: true,
+        };
+      }
+    }
   }
   const alternatives = [];
   const addAlternative = (
@@ -3444,11 +3647,66 @@ export function applyVerifiedWaveformEvidence(
   const preservesCollapsedColorPolicy =
     analysis?.preprocessing?.colorSeriesPolicy
       ?.collapsedToMostIrregular === true;
+  const currentDescriptor =
+    declaredSeries[0]?.descriptor ?? analysis?.descriptor;
+  const currentStateCount = Number(
+    currentDescriptor?.stateCount,
+  );
+  const currentValleyCount = Math.max(
+    0,
+    currentStateCount - 1,
+  );
+  const currentPixelTopologyApplied =
+    analysis?.preprocessing?.repeatedArchEvidence
+      ?.applied === true ||
+    analysis?.preprocessing?.upperArcEvidence
+      ?.applied === true;
+  const currentTopologyConsistent =
+    currentPixelTopologyApplied &&
+    isValidStateCount(currentStateCount) &&
+    currentDescriptor?.regularized !== true &&
+    currentDescriptor?.observedStateCount ===
+      currentStateCount &&
+    currentDescriptor?.peakLocations?.length ===
+      currentStateCount &&
+    currentDescriptor?.peakWidths?.length ===
+      currentStateCount &&
+    currentDescriptor?.valleyLocations?.length ===
+      currentValleyCount &&
+    currentDescriptor?.valleyHeights?.length ===
+      currentValleyCount &&
+    currentDescriptor?.valleyDepths?.length ===
+      currentValleyCount &&
+    currentDescriptor?.valleyPositionRatios?.length ===
+      currentValleyCount &&
+    currentDescriptor?.peakValleyDistances?.length ===
+      currentValleyCount * 2 &&
+    currentDescriptor?.tailSlopes?.length === 2;
+  const currentPeaksStayInsidePlot =
+    currentDescriptor?.peakLocations?.every(
+      (location) =>
+        Number.isFinite(location) &&
+        location >= 0.025 - 1 / 255 &&
+        location <= 0.975 + 1 / 255,
+    ) === true;
+  // A repeated-grid projection is measured on the board-sized detection
+  // raster. Once the selected source crop has been independently enlarged
+  // and yields its own strict pixel topology, that higher-resolution result
+  // outranks a conflicting projection. Native physical-frame evidence is
+  // intentionally unaffected: it is the source-local remeasurement used to
+  // correct genuine crop-scale over/undercounts.
+  const conflictingProjectedGridEvidence =
+    evidence?.source ===
+      "repeated-grid-measured-topology" &&
+    currentTopologyConsistent &&
+    currentPeaksStayInsidePlot &&
+    currentStateCount > stateCount;
   if (
     !analysis ||
     !topologyConsistent ||
     declaredSeries.length !== 1 ||
-    preservesCollapsedColorPolicy
+    preservesCollapsedColorPolicy ||
+    conflictingProjectedGridEvidence
   ) {
     return analysis;
   }

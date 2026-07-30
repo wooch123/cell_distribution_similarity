@@ -27,6 +27,7 @@ import {
   chromaticAndNeutralPairFixture,
   chromaticAndNeutralSeriesFixture,
   coloredCellTableFixture,
+  coloredFloatingSineTableFixture,
   colorSeriesChartFixture,
   mixedPanelColorSeriesFixture,
   monochromeSeriesChartFixture,
@@ -1545,6 +1546,89 @@ test("repeated colored table cells never become color series in search or traini
   );
 });
 
+test("a dominant two-colour floating KPI trace cannot bypass the table lattice as VTH", async () => {
+  const fixture = coloredFloatingSineTableFixture();
+  const foreground = foregroundFor(fixture);
+  assert.ok(
+    foreground.curveColorMasks.length >=
+      fixture.expectedSeriesCount,
+    "the negative fixture must exercise two coherent chromatic trajectories",
+  );
+
+  const maskResult = detectChartPanelsFromMask(
+    foreground.broadMask,
+    fixture.width,
+    fixture.height,
+    {
+      edgeEvidenceMask: foreground.salientMask,
+      curveEvidenceMask: foreground.curveSalientMask,
+      curveColorMasks: foreground.curveColorMasks,
+      fallbackToWholeImage: false,
+      sourceScale: 1,
+    },
+  );
+  const dominantCandidate =
+    maskResult.diagnostics.measuredCandidateSummaries.find(
+      (candidate) =>
+        candidate.curveValid === true &&
+        candidate.colorSeriesCount >=
+          fixture.expectedSeriesCount &&
+        (candidate.right - candidate.left + 1) *
+          (candidate.bottom - candidate.top + 1) >=
+          fixture.width * fixture.height * 0.3,
+    );
+  assert.ok(
+    dominantCandidate,
+    "the fixture must reach the dominant multi-series decision boundary",
+  );
+  assert.equal(
+    dominantCandidate.finalFilterDiagnostics
+      ?.coveredByAxisAlignedTable,
+    true,
+  );
+  assert.equal(
+    dominantCandidate.finalFilterDiagnostics
+      ?.dominantMultiSeriesStructuralRescue,
+    false,
+    "floating KPI traces have no accepted VTH floor/topology contract",
+  );
+  assert.equal(
+    dominantCandidate.finalFilterDiagnostics?.accepted,
+    false,
+  );
+  assert.equal(maskResult.panels.length, 0);
+  assert.equal(maskResult.fallbackUsed, false);
+
+  const rgbResult = detectChartPanels(
+    fixture.pixels,
+    fixture.width,
+    fixture.height,
+    fixture.channels,
+  );
+  assert.equal(rgbResult.panels.length, 0);
+  assert.equal(rgbResult.fallbackUsed, false);
+
+  await assert.rejects(
+    () =>
+      searchSimilarityImage({
+        bytes: fixture.bytes,
+        mimeType: fixture.mimeType,
+        topK: 1,
+        corpus: publicCorpus,
+        origin: "https://dove9999.com",
+      }),
+    (error) => {
+      assert.ok(error instanceof SimilarityApiError);
+      assert.equal(error.status, 422);
+      assert.equal(
+        error.code,
+        "distribution_waveform_not_found",
+      );
+      return true;
+    },
+  );
+});
+
 test("two-column colored cell tables remain non-chart data across row counts and every ingestion boundary", async (context) => {
   for (const rows of [5, 6, 8]) {
     await context.test(`${rows} rows by 2 columns`, async () => {
@@ -1603,17 +1687,20 @@ test("two-column colored cell tables remain non-chart data across row counts and
         },
       );
 
-      const analysis = await analyzeSimilarityImage(
-        fixture.bytes,
-        fixture.mimeType,
+      // Supply a structurally valid caller profile so this assertion reaches
+      // the image-provenance detector. A profile extracted from the rejected
+      // table has State 0 and is correctly rejected earlier as malformed
+      // input, which would not exercise the non-waveform image boundary.
+      const validProfile = publicCorpus.candidates.find(
+        (candidate) => candidate.stateCount === 4,
       );
       await assert.rejects(
         () =>
           validateTrainingWaveformImage({
             bytes: fixture.bytes,
             mimeType: fixture.mimeType,
-            profile: analysis.profile,
-            stateCount: analysis.descriptor.stateCount,
+            profile: validProfile.profile,
+            stateCount: validProfile.stateCount,
           }),
         (error) => {
           assert.ok(error instanceof SimilarityApiError);

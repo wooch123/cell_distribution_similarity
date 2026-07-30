@@ -738,6 +738,152 @@ export function mixedPanelColorSeriesFixture(options = {}) {
 }
 
 /**
+ * A 4 × 4 office table containing repeated glyphs and two coherent coloured
+ * KPI traces. The traces deliberately float around the middle of the table:
+ * neither reaches a log-density floor, so colour-series continuity and a
+ * document-scale footprint must not promote the table to a VTH distribution.
+ */
+export function coloredFloatingSineTableFixture() {
+  const width = 800;
+  const height = 450;
+  const pixels = new Uint8Array(width * height * 3).fill(255);
+  const bounds = {
+    left: 10,
+    top: 35,
+    right: 410,
+    bottom: 415,
+  };
+  const rows = 4;
+  const columns = 4;
+  const lineColor = [37, 41, 47];
+
+  for (let column = 0; column <= columns; column += 1) {
+    const x = Math.round(
+      bounds.left +
+        ((bounds.right - bounds.left) * column) / columns,
+    );
+    drawLine(
+      pixels,
+      width,
+      height,
+      x,
+      bounds.top,
+      x,
+      bounds.bottom,
+      lineColor,
+      3,
+    );
+  }
+  for (let row = 0; row <= rows; row += 1) {
+    const y = Math.round(
+      bounds.top +
+        ((bounds.bottom - bounds.top) * row) / rows,
+    );
+    drawLine(
+      pixels,
+      width,
+      height,
+      bounds.left,
+      y,
+      bounds.right,
+      y,
+      lineColor,
+      3,
+    );
+  }
+
+  const cellWidth =
+    (bounds.right - bounds.left) / columns;
+  const cellHeight =
+    (bounds.bottom - bounds.top) / rows;
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      const glyphLeft = Math.round(
+        bounds.left + column * cellWidth + 8,
+      );
+      const glyphTop = Math.round(
+        bounds.top + row * cellHeight + 10,
+      );
+      drawLine(
+        pixels,
+        width,
+        height,
+        glyphLeft,
+        glyphTop,
+        glyphLeft + 7,
+        glyphTop,
+        lineColor,
+        3,
+      );
+      drawLine(
+        pixels,
+        width,
+        height,
+        glyphLeft,
+        glyphTop,
+        glyphLeft,
+        glyphTop + 12,
+        lineColor,
+        3,
+      );
+    }
+  }
+
+  const curveLeft = bounds.left + 5;
+  const curveRight = bounds.right - 5;
+  const centerY = 225;
+  const amplitude = 82;
+  for (let seriesIndex = 0; seriesIndex < 2; seriesIndex += 1) {
+    let previous = null;
+    for (let x = curveLeft; x <= curveRight; x += 1) {
+      const progress =
+        (x - curveLeft) /
+        Math.max(1, curveRight - curveLeft);
+      const y = Math.round(
+        centerY +
+          amplitude *
+            Math.sin(
+              progress * Math.PI * 6 +
+                seriesIndex * 0.8,
+            ),
+      );
+      if (previous) {
+        drawLine(
+          pixels,
+          width,
+          height,
+          previous.x,
+          previous.y,
+          x,
+          y,
+          COLOR_SERIES_PALETTE[seriesIndex],
+          3,
+        );
+      }
+      previous = { x, y };
+    }
+  }
+
+  return {
+    name: "colored-floating-sine-4x4-table",
+    width,
+    height,
+    channels: 3,
+    pixels,
+    bytes: encodePng({
+      width,
+      height,
+      data: pixels,
+      channels: 3,
+      depth: 8,
+    }),
+    mimeType: "image/png",
+    bounds,
+    expectedSeriesCount: 2,
+  };
+}
+
+/**
  * A strongly chromatic spreadsheet-like object. Every hue spans most of the
  * image through repeated cell fills and swatches, intentionally challenging
  * hue-only series logic. The shared table lattice must reject it before any

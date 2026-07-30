@@ -757,6 +757,10 @@ async function auditUiTrainingPath(candidates) {
           error instanceof Error
             ? error.message
             : String(error),
+        details:
+          error instanceof SimilarityApiError
+            ? error.details
+            : undefined,
       });
     }
   }
