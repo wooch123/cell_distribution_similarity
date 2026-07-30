@@ -11,7 +11,10 @@ import {
   useSyncExternalStore,
 } from "react";
 
-import { analyzeForegroundMasks } from "../lib/vth-image-analysis-core.mjs";
+import {
+  analyzeForegroundMasks,
+  applyVerifiedWaveformEvidence,
+} from "../lib/vth-image-analysis-core.mjs";
 import { buildForegroundMasks } from "../lib/vth-image-core.mjs";
 import { detectChartPanels } from "../lib/vth-chart-panel-core.mjs";
 import {
@@ -496,6 +499,11 @@ async function extractChartProfiles(file: Blob) {
         confidence: number;
         detectionReason: string;
         axisMode: "rectangle" | "l-axis" | "content";
+        verifiedWaveform?: {
+          profile: number[];
+          descriptor: Descriptor;
+          source: string;
+        };
       }>;
       layout: { rows: number; columns: number };
       fallbackUsed: boolean;
@@ -627,13 +635,16 @@ async function extractChartProfiles(file: Blob) {
         4,
         { sourceScale: analysisScale },
       );
-      const extracted = analyzeForegroundMasks(
-        foreground.broadMask,
-        foreground.salientMask,
-        width,
-        height,
-        foreground.curveSalientMask,
-        foreground.curveColorMasks,
+      const extracted = applyVerifiedWaveformEvidence(
+        analyzeForegroundMasks(
+          foreground.broadMask,
+          foreground.salientMask,
+          width,
+          height,
+          foreground.curveSalientMask,
+          foreground.curveColorMasks,
+        ),
+        detectedPanel.verifiedWaveform,
       ) as {
         profile: number[];
         descriptor: Descriptor;

@@ -689,12 +689,12 @@ async function main() {
       "utf8",
     );
     assert(
-      bundledServerSource.includes("v1.40.0") &&
-        !bundledServerSource.includes("v1.39.0"),
+      bundledServerSource.includes("v1.41.0") &&
+        !bundledServerSource.includes("v1.40.0"),
       "Ubuntu package contains a stale hosted download release.",
     );
     assert(
-      manifest.version === "1.40.0" &&
+      manifest.version === "1.41.0" &&
         manifest.platform === "ubuntu-linux-x64" &&
         manifest.architecture === "x86_64" &&
         manifest.entrypoint === "start.sh" &&

@@ -13,7 +13,6 @@ import {
   MAX_SHARED_SOURCE_IMAGE_BYTES,
   validateSharedTrainingPayload,
 } from "../../../../lib/vth-shared-training-core.mjs";
-import { descriptorFromProfile } from "../../../../lib/vth-shape-core.mjs";
 
 const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 
@@ -106,7 +105,7 @@ export async function POST(request: Request) {
     const authoritativePayload = {
       ...parsedPayload,
       profile: authoritativeProfile,
-      descriptor: descriptorFromProfile(authoritativeProfile),
+      descriptor: verification.authoritativeDescriptor,
     };
     // Keep identity/consent fields from the request, but make every
     // searchable shape field server-derived from the accepted source.

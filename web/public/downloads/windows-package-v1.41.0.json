@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "name": "유사 산포 검색 Windows x64 단독 실행판",
+  "version": "1.41.0",
+  "fileName": "vth-similarity-windows-x64.zip",
+  "delivery": "browser-assembled",
+  "bytes": 30115963,
+  "sha256": "4333df61387e672a321b061faa881e56f5ace72927561f1c0f681cc38c713b6a",
+  "generatedAt": "2026-07-30T03:16:59.978Z",
+  "parts": [
+    {
+      "index": 0,
+      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.41.0.zip.part-000",
+      "bytes": 4194304,
+      "sha256": "537856f60f31536cb207d79f0d715b2348902f64ee39d8d63b6ea9ffdfdcec26"
+    },
+    {
+      "index": 1,
+      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.41.0.zip.part-001",
+      "bytes": 4194304,
+      "sha256": "d8c6d5bb0fdfb612dc3c2694f020a4a0d5f1b6d88f09065aa4d851980506a775"
+    },
+    {
+      "index": 2,
+      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.41.0.zip.part-002",
+      "bytes": 4194304,
+      "sha256": "19666aafc32111f1e47996b0a310d7cd90bf2ad319b06eec95b667e66a947b12"
+    },
+    {
+      "index": 3,
+      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.41.0.zip.part-003",
+      "bytes": 4194304,
+      "sha256": "47931aa2275ca3aa285c54d3b6317bf9a39748218b413b94079b879d9f866963"
+    },
+    {
+      "index": 4,
+      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.41.0.zip.part-004",
+      "bytes": 4194304,
+      "sha256": "afb8b5ad1f7dabf5286fd3b81ced39035a1ae157517254ee79d6b3ae5f562781"
+    },
+    {
+      "index": 5,
+      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.41.0.zip.part-005",
+      "bytes": 4194304,
+      "sha256": "03d36d0a9146c26ed9b1dd3c54ca17a827a66b79dd1c8187ead8f7730946d16b"
+    },
+    {
+      "index": 6,
+      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.41.0.zip.part-006",
+      "bytes": 4194304,
+      "sha256": "837abfc788c36acfd7b9c603a268c4bb65fafd5672ab105842b81a1b40688542"
+    },
+    {
+      "index": 7,
+      "path": "/downloads/chunks/vth-similarity-windows-x64-v1.41.0.zip.part-007",
+      "bytes": 755835,
+      "sha256": "cc0abc1dd180a976acd4e1549f4a6a4b45aff2c78f8f5cb4812b179b35043177"
+    }
+  ]
+}

@@ -3,8 +3,13 @@ import {
   detectPlotBounds,
   deskewForegroundMasks,
   estimateDeskewAngle,
+  removeGridLinesPreservingCurves,
   rotateBinaryMask,
 } from "./vth-image-core.mjs";
+import {
+  analyzeForegroundMasks,
+  extractUpperArcPeakEvidence,
+} from "./vth-image-analysis-core.mjs";
 
 // A 4 × 4 PPT grid leaves roughly 2.5–4% of the slide for each plot once
 // titles and gutters are excluded. Keep enough headroom for 5 × 4 layouts and
@@ -1142,6 +1147,7 @@ function detectSharedFrameCellCandidates(
   height,
   minimumWidth,
   minimumHeight,
+  minimumLineThickness = 2,
 ) {
   if (!curveEvidenceMask) return [];
   const horizontalLines = extractLineBands(
@@ -1151,7 +1157,9 @@ function detectSharedFrameCellCandidates(
     "horizontal",
     minimumWidth,
     0,
-  ).filter((line) => line.thickness >= 2);
+  ).filter(
+    (line) => line.thickness >= minimumLineThickness,
+  );
   const verticalLines = extractLineBands(
     mask,
     width,
@@ -1159,7 +1167,9 @@ function detectSharedFrameCellCandidates(
     "vertical",
     minimumHeight,
     0,
-  ).filter((line) => line.thickness >= 2);
+  ).filter(
+    (line) => line.thickness >= minimumLineThickness,
+  );
   const tolerance = Math.max(
     3,
     Math.round(Math.min(width, height) * 0.006),
@@ -1333,6 +1343,546 @@ function detectSharedFrameCellCandidates(
     }
   }
   return candidates;
+}
+
+/**
+ * A short one-row or one-column chart strip is local to a slide region, so its
+ * divider strokes are intentionally too short for the document-wide lattice
+ * detector. Recover only a contiguous cohort of three-or-more already
+ * waveform-validated shared-frame cells. The later table-grid proof still
+ * requires exact peak/valley topology in every physical cell.
+ */
+function measureLocalOneDimensionalSharedLattice(
+  sharedFrameCellCandidates,
+  width,
+  height,
+) {
+  if (
+    !Array.isArray(sharedFrameCellCandidates) ||
+    sharedFrameCellCandidates.length < 3
+  ) {
+    return null;
+  }
+  const unique = [
+    ...new Map(
+      sharedFrameCellCandidates.map((candidate) => [
+        [
+          candidate.left,
+          candidate.top,
+          candidate.right,
+          candidate.bottom,
+        ].join(":"),
+        candidate,
+      ]),
+    ).values(),
+  ];
+  const tolerance = Math.max(
+    3,
+    Math.round(Math.min(width, height) * 0.006),
+  );
+  const groups = (keyForCandidate) => {
+    const grouped = new Map();
+    for (const candidate of unique) {
+      const key = keyForCandidate(candidate);
+      const group = grouped.get(key) ?? [];
+      group.push(candidate);
+      grouped.set(key, group);
+    }
+    return [...grouped.values()];
+  };
+  const lineBand = (coordinate) => ({
+    start: coordinate,
+    end: coordinate,
+    coordinate,
+    strength: 1,
+  });
+  const contiguousCohort = (
+    candidates,
+    startField,
+    endField,
+    documentSpan,
+  ) => {
+    const ordered = [...candidates].sort(
+      (left, right) =>
+        left[startField] - right[startField] ||
+        left[endField] - right[endField],
+    );
+    if (
+      ordered.length < 3 ||
+      ordered.length > MAXIMUM_CHART_PANELS
+    ) {
+      return null;
+    }
+    for (let index = 1; index < ordered.length; index += 1) {
+      if (
+        Math.abs(
+          ordered[index][startField] -
+            ordered[index - 1][endField],
+        ) > tolerance
+      ) {
+        return null;
+      }
+    }
+    const span =
+      ordered.at(-1)[endField] -
+      ordered[0][startField] +
+      1;
+    if (
+      span <
+      Math.max(48, Math.round(documentSpan * 0.08))
+    ) {
+      return null;
+    }
+    return ordered;
+  };
+  const hypotheses = [];
+  for (const group of groups(
+    (candidate) => `${candidate.top}:${candidate.bottom}`,
+  )) {
+    const cohort = contiguousCohort(
+      group,
+      "left",
+      "right",
+      width,
+    );
+    if (!cohort) continue;
+    hypotheses.push({
+      rows: 1,
+      columns: cohort.length,
+      horizontalBands: [
+        lineBand(cohort[0].top),
+        lineBand(cohort[0].bottom),
+      ],
+      verticalBands: [
+        lineBand(cohort[0].left),
+        ...cohort.map((candidate) =>
+          lineBand(candidate.right),
+        ),
+      ],
+      candidates: cohort,
+    });
+  }
+  for (const group of groups(
+    (candidate) => `${candidate.left}:${candidate.right}`,
+  )) {
+    const cohort = contiguousCohort(
+      group,
+      "top",
+      "bottom",
+      height,
+    );
+    if (!cohort) continue;
+    hypotheses.push({
+      rows: cohort.length,
+      columns: 1,
+      horizontalBands: [
+        lineBand(cohort[0].top),
+        ...cohort.map((candidate) =>
+          lineBand(candidate.bottom),
+        ),
+      ],
+      verticalBands: [
+        lineBand(cohort[0].left),
+        lineBand(cohort[0].right),
+      ],
+      candidates: cohort,
+    });
+  }
+  const selected = hypotheses.sort(
+    (left, right) =>
+      right.candidates.length - left.candidates.length ||
+      right.candidates.reduce(
+        (sum, candidate) =>
+          sum + (candidate.confidence ?? 0),
+        0,
+      ) -
+        left.candidates.reduce(
+          (sum, candidate) =>
+            sum + (candidate.confidence ?? 0),
+          0,
+        ),
+  )[0];
+  if (!selected) return null;
+  return {
+    dominant: true,
+    localOneDimensionalSharedLattice: true,
+    rows: selected.rows,
+    columns: selected.columns,
+    horizontalBandCount:
+      selected.horizontalBands.length,
+    verticalBandCount: selected.verticalBands.length,
+    horizontalBands: selected.horizontalBands,
+    verticalBands: selected.verticalBands,
+    bounds: {
+      left: Math.min(
+        ...selected.candidates.map(
+          (candidate) => candidate.left,
+        ),
+      ),
+      top: Math.min(
+        ...selected.candidates.map(
+          (candidate) => candidate.top,
+        ),
+      ),
+      right: Math.max(
+        ...selected.candidates.map(
+          (candidate) => candidate.right,
+        ),
+      ),
+      bottom: Math.max(
+        ...selected.candidates.map(
+          (candidate) => candidate.bottom,
+        ),
+      ),
+    },
+  };
+}
+
+/**
+ * Recover the physical dividers of a local one-row/one-column strip before
+ * deciding whether its cells are charts or table content.
+ *
+ * The waveform-validated shared-frame path above intentionally cannot see a
+ * real table: its cells fail Curve validation. That left a dangerous gap
+ * where four guided sparkline cells could survive as one large framed chart.
+ * This path uses only exact, shared boundary strokes. The later repeated-grid
+ * proof must still validate an independent plot grid and exact peak topology
+ * inside every cell, so boundary geometry alone can never promote table data.
+ */
+function measurePhysicalOneDimensionalSharedLattice(
+  mask,
+  width,
+  height,
+  minimumWidth,
+  minimumHeight,
+) {
+  if (!mask || width < 32 || height < 32) return null;
+  const tolerance = Math.max(
+    2,
+    Math.round(Math.min(width, height) * 0.006),
+  );
+  const minimumSharedWidth = Math.max(
+    minimumWidth * 4,
+    Math.round(width * 0.12),
+  );
+  const minimumSharedHeight = Math.max(
+    minimumHeight * 4,
+    Math.round(height * 0.12),
+  );
+  const horizontalLines = extractLineBands(
+    mask,
+    width,
+    height,
+    "horizontal",
+    Math.max(14, minimumWidth),
+    0,
+  );
+  const verticalLines = extractLineBands(
+    mask,
+    width,
+    height,
+    "vertical",
+    Math.max(14, minimumHeight),
+    0,
+  );
+  const projectionLine = (line) => {
+    const halfBefore = Math.floor(
+      Math.max(0, line.thickness - 1) / 2,
+    );
+    const halfAfter = Math.max(
+      0,
+      line.thickness - 1 - halfBefore,
+    );
+    return {
+      start: line.coordinate - halfBefore,
+      end: line.coordinate + halfAfter,
+      coordinate: line.coordinate,
+      strength: line.coverage ?? 1,
+    };
+  };
+  const uniqueSpanningLines = (
+    lines,
+    intervalStart,
+    intervalEnd,
+    sharedStart,
+    sharedEnd,
+  ) => {
+    const selected = lines
+      .filter(
+        (line) =>
+          line.coordinate >= sharedStart - tolerance &&
+          line.coordinate <= sharedEnd + tolerance &&
+          lineFitsInterval(
+            line,
+            intervalStart,
+            intervalEnd,
+            tolerance,
+          ),
+      )
+      .sort(
+        (left, right) =>
+          left.coordinate - right.coordinate ||
+          right.coverage - left.coverage,
+      );
+    const unique = [];
+    for (const line of selected) {
+      const previous = unique.at(-1);
+      if (
+        previous &&
+        Math.abs(previous.coordinate - line.coordinate) <=
+          Math.max(
+            1,
+            Math.ceil(
+              Math.max(previous.thickness, line.thickness) /
+                2,
+            ),
+          )
+      ) {
+        if (
+          (line.coverage ?? 0) >
+          (previous.coverage ?? 0)
+        ) {
+          unique[unique.length - 1] = line;
+        }
+      } else {
+        unique.push(line);
+      }
+    }
+    return unique;
+  };
+  const validBoundarySequence = (
+    lines,
+    sharedStart,
+    sharedEnd,
+    minimumCellSpan,
+  ) => {
+    if (
+      lines.length < 5 ||
+      lines.length > MAXIMUM_CHART_PANELS + 1
+    ) {
+      return false;
+    }
+    if (
+      Math.abs(lines[0].coordinate - sharedStart) >
+        tolerance * 2 ||
+      Math.abs(lines.at(-1).coordinate - sharedEnd) >
+        tolerance * 2
+    ) {
+      return false;
+    }
+    const spans = lines
+      .slice(1)
+      .map(
+        (line, index) =>
+          line.coordinate - lines[index].coordinate,
+      );
+    const typicalSpan = medianNumber(spans);
+    return (
+      spans.every(
+        (span) =>
+          span >= Math.max(8, minimumCellSpan) &&
+          span >= typicalSpan * 0.35 &&
+          span <= typicalSpan * 2.8,
+      ) &&
+      lines.length - 1 <= MAXIMUM_CHART_PANELS
+    );
+  };
+  const hypotheses = [];
+  let pairChecks = 0;
+
+  for (
+    let topIndex = 0;
+    topIndex < horizontalLines.length - 1;
+    topIndex += 1
+  ) {
+    const topLine = horizontalLines[topIndex];
+    for (
+      let bottomIndex = topIndex + 1;
+      bottomIndex < horizontalLines.length;
+      bottomIndex += 1
+    ) {
+      pairChecks += 1;
+      if (
+        pairChecks >
+        MAXIMUM_SHARED_FRAME_HORIZONTAL_PAIR_CHECKS
+      ) {
+        break;
+      }
+      const bottomLine = horizontalLines[bottomIndex];
+      const top = topLine.coordinate;
+      const bottom = bottomLine.coordinate;
+      if (bottom - top + 1 < minimumHeight) continue;
+      const sharedLeft = Math.max(
+        topLine.start,
+        bottomLine.start,
+      );
+      const sharedRight = Math.min(
+        topLine.end,
+        bottomLine.end,
+      );
+      if (
+        sharedRight - sharedLeft + 1 <
+        minimumSharedWidth
+      ) {
+        continue;
+      }
+      const hasInternalSharedBoundary =
+        horizontalLines.some(
+          (line) =>
+            line !== topLine &&
+            line !== bottomLine &&
+            line.coordinate > top + tolerance &&
+            line.coordinate < bottom - tolerance &&
+            lineFitsInterval(
+              line,
+              sharedLeft,
+              sharedRight,
+              tolerance,
+            ),
+        );
+      if (hasInternalSharedBoundary) continue;
+      const boundaries = uniqueSpanningLines(
+        verticalLines,
+        top,
+        bottom,
+        sharedLeft,
+        sharedRight,
+      );
+      if (
+        !validBoundarySequence(
+          boundaries,
+          sharedLeft,
+          sharedRight,
+          minimumWidth,
+        )
+      ) {
+        continue;
+      }
+      hypotheses.push({
+        rows: 1,
+        columns: boundaries.length - 1,
+        horizontalBands: [
+          projectionLine(topLine),
+          projectionLine(bottomLine),
+        ],
+        verticalBands: boundaries.map(projectionLine),
+        bounds: {
+          left: boundaries[0].coordinate,
+          top,
+          right: boundaries.at(-1).coordinate,
+          bottom,
+        },
+      });
+    }
+  }
+
+  pairChecks = 0;
+  for (
+    let leftIndex = 0;
+    leftIndex < verticalLines.length - 1;
+    leftIndex += 1
+  ) {
+    const leftLine = verticalLines[leftIndex];
+    for (
+      let rightIndex = leftIndex + 1;
+      rightIndex < verticalLines.length;
+      rightIndex += 1
+    ) {
+      pairChecks += 1;
+      if (
+        pairChecks >
+        MAXIMUM_SHARED_FRAME_HORIZONTAL_PAIR_CHECKS
+      ) {
+        break;
+      }
+      const rightLine = verticalLines[rightIndex];
+      const left = leftLine.coordinate;
+      const right = rightLine.coordinate;
+      if (right - left + 1 < minimumWidth) continue;
+      const sharedTop = Math.max(
+        leftLine.start,
+        rightLine.start,
+      );
+      const sharedBottom = Math.min(
+        leftLine.end,
+        rightLine.end,
+      );
+      if (
+        sharedBottom - sharedTop + 1 <
+        minimumSharedHeight
+      ) {
+        continue;
+      }
+      const hasInternalSharedBoundary =
+        verticalLines.some(
+          (line) =>
+            line !== leftLine &&
+            line !== rightLine &&
+            line.coordinate > left + tolerance &&
+            line.coordinate < right - tolerance &&
+            lineFitsInterval(
+              line,
+              sharedTop,
+              sharedBottom,
+              tolerance,
+            ),
+        );
+      if (hasInternalSharedBoundary) continue;
+      const boundaries = uniqueSpanningLines(
+        horizontalLines,
+        left,
+        right,
+        sharedTop,
+        sharedBottom,
+      );
+      if (
+        !validBoundarySequence(
+          boundaries,
+          sharedTop,
+          sharedBottom,
+          minimumHeight,
+        )
+      ) {
+        continue;
+      }
+      hypotheses.push({
+        rows: boundaries.length - 1,
+        columns: 1,
+        horizontalBands: boundaries.map(projectionLine),
+        verticalBands: [
+          projectionLine(leftLine),
+          projectionLine(rightLine),
+        ],
+        bounds: {
+          left,
+          top: boundaries[0].coordinate,
+          right,
+          bottom: boundaries.at(-1).coordinate,
+        },
+      });
+    }
+  }
+
+  const selected = hypotheses.sort(
+    (left, right) =>
+      right.rows * right.columns -
+        left.rows * left.columns ||
+      area(right.bounds) - area(left.bounds),
+  )[0];
+  if (!selected) return null;
+  return {
+    dominant: true,
+    localOneDimensionalSharedLattice: true,
+    physicalBoundaryOnly: true,
+    rows: selected.rows,
+    columns: selected.columns,
+    horizontalBandCount:
+      selected.horizontalBands.length,
+    verticalBandCount: selected.verticalBands.length,
+    horizontalBands: selected.horizontalBands,
+    verticalBands: selected.verticalBands,
+    bounds: selected.bounds,
+  };
 }
 
 function area(bounds) {
@@ -2697,6 +3247,8 @@ function measureDominantDocumentLattice(
       dominant: false,
       horizontalBandCount: horizontalBands.length,
       verticalBandCount: verticalBands.length,
+      horizontalBands,
+      verticalBands,
       intersectionCount: 0,
       bounds: undefined,
     };
@@ -2773,6 +3325,8 @@ function measureDominantDocumentLattice(
     dominant,
     horizontalBandCount: horizontalBands.length,
     verticalBandCount: verticalBands.length,
+    horizontalBands,
+    verticalBands,
     intersectionCount,
     bounds: dominant
       ? {
@@ -4384,6 +4938,12 @@ function orderAndDescribePanels(candidates, width, height) {
       detectionReason: candidate.detectionReason,
       mode: candidate.axisMode,
       axisMode: candidate.axisMode,
+      ...(candidate.verifiedWaveform
+        ? {
+            verifiedWaveform:
+              candidate.verifiedWaveform,
+          }
+        : {}),
     };
   });
   return {
@@ -7480,8 +8040,11 @@ function selectRegularProjectionBands(
           Math.abs(span - typicalSpan),
         ),
       );
+      const minimumRepeatedBandStep =
+        typicalSpan +
+        Math.max(3, typicalSpan * 0.02);
       if (
-        step < Math.max(8, typicalSpan * 1.04) ||
+        step < Math.max(8, minimumRepeatedBandStep) ||
         maximumResidual > Math.max(5, step * 0.11) ||
         maximumSpanDeviation >
           Math.max(12, typicalSpan * 0.48)
@@ -7513,23 +8076,147 @@ function selectRegularProjectionBands(
   return best;
 }
 
+function projectionFitFromLatticeLines(lineBands) {
+  if (!Array.isArray(lineBands) || lineBands.length < 2) {
+    return null;
+  }
+  const bands = lineBands
+    .slice(0, -1)
+    .map((line, index) => ({
+      start: line.end + 1,
+      end: lineBands[index + 1].start - 1,
+    }))
+    .filter((band) => band.end - band.start + 1 >= 8);
+  if (bands.length !== lineBands.length - 1) {
+    return null;
+  }
+  const centers = bands.map(
+    (band) => (band.start + band.end) / 2,
+  );
+  const steps = centers
+    .slice(1)
+    .map((center, index) => center - centers[index]);
+  return {
+    bands,
+    step:
+      steps.length
+        ? medianNumber(steps)
+        : medianNumber(
+            bands.map(
+              (band) => band.end - band.start + 1,
+            ),
+          ),
+    origin: centers[0],
+    maximumResidual: 0,
+    typicalSpan: medianNumber(
+      bands.map((band) => band.end - band.start + 1),
+    ),
+    score: bands.length * 10,
+    latticeDerived: true,
+  };
+}
+
+function projectionFitFromSingleBand(
+  bands,
+  latticeBand,
+) {
+  if (!Array.isArray(bands) || !latticeBand) return null;
+  const latticeSpan =
+    latticeBand.end - latticeBand.start + 1;
+  const selected = bands
+    .filter(
+      (band) =>
+        band.end - band.start + 1 >= 8 &&
+        overlapLength(
+          band.start,
+          band.end,
+          latticeBand.start,
+          latticeBand.end,
+        ) > 0,
+    )
+    .sort((left, right) => {
+      const score = (band) =>
+        overlapLength(
+          band.start,
+          band.end,
+          latticeBand.start,
+          latticeBand.end,
+        ) /
+          Math.max(1, latticeSpan) +
+        Math.min(
+          1,
+          (band.end - band.start + 1) /
+            Math.max(1, latticeSpan),
+        ) *
+          0.2;
+      return score(right) - score(left);
+    })[0];
+  if (!selected) return null;
+  const span = selected.end - selected.start + 1;
+  return {
+    bands: [selected],
+    step: latticeSpan,
+    origin: (selected.start + selected.end) / 2,
+    maximumResidual: 0,
+    typicalSpan: span,
+    score: 10 + span / Math.max(1, latticeSpan),
+    singleBandDerived: true,
+  };
+}
+
 function recoverChromaticRepeatedWaveformGridCandidates(
   measuredCandidates,
+  broadEvidenceMask,
   curveEvidenceMask,
   curveColorMasks,
   width,
   height,
+  requireTableWaveformGridProof = false,
+  tableLatticeShape = null,
+  forceAchromaticProjection = false,
 ) {
-  const chromaticMask = mergeCurveColorMasks(
+  const rawChromaticMask = mergeCurveColorMasks(
     curveColorMasks,
     width,
     height,
   );
-  if (!chromaticMask) return null;
+  const usesChromaticProjection =
+    Boolean(rawChromaticMask) &&
+    !forceAchromaticProjection;
+  const rawProjectionMask =
+    (usesChromaticProjection
+      ? rawChromaticMask
+      : null) ??
+    (requireTableWaveformGridProof
+      ? curveEvidenceMask
+      : null);
+  if (!rawProjectionMask) {
+    return null;
+  }
+  const chromaticMask = removeGridLinesPreservingCurves(
+    rawProjectionMask,
+    width,
+    height,
+  ).mask;
+  const retryWithAchromaticProjection = () =>
+    requireTableWaveformGridProof &&
+    usesChromaticProjection
+      ? recoverChromaticRepeatedWaveformGridCandidates(
+          measuredCandidates,
+          broadEvidenceMask,
+          curveEvidenceMask,
+          curveColorMasks,
+          width,
+          height,
+          requireTableWaveformGridProof,
+          tableLatticeShape,
+          true,
+        )
+      : null;
 
   const activeRows = new Uint8Array(height);
   const minimumRowInk = Math.max(
-    5,
+    7,
     Math.round(width * 0.004),
   );
   for (let y = 0; y < height; y += 1) {
@@ -7539,13 +8226,66 @@ function recoverChromaticRepeatedWaveformGridCandidates(
     }
     activeRows[y] = count >= minimumRowInk ? 1 : 0;
   }
-  const rawRows = collectProjectionBands(
+  const minimumRowBandSpan = Math.max(
+    12,
+    Math.round(height * 0.055),
+  );
+  const physicalTableRowFit =
+    requireTableWaveformGridProof
+      ? projectionFitFromLatticeLines(
+          tableLatticeShape?.horizontalBands,
+        )
+      : null;
+  const minimumRowBandCount =
+    tableLatticeShape?.rows === 1 ? 1 : 2;
+  const latticeRowFit =
+    requireTableWaveformGridProof &&
+    !usesChromaticProjection
+      ? physicalTableRowFit
+      : null;
+  let rawRows = collectProjectionBands(
     activeRows,
     3,
-    Math.max(12, Math.round(height * 0.055)),
+    minimumRowBandSpan,
   );
-  const rowFit = selectRegularProjectionBands(rawRows, 8);
-  if (!rowFit || rowFit.bands.length < 2) return null;
+  let rowFit =
+    latticeRowFit ??
+    (minimumRowBandCount === 1
+      ? projectionFitFromSingleBand(
+          rawRows,
+          physicalTableRowFit?.bands[0],
+        )
+      : selectRegularProjectionBands(rawRows, 8));
+  if (
+    !rowFit ||
+    rowFit.bands.length < minimumRowBandCount
+  ) {
+    for (const maximumGap of [2, 1, 0]) {
+      rawRows = collectProjectionBands(
+        activeRows,
+        maximumGap,
+        minimumRowBandSpan,
+      );
+      rowFit =
+        minimumRowBandCount === 1
+          ? projectionFitFromSingleBand(
+              rawRows,
+              physicalTableRowFit?.bands[0],
+            )
+          : selectRegularProjectionBands(rawRows, 8);
+      if (
+        rowFit?.bands.length >= minimumRowBandCount
+      ) {
+        break;
+      }
+    }
+  }
+  if (
+    !rowFit ||
+    rowFit.bands.length < minimumRowBandCount
+  ) {
+    return retryWithAchromaticProjection();
+  }
 
   const activeColumns = new Uint8Array(width);
   const columnCounts = new Uint16Array(width);
@@ -7561,21 +8301,107 @@ function recoverChromaticRepeatedWaveformGridCandidates(
   for (let x = 0; x < width; x += 1) {
     activeColumns[x] = columnCounts[x] >= 2 ? 1 : 0;
   }
-  const rawColumns = collectProjectionBands(
+  const minimumColumnBandSpan = Math.max(
+    12,
+    Math.round(width * 0.025),
+  );
+  const physicalTableColumnFit =
+    requireTableWaveformGridProof
+      ? projectionFitFromLatticeLines(
+          tableLatticeShape?.verticalBands,
+        )
+      : null;
+  const minimumColumnBandCount =
+    tableLatticeShape?.columns === 1 ? 1 : 2;
+  const latticeColumnFit =
+    requireTableWaveformGridProof &&
+    !usesChromaticProjection
+      ? physicalTableColumnFit
+      : null;
+  let rawColumns = collectProjectionBands(
     activeColumns,
     6,
-    Math.max(12, Math.round(width * 0.025)),
+    minimumColumnBandSpan,
   );
-  let columnFit = selectRegularProjectionBands(
-    rawColumns,
-    Math.floor(
-      MAXIMUM_CHART_PANELS / rowFit.bands.length,
-    ),
-  );
-  if (!columnFit || columnFit.bands.length < 2) {
-    return null;
+  let columnFit =
+    latticeColumnFit ??
+    (minimumColumnBandCount === 1
+      ? projectionFitFromSingleBand(
+          rawColumns,
+          physicalTableColumnFit?.bands[0],
+        )
+      : selectRegularProjectionBands(
+          rawColumns,
+          Math.floor(
+            MAXIMUM_CHART_PANELS / rowFit.bands.length,
+          ),
+        ));
+  // Five-to-seven blank pixels are common between tightly packed 800×450
+  // PPT plots. The tolerant six-pixel projection gap is still useful for a
+  // broken Curve inside one plot, but it can merge every plot column into one
+  // band. Retry with strict gutters only when the tolerant pass cannot form a
+  // repeated grid; this leaves established wider layouts unchanged.
+  const hasMergedProjectionBand = () =>
+    Boolean(
+      columnFit &&
+        rawColumns.some(
+          (band) =>
+            band.end - band.start + 1 >
+            columnFit.typicalSpan * 1.5,
+        ),
+    );
+  if (
+    !latticeColumnFit &&
+    (!columnFit ||
+      columnFit.bands.length < minimumColumnBandCount ||
+      hasMergedProjectionBand())
+  ) {
+    for (const maximumGap of [3, 1, 0]) {
+      const strictColumns = collectProjectionBands(
+        activeColumns,
+        maximumGap,
+        minimumColumnBandSpan,
+      );
+      const strictFit =
+        minimumColumnBandCount === 1
+          ? projectionFitFromSingleBand(
+              strictColumns,
+              physicalTableColumnFit?.bands[0],
+            )
+          : selectRegularProjectionBands(
+              strictColumns,
+              Math.floor(
+                MAXIMUM_CHART_PANELS /
+                  rowFit.bands.length,
+              ),
+            );
+      if (
+        strictFit &&
+        (!columnFit ||
+          strictFit.bands.length >
+            columnFit.bands.length ||
+          (strictFit.bands.length ===
+            columnFit.bands.length &&
+            strictFit.score > columnFit.score))
+      ) {
+        rawColumns = strictColumns;
+        columnFit = strictFit;
+      }
+      if (
+        columnFit?.bands.length >=
+          minimumColumnBandCount &&
+        !hasMergedProjectionBand()
+      ) {
+        break;
+      }
+    }
   }
-
+  if (
+    !columnFit ||
+    columnFit.bands.length < minimumColumnBandCount
+  ) {
+    return retryWithAchromaticProjection();
+  }
   // A right-hand explanation/table/trend pane can contribute coloured ink in
   // every sweep row and, by coincidence, sit at almost exactly one more grid
   // interval. Unlike a VTH column, however, it does not contain a turning,
@@ -7662,15 +8488,25 @@ function recoverChromaticRepeatedWaveformGridCandidates(
 
   const expectedCellCount =
     rowFit.bands.length * columnFit.bands.length;
+  const tableLatticeShapeConsistent =
+    !requireTableWaveformGridProof ||
+    Boolean(
+      tableLatticeShape &&
+        rowFit.bands.length === tableLatticeShape.rows &&
+        columnFit.bands.length ===
+          tableLatticeShape.columns,
+    );
+  const minimumExpectedCellCount =
+    requireTableWaveformGridProof ? 4 : 8;
   if (
-    expectedCellCount < 8 ||
+    expectedCellCount < minimumExpectedCellCount ||
     expectedCellCount > MAXIMUM_CHART_PANELS
   ) {
     return null;
   }
 
   const occupiedCells = new Set();
-  const completeMeasuredCells = new Set();
+  const measuredCandidateByCell = new Map();
   for (const candidate of measuredCandidates) {
     const candidateWidth =
       candidate.right - candidate.left + 1;
@@ -7709,42 +8545,123 @@ function recoverChromaticRepeatedWaveformGridCandidates(
     ) {
       continue;
     }
-    occupiedCells.add(`${row}:${column}`);
-    if (
+    const cellKey = `${row}:${column}`;
+    occupiedCells.add(cellKey);
+    const completeMeasuredCandidate =
       candidate.curveEvidence.valid &&
       candidateWidth >= columnFit.typicalSpan * 0.55 &&
-      candidateHeight >= rowFit.typicalSpan * 0.5
-    ) {
-      completeMeasuredCells.add(`${row}:${column}`);
+      candidateHeight >= rowFit.typicalSpan * 0.5;
+    if (completeMeasuredCandidate) {
+      const existing = measuredCandidateByCell.get(cellKey);
+      const frameScore =
+        (candidate.detectionReason === "closed-plot-frame"
+          ? 5
+          : 0) +
+        (candidate.axisMode === "rectangle" ? 3 : 0) +
+        (candidate.confidence ?? 0) -
+        Math.abs(
+          candidateWidth - columnFit.typicalSpan,
+        ) /
+          Math.max(1, columnFit.typicalSpan) -
+        Math.abs(candidateHeight - rowFit.typicalSpan) /
+          Math.max(1, rowFit.typicalSpan);
+      if (!existing || frameScore > existing.frameScore) {
+        measuredCandidateByCell.set(cellKey, {
+          candidate,
+          frameScore,
+        });
+      }
     }
   }
+  const minimumOccupiedCellCount = Math.max(
+    4,
+    Math.ceil(expectedCellCount * 0.5),
+  );
   if (
-    occupiedCells.size !== expectedCellCount
+    !requireTableWaveformGridProof &&
+    occupiedCells.size < minimumOccupiedCellCount
   ) {
     return null;
   }
-  // Keep the established geometric crops when they already provide one
-  // complete, validated physical panel in every repeated cell. The chromatic
-  // projection is a missing-cell recovery path; replacing a complete set
-  // would widen exact plot-frame crops to outer card/ink extents.
-  if (completeMeasuredCells.size === expectedCellCount) {
+  // Complete geometric crops normally remain preferable, but a dense slide
+  // can still lose one of those crops during overlap reconciliation. Continue
+  // through the cell-level proof and let the repeated-grid reconciliation
+  // choose one physical crop per cell. This remains gated by a measured
+  // candidate cohort plus pixel-derived multi-peak topology outside table
+  // mode, and by the stronger lattice-shape proof inside table mode.
+
+  const paddingX = columnFit.latticeDerived
+    ? 0
+    : clamp(
+        Math.round(columnFit.step * 0.055),
+        4,
+        24,
+      );
+  const paddingY = rowFit.latticeDerived
+    ? 0
+    : clamp(
+        Math.round(rowFit.step * 0.055),
+        3,
+        16,
+      );
+  const physicalRowFit =
+    requireTableWaveformGridProof
+      ? projectionFitFromLatticeLines(
+          tableLatticeShape?.horizontalBands,
+        )
+      : null;
+  const projectedRowCoverages =
+    usesChromaticProjection &&
+    physicalRowFit?.bands.length === rowFit.bands.length
+      ? rowFit.bands.map((band, index) => {
+          const projectedStart = Math.max(
+            0,
+            band.start - paddingY,
+          );
+          const projectedEnd = Math.min(
+            height - 1,
+            band.end + paddingY,
+          );
+          const physicalBand = physicalRowFit.bands[index];
+          return (
+            overlapLength(
+              projectedStart,
+              projectedEnd,
+              physicalBand.start,
+              physicalBand.end,
+            ) /
+            Math.max(
+              1,
+              physicalBand.end - physicalBand.start + 1,
+            )
+          );
+        })
+      : [];
+  const medianProjectedRowCoverage =
+    projectedRowCoverages.length
+      ? medianNumber(projectedRowCoverages)
+      : null;
+  const tableProjectionBoundsAligned =
+    !requireTableWaveformGridProof ||
+    !usesChromaticProjection ||
+    !physicalRowFit ||
+    medianProjectedRowCoverage >= 0.68;
+  // A sparkline in the top half of every table cell can produce the same
+  // repeated colour projection as a real chart grid, especially when the
+  // lower half contains text. A genuine plot crop occupies most of its
+  // physical lattice cell; a short table sparkline does not. Fail closed
+  // before the achromatic retry, otherwise the surrounding table rules would
+  // expand every bad crop back to a full cell and erase this distinction.
+  if (!tableProjectionBoundsAligned) {
     return null;
   }
-
-  const paddingX = clamp(
-    Math.round(columnFit.step * 0.055),
-    4,
-    24,
-  );
-  const paddingY = clamp(
-    Math.round(rowFit.step * 0.055),
-    3,
-    16,
-  );
   const candidates = [];
   let chromaticCellCount = 0;
   let waveformCellCount = 0;
   let turningCellCount = 0;
+  let measuredTopologyCellCount = 0;
+  let measuredMultiPeakCellCount = 0;
+  let plotGridCellCount = 0;
   for (let row = 0; row < rowFit.bands.length; row += 1) {
     for (
       let column = 0;
@@ -7753,7 +8670,8 @@ function recoverChromaticRepeatedWaveformGridCandidates(
     ) {
       const rowBand = rowFit.bands[row];
       const columnBand = columnFit.bands[column];
-      const candidate = {
+      const cellKey = `${row}:${column}`;
+      const projectedCandidate = {
         left: Math.max(0, columnBand.start - paddingX),
         top: Math.max(0, rowBand.start - paddingY),
         right: Math.min(
@@ -7769,6 +8687,25 @@ function recoverChromaticRepeatedWaveformGridCandidates(
         detectionReason: "repeated-waveform-grid",
         repeatedGridStructuralRescue: true,
       };
+      const preserveMeasuredFrames =
+        !requireTableWaveformGridProof &&
+        measuredCandidateByCell.size === expectedCellCount;
+      const measuredCellCandidate =
+        preserveMeasuredFrames
+          ? measuredCandidateByCell.get(cellKey)?.candidate
+          : null;
+      // Preserve a source-measured plot frame when one exists. Projection
+      // crops are intentionally broader so they can recover a missing cell,
+      // but that extra title/label ink can introduce a false peak. A real
+      // closed frame gives the downstream peak/valley analyzer the exact
+      // plot interior while the structural-rescue marker still lets it join
+      // recovered neighbouring cells.
+      const candidate = measuredCellCandidate
+        ? {
+            ...measuredCellCandidate,
+            repeatedGridStructuralRescue: true,
+          }
+        : projectedCandidate;
       let cellInk = 0;
       for (let y = rowBand.start; y <= rowBand.end; y += 1) {
         for (
@@ -7785,13 +8722,207 @@ function recoverChromaticRepeatedWaveformGridCandidates(
         curveEvidenceMask,
         width,
       );
-      const hasWaveformVariation =
+      const broadCellEvidence =
+        requireTableWaveformGridProof &&
+        broadEvidenceMask
+          ? measureChartCurveEvidence(
+              candidate,
+              broadEvidenceMask,
+              width,
+            )
+          : null;
+      if (
+        broadCellEvidence &&
+        broadCellEvidence.ignoredRowBandCount >= 2 &&
+        broadCellEvidence.ignoredColumnBandCount >= 2
+      ) {
+        plotGridCellCount += 1;
+      }
+      let hasWaveformVariation =
         curveEvidence.horizontalCoverage >= 0.18 &&
         curveEvidence.verticalVariation >= 0.075;
-      const hasTurningWaveform =
+      let hasTurningWaveform =
         curveEvidence.directionChangeCount >= 1 ||
         curveEvidence.localizedSinglePeak ||
         curveEvidence.segmentedWaveformTrace;
+      let measuredPeakCount = 0;
+      let measuredPeakTopologyAccepted = false;
+      let measuredPeakTopologyReason = "NOT_MEASURED";
+      let measuredWaveformEvidence = null;
+      if (cellInk >= 8) {
+        const localWidth =
+          candidate.right - candidate.left + 1;
+        const localHeight =
+          candidate.bottom - candidate.top + 1;
+        const cropMask = (sourceMask) => {
+          const cropped = new Uint8Array(
+            localWidth * localHeight,
+          );
+          for (
+            let localY = 0;
+            localY < localHeight;
+            localY += 1
+          ) {
+            const sourceStart =
+              (candidate.top + localY) * width +
+              candidate.left;
+            cropped.set(
+              sourceMask.subarray(
+                sourceStart,
+                sourceStart + localWidth,
+              ),
+              localY * localWidth,
+            );
+          }
+          return cropped;
+        };
+        const rawLocalCurveMask = cropMask(
+          curveEvidenceMask,
+        );
+        const localCurveMask =
+          removeGridLinesPreservingCurves(
+            rawLocalCurveMask,
+            localWidth,
+            localHeight,
+          ).mask;
+        const measuredColorMasks =
+          Array.isArray(curveColorMasks) &&
+          curveColorMasks.length
+            ? curveColorMasks
+            : [curveEvidenceMask];
+        const localCurveColorMasks =
+          measuredColorMasks.map((sourceMask) =>
+            removeGridLinesPreservingCurves(
+              cropMask(sourceMask),
+              localWidth,
+              localHeight,
+            ).mask,
+          );
+        const achromaticUpperArc =
+          !usesChromaticProjection
+            ? extractUpperArcPeakEvidence(
+                rawLocalCurveMask,
+                rawLocalCurveMask,
+                [rawLocalCurveMask],
+                localWidth,
+                localHeight,
+                { minimumPeakCount: 1 },
+              )
+            : null;
+        const measuredPeakTopology = usesChromaticProjection
+          ? extractUpperArcPeakEvidence(
+              localCurveMask,
+              localCurveMask,
+              localCurveColorMasks,
+              localWidth,
+              localHeight,
+              {
+                minimumPeakCount:
+                  requireTableWaveformGridProof ? 1 : 2,
+              },
+            )
+          : achromaticUpperArc?.accepted
+            ? achromaticUpperArc
+          : (() => {
+              const localBroadMask = cropMask(
+                broadEvidenceMask ??
+                  curveEvidenceMask,
+              );
+              const achromaticAnalysis =
+                analyzeForegroundMasks(
+                  localBroadMask,
+                  localCurveMask,
+                  localWidth,
+                  localHeight,
+                  localCurveMask,
+                  [],
+                );
+              const achromaticDescriptor =
+                achromaticAnalysis.descriptor;
+              const achromaticPeakCount =
+                achromaticDescriptor.peakLocations?.length ??
+                0;
+              const achromaticValleyCount =
+                achromaticDescriptor.valleyLocations?.length ??
+                0;
+              const accepted =
+                achromaticPeakCount >= 1 &&
+                achromaticValleyCount ===
+                  achromaticPeakCount - 1 &&
+                achromaticDescriptor.regularized !== true &&
+                achromaticDescriptor.observedStateCount ===
+                  achromaticDescriptor.stateCount;
+              return {
+                accepted,
+                reason: accepted
+                  ? "ACHROMATIC_PASS"
+                  : "ACHROMATIC_TOPOLOGY_REJECTED",
+                peakCount: achromaticPeakCount,
+                profile: achromaticAnalysis.profile,
+                descriptor: achromaticDescriptor,
+              };
+            })();
+        measuredPeakCount =
+          measuredPeakTopology.peakCount ?? 0;
+        measuredPeakTopologyReason =
+          measuredPeakTopology.reason ?? "UNKNOWN";
+        measuredPeakTopologyAccepted =
+          measuredPeakTopology.accepted === true &&
+          measuredPeakCount >= 1 &&
+          measuredPeakTopology.descriptor
+            ?.valleyLocations?.length ===
+            measuredPeakCount - 1;
+        if (measuredPeakTopologyAccepted) {
+          measuredTopologyCellCount += 1;
+          if (measuredPeakCount >= 2) {
+            measuredMultiPeakCellCount += 1;
+          }
+          measuredWaveformEvidence = {
+            profile: [...measuredPeakTopology.profile],
+            descriptor: {
+              ...measuredPeakTopology.descriptor,
+              peakLocations: [
+                ...measuredPeakTopology.descriptor
+                  .peakLocations,
+              ],
+              peakWidths: [
+                ...measuredPeakTopology.descriptor.peakWidths,
+              ],
+              valleyHeights: [
+                ...measuredPeakTopology.descriptor
+                  .valleyHeights,
+              ],
+              valleyLocations: [
+                ...measuredPeakTopology.descriptor
+                  .valleyLocations,
+              ],
+              valleyDepths: [
+                ...measuredPeakTopology.descriptor
+                  .valleyDepths,
+              ],
+              valleyPositionRatios: [
+                ...measuredPeakTopology.descriptor
+                  .valleyPositionRatios,
+              ],
+              peakValleyDistances: [
+                ...measuredPeakTopology.descriptor
+                  .peakValleyDistances,
+              ],
+              tailSlopes: [
+                ...measuredPeakTopology.descriptor.tailSlopes,
+              ],
+            },
+            source: "table-grid-measured-topology",
+          };
+          // Deep log-scale valleys split a dense six-or-more-State trace into
+          // short segments, so the generic single-path metric can look weak
+          // even though the measured upper envelope contains every peak and
+          // adjacent valley. An accepted pixel-derived topology is stronger
+          // evidence than that path heuristic.
+          hasWaveformVariation = true;
+          hasTurningWaveform = true;
+        }
+      }
       if (hasWaveformVariation) waveformCellCount += 1;
       if (hasTurningWaveform) turningCellCount += 1;
       candidates.push({
@@ -7802,28 +8933,90 @@ function recoverChromaticRepeatedWaveformGridCandidates(
           0.98,
         ),
         curveEvidence: {
-          ...curveEvidence,
+          ...(measuredCellCandidate
+            ? measuredCellCandidate.curveEvidence
+            : curveEvidence),
           repeatedGridStructuralRescue: true,
           repeatedGridChromaticPixelCount: cellInk,
+          measuredPeakCount,
+          measuredPeakTopologyAccepted,
+          measuredPeakTopologyReason,
         },
+        measuredWaveformEvidence,
       });
     }
   }
+  const minimumMeasuredMultiPeakCells =
+    requireTableWaveformGridProof
+      ? 0
+      : Math.max(4, Math.ceil(expectedCellCount * 0.5));
+  const minimumMeasuredTopologyCells =
+    requireTableWaveformGridProof
+      ? expectedCellCount
+      : 0;
+  const minimumPlotGridCells =
+    requireTableWaveformGridProof
+      ? Math.max(3, Math.ceil(expectedCellCount * 0.75))
+      : 0;
+  const measuredWaveformGridProof =
+    requireTableWaveformGridProof
+      ? measuredTopologyCellCount >=
+        minimumMeasuredTopologyCells
+      : measuredMultiPeakCellCount >=
+        minimumMeasuredMultiPeakCells;
+  const tableEmbeddedWaveformGridProof =
+    requireTableWaveformGridProof &&
+    measuredWaveformGridProof &&
+    tableLatticeShapeConsistent &&
+    plotGridCellCount >= minimumPlotGridCells;
   if (
     chromaticCellCount <
       Math.ceil(expectedCellCount * 0.9) ||
     waveformCellCount !== expectedCellCount ||
     turningCellCount <
-      Math.ceil(expectedCellCount * 0.75)
+      Math.ceil(expectedCellCount * 0.75) ||
+    !measuredWaveformGridProof ||
+    (requireTableWaveformGridProof &&
+      (!tableLatticeShapeConsistent ||
+        plotGridCellCount < minimumPlotGridCells))
   ) {
-    return null;
+    return retryWithAchromaticProjection();
+  }
+  if (tableEmbeddedWaveformGridProof) {
+    for (const candidate of candidates) {
+      candidate.tableEmbeddedWaveformGridProof = true;
+      candidate.curveEvidence.tableEmbeddedWaveformGridProof =
+        true;
+      if (candidate.measuredWaveformEvidence) {
+        candidate.verifiedWaveform =
+          candidate.measuredWaveformEvidence;
+      }
+    }
+  }
+  for (const candidate of candidates) {
+    delete candidate.measuredWaveformEvidence;
   }
   return {
     candidates,
     anchorCount: measuredCandidates.length,
     occupiedCellCount: occupiedCells.size,
+    minimumOccupiedCellCount:
+      requireTableWaveformGridProof
+        ? 0
+        : minimumOccupiedCellCount,
     waveformCellCount,
     turningCellCount,
+    measuredTopologyCellCount,
+    minimumMeasuredTopologyCells,
+    measuredMultiPeakCellCount,
+    minimumMeasuredMultiPeakCells,
+    plotGridCellCount,
+    minimumPlotGridCells,
+    measuredWaveformGridProof,
+    tableEmbeddedWaveformGridProof,
+    tableLatticeShapeConsistent,
+    tableProjectionBoundsAligned,
+    medianProjectedRowCoverage,
     expectedCellCount,
     rows: rowFit.bands.length,
     columns: columnFit.bands.length,
@@ -7832,32 +9025,43 @@ function recoverChromaticRepeatedWaveformGridCandidates(
     columnStep: columnFit.step,
     rowStep: rowFit.step,
     recoveryMode: "chromatic-repeated-lattice",
+    projectionMode: usesChromaticProjection
+      ? "chromatic"
+      : "achromatic-curve",
     requireTurningTopologyOutsideGrid: true,
   };
 }
 
 function recoverRepeatedWaveformGridCandidates(
   measuredCandidates,
+  broadEvidenceMask,
   curveEvidenceMask,
   curveColorMasks,
   width,
   height,
   allowChromaticRecovery = true,
+  requireTableWaveformGridProof = false,
+  tableLatticeShape = null,
 ) {
   return (
-    recoverStrictRepeatedWaveformGridCandidates(
-      measuredCandidates,
-      curveEvidenceMask,
-      width,
-      height,
-    ) ??
+    (requireTableWaveformGridProof
+      ? null
+      : recoverStrictRepeatedWaveformGridCandidates(
+          measuredCandidates,
+          curveEvidenceMask,
+          width,
+          height,
+        )) ??
     (allowChromaticRecovery
       ? recoverChromaticRepeatedWaveformGridCandidates(
           measuredCandidates,
+          broadEvidenceMask,
           curveEvidenceMask,
           curveColorMasks,
           width,
           height,
+          requireTableWaveformGridProof,
+          tableLatticeShape,
         )
       : null)
   );
@@ -8387,9 +9591,72 @@ export function detectChartPanelsFromMask(
           Math.min(
             minimumHeightRatio,
             COMPACT_MINIMUM_PANEL_HEIGHT_RATIO,
-          )),
+      )),
     ),
   );
+  const axisAlignedDocumentLattice =
+    analyzeAxisAlignedDocumentLattice(
+      mask,
+      width,
+      height,
+    );
+  const excessiveDenseDocumentGrid =
+    axisAlignedDocumentLattice.tableGridArtifact &&
+    (axisAlignedDocumentLattice.horizontalBandCount ?? 0) >=
+      64 &&
+    (axisAlignedDocumentLattice.verticalBandCount ?? 0) >=
+      64;
+  if (excessiveDenseDocumentGrid) {
+    return {
+      panels: [],
+      layout: { rows: 0, columns: 0 },
+      fallbackUsed: false,
+      detectedPanelCount: 0,
+      rejectedNonChartCount: 1,
+      truncated: false,
+      maxPanels: MAXIMUM_CHART_PANELS,
+      diagnostics: {
+        foregroundPixelCount,
+        foregroundRatio:
+          foregroundPixelCount /
+          Math.max(1, width * height),
+        geometricCandidateCount: 0,
+        validCandidateCount: 0,
+        rejectedCandidateCount: 1,
+        ambiguousCandidateCount: 0,
+        candidateSummaries: [],
+        measuredCandidateSummaries: [],
+        repeatedGridRecovery: { applied: false },
+        arbitraryWaveformRecovery: {
+          attempted: false,
+          applied: false,
+          recovered: 0,
+        },
+        tableLatticeDominant: {
+          axisAligned: true,
+          axisAlignedHorizontalBandCount:
+            axisAlignedDocumentLattice.horizontalBandCount,
+          axisAlignedVerticalBandCount:
+            axisAlignedDocumentLattice.verticalBandCount,
+          axisAlignedBounds:
+            axisAlignedDocumentLattice.bounds ?? null,
+          sharedFrame: true,
+          rotated: false,
+        },
+        excessiveDenseDocumentGrid: true,
+        lowResolutionRecoveryApplied: false,
+        sourceScale: Math.max(
+          1,
+          Number(options.sourceScale) || 1,
+        ),
+      },
+      lowResolutionRecovery: {
+        applied: false,
+        maximumGap: 0,
+        repairedPixelCount: 0,
+      },
+    };
+  }
   const recovered =
     options.recoverLowResolution === false
       ? {
@@ -8468,12 +9735,6 @@ export function detectChartPanelsFromMask(
     // 1–3 px gutter. Preserve the original topology when the caller provides
     // only one mask.
     mask;
-  const axisAlignedDocumentLattice =
-    analyzeAxisAlignedDocumentLattice(
-      mask,
-      width,
-      height,
-    );
   const sharedFrameCellCandidates =
     detectSharedFrameCellCandidates(
       mask,
@@ -8483,6 +9744,50 @@ export function detectChartPanelsFromMask(
       compactMinimumWidth,
       compactMinimumHeight,
     );
+  const localSharedFrameCellCandidates =
+    !axisAlignedDocumentLattice.tableGridArtifact &&
+    sharedFrameCellCandidates.length < 3
+      ? detectSharedFrameCellCandidates(
+          mask,
+          curveEvidenceMask,
+          width,
+          height,
+          compactMinimumWidth,
+          compactMinimumHeight,
+          1,
+        )
+      : sharedFrameCellCandidates;
+  const localSingleStripDocumentSignal =
+    ((axisAlignedDocumentLattice.horizontalBandCount ?? 0) ===
+      2 &&
+      (axisAlignedDocumentLattice.verticalBandCount ?? 0) <
+        3) ||
+    ((axisAlignedDocumentLattice.verticalBandCount ?? 0) ===
+      2 &&
+      (axisAlignedDocumentLattice.horizontalBandCount ?? 0) <
+        3);
+  const waveformValidatedOneDimensionalSharedLattice =
+    localSingleStripDocumentSignal
+      ? measureLocalOneDimensionalSharedLattice(
+          localSharedFrameCellCandidates,
+          width,
+          height,
+        )
+      : null;
+  const physicalOneDimensionalSharedLattice =
+    !axisAlignedDocumentLattice.tableGridArtifact &&
+    localSingleStripDocumentSignal
+      ? measurePhysicalOneDimensionalSharedLattice(
+          mask,
+          width,
+          height,
+          compactMinimumWidth,
+          compactMinimumHeight,
+        )
+      : null;
+  const localOneDimensionalSharedLattice =
+    waveformValidatedOneDimensionalSharedLattice ??
+    physicalOneDimensionalSharedLattice;
   const sharedFrameDocumentEvidence =
     sharedFrameCellCandidates.length >=
     MINIMUM_DENSE_SEPARATION_CANDIDATES
@@ -8773,37 +10078,6 @@ export function detectChartPanelsFromMask(
             ).length,
         }
       : rawArbitraryWaveformRecovery;
-  const repeatedGridRecovery =
-    recoverRepeatedWaveformGridCandidates(
-      measuredCandidates,
-      curveEvidenceMask,
-      options.curveColorMasks,
-      width,
-      height,
-      !axisAlignedDocumentLattice.tableGridArtifact &&
-        !sharedFrameGridArtifact,
-    );
-  const candidatePool = repeatedGridRecovery
-    ? [
-        ...measuredCandidates,
-        ...arbitraryWaveformRecovery.candidates,
-        ...(deskewedPhysicalFrameRecovery
-          ? [deskewedPhysicalFrameRecovery.candidate]
-          : []),
-        ...repeatedGridRecovery.candidates,
-      ]
-    : [
-        ...measuredCandidates,
-        ...arbitraryWaveformRecovery.candidates,
-        ...(deskewedPhysicalFrameRecovery
-          ? [deskewedPhysicalFrameRecovery.candidate]
-          : []),
-      ];
-  const geometricRejectedNonChartCount = measuredCandidates.reduce(
-    (count, candidate) =>
-      count + (candidate.curveEvidence.valid ? 0 : 1),
-    0,
-  );
   let extendedDeskewedDocument;
   const getExtendedDeskewedDocument = () => {
     if (!extendedDeskewedDocument) {
@@ -8831,6 +10105,72 @@ export function detectChartPanelsFromMask(
           !candidate.spatialFrameRecovered,
       )) &&
     getExtendedDeskewedDocument().tableGridArtifact;
+  const proofLattice =
+    axisAlignedDocumentLattice.tableGridArtifact
+      ? axisAlignedDocumentLattice
+      : localOneDimensionalSharedLattice
+        ? localOneDimensionalSharedLattice
+      : rotatedDocumentTableGridArtifact
+        ? getExtendedDeskewedDocument().lattice
+        : null;
+  const tableLatticeShape =
+    proofLattice &&
+    proofLattice.horizontalBandCount >= 2 &&
+    proofLattice.verticalBandCount >= 2 &&
+    (proofLattice.horizontalBandCount >= 3 ||
+      proofLattice.verticalBandCount >= 3)
+      ? {
+          rows: proofLattice.horizontalBandCount - 1,
+          columns: proofLattice.verticalBandCount - 1,
+          horizontalBands:
+            proofLattice === axisAlignedDocumentLattice ||
+            proofLattice.localOneDimensionalSharedLattice ===
+              true
+              ? proofLattice.horizontalBands
+              : null,
+          verticalBands:
+            proofLattice === axisAlignedDocumentLattice ||
+            proofLattice.localOneDimensionalSharedLattice ===
+              true
+              ? proofLattice.verticalBands
+              : null,
+        }
+      : null;
+  const repeatedGridRecovery =
+    recoverRepeatedWaveformGridCandidates(
+      measuredCandidates,
+      mask,
+      curveEvidenceMask,
+      options.curveColorMasks,
+      width,
+      height,
+      true,
+      axisAlignedDocumentLattice.tableGridArtifact ||
+        Boolean(localOneDimensionalSharedLattice) ||
+        rotatedDocumentTableGridArtifact,
+      tableLatticeShape,
+    );
+  const candidatePool = repeatedGridRecovery
+    ? [
+        ...measuredCandidates,
+        ...arbitraryWaveformRecovery.candidates,
+        ...(deskewedPhysicalFrameRecovery
+          ? [deskewedPhysicalFrameRecovery.candidate]
+          : []),
+        ...repeatedGridRecovery.candidates,
+      ]
+    : [
+        ...measuredCandidates,
+        ...arbitraryWaveformRecovery.candidates,
+        ...(deskewedPhysicalFrameRecovery
+          ? [deskewedPhysicalFrameRecovery.candidate]
+          : []),
+      ];
+  const geometricRejectedNonChartCount = measuredCandidates.reduce(
+    (count, candidate) =>
+      count + (candidate.curveEvidence.valid ? 0 : 1),
+    0,
+  );
   let candidates = candidatePool.filter(
     (candidate) => {
       const candidateAreaRatio =
@@ -8937,6 +10277,21 @@ export function detectChartPanelsFromMask(
           width,
           height,
         );
+      const localOneDimensionalBounds =
+        localOneDimensionalSharedLattice?.bounds;
+      const coveredByLocalOneDimensionalLattice =
+        Boolean(localOneDimensionalBounds) &&
+        !repeatedGridRecovery &&
+        ((centerX >= localOneDimensionalBounds.left &&
+          centerX <= localOneDimensionalBounds.right &&
+          centerY >= localOneDimensionalBounds.top &&
+          centerY <= localOneDimensionalBounds.bottom) ||
+          intersectionArea(
+            candidate,
+            localOneDimensionalBounds,
+          ) /
+            Math.max(1, area(candidate)) >=
+            0.35);
       const weakFramelessArtifact =
         candidate.detectionReason ===
           "frameless-curve-region" &&
@@ -9015,7 +10370,8 @@ export function detectChartPanelsFromMask(
         (repeatedGridStructuralRescue ||
           (!coveredByAxisAlignedTable &&
             !coveredByRotatedTable &&
-            !coveredByLocalTable)) &&
+            !coveredByLocalTable &&
+            !coveredByLocalOneDimensionalLattice)) &&
         area(candidate) >=
           width * height *
             effectiveMinimumCandidateAreaRatio
@@ -9025,11 +10381,13 @@ export function detectChartPanelsFromMask(
   if (repeatedGridRecovery) {
     const recoveredCandidates = candidates.filter(
       (candidate) =>
+        candidate.repeatedGridStructuralRescue === true ||
         candidate.detectionReason ===
-        "repeated-waveform-grid",
+          "repeated-waveform-grid",
     );
     const independentCandidates = candidates.filter(
       (candidate) =>
+        candidate.repeatedGridStructuralRescue !== true &&
         candidate.detectionReason !==
           "repeated-waveform-grid" &&
         !recoveredCandidates.some(
@@ -9196,6 +10554,14 @@ export function detectChartPanelsFromMask(
             candidate.curveEvidence.colorSeriesCount ?? 0,
           tableGridArtifact:
             candidate.curveEvidence.tableGridArtifact === true,
+          measuredPeakCount:
+            candidate.curveEvidence.measuredPeakCount ?? 0,
+          measuredPeakTopologyAccepted:
+            candidate.curveEvidence
+              .measuredPeakTopologyAccepted === true,
+          tableEmbeddedWaveformGridProof:
+            candidate.curveEvidence
+              .tableEmbeddedWaveformGridProof === true,
           spatialFrameRecovered:
             candidate.spatialFrameRecovered === true,
           spatialFrameSupport:
@@ -9231,6 +10597,37 @@ export function detectChartPanelsFromMask(
             turningCellCount:
               repeatedGridRecovery.turningCellCount ??
               repeatedGridRecovery.expectedCellCount,
+            measuredTopologyCellCount:
+              repeatedGridRecovery
+                .measuredTopologyCellCount ?? 0,
+            minimumMeasuredTopologyCells:
+              repeatedGridRecovery
+                .minimumMeasuredTopologyCells ?? 0,
+            measuredMultiPeakCellCount:
+              repeatedGridRecovery
+                .measuredMultiPeakCellCount ?? 0,
+            minimumMeasuredMultiPeakCells:
+              repeatedGridRecovery
+                .minimumMeasuredMultiPeakCells ?? 0,
+            plotGridCellCount:
+              repeatedGridRecovery.plotGridCellCount ?? 0,
+            minimumPlotGridCells:
+              repeatedGridRecovery.minimumPlotGridCells ?? 0,
+            measuredWaveformGridProof:
+              repeatedGridRecovery
+                .measuredWaveformGridProof === true,
+            tableEmbeddedWaveformGridProof:
+              repeatedGridRecovery
+                .tableEmbeddedWaveformGridProof === true,
+            tableLatticeShapeConsistent:
+              repeatedGridRecovery
+                .tableLatticeShapeConsistent !== false,
+            tableProjectionBoundsAligned:
+              repeatedGridRecovery
+                .tableProjectionBoundsAligned !== false,
+            medianProjectedRowCoverage:
+              repeatedGridRecovery
+                .medianProjectedRowCoverage ?? null,
             recoveredCellCount:
               repeatedGridRecovery.candidates.length,
             expectedCellCount:
@@ -9243,6 +10640,8 @@ export function detectChartPanelsFromMask(
             rowStep: repeatedGridRecovery.rowStep,
             recoveryMode:
               repeatedGridRecovery.recoveryMode ?? "strict",
+            projectionMode:
+              repeatedGridRecovery.projectionMode ?? null,
             requireTurningTopologyOutsideGrid:
               repeatedGridRecovery
                 .requireTurningTopologyOutsideGrid === true,
@@ -9324,6 +10723,12 @@ export function detectChartPanelsFromMask(
       tableLatticeDominant: {
         axisAligned:
           axisAlignedDocumentLattice.tableGridArtifact,
+        axisAlignedHorizontalBandCount:
+          axisAlignedDocumentLattice.horizontalBandCount ?? 0,
+        axisAlignedVerticalBandCount:
+          axisAlignedDocumentLattice.verticalBandCount ?? 0,
+        axisAlignedBounds:
+          axisAlignedDocumentLattice.bounds ?? null,
         sharedFrame: sharedFrameGridArtifact,
         rotated: Boolean(
           rotatedDocumentTableGridArtifact,
@@ -9457,6 +10862,7 @@ export function detectChartPanelsFromMask(
     const fallbackTableGridArtifact =
       axisAlignedDocumentLattice.tableGridArtifact ||
       sharedFrameGridArtifact ||
+      Boolean(localOneDimensionalSharedLattice) ||
       getExtendedDeskewedDocument().tableGridArtifact;
     if (
       wholeImageCurveEvidence.valid &&

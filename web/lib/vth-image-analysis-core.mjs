@@ -1317,17 +1317,35 @@ function upperArcProfileFromEnvelopes(
   peaks,
   width,
 ) {
-  if (peaks.length < 2) return null;
+  if (!peaks.length) return null;
+  const finiteColumns = Array.from(
+    { length: width },
+    (_value, x) => x,
+  ).filter((x) =>
+    envelopes.some((envelope) =>
+      Number.isFinite(envelope[x]),
+    ),
+  );
+  if (!finiteColumns.length) return null;
   const spacing = upperArcSpacingStats(peaks).median;
-  const padding = Math.max(3, Math.round(spacing * 0.55));
-  const leftLimit = Math.max(
-    0,
-    Math.floor(peaks[0].x - padding),
-  );
-  const rightLimit = Math.min(
-    width - 1,
-    Math.ceil(peaks.at(-1).x + padding),
-  );
+  const padding =
+    peaks.length >= 2
+      ? Math.max(3, Math.round(spacing * 0.55))
+      : 0;
+  const leftLimit =
+    peaks.length >= 2
+      ? Math.max(
+          0,
+          Math.floor(peaks[0].x - padding),
+        )
+      : finiteColumns[0];
+  const rightLimit =
+    peaks.length >= 2
+      ? Math.min(
+          width - 1,
+          Math.ceil(peaks.at(-1).x + padding),
+        )
+      : finiteColumns.at(-1);
   const combined = Array(width).fill(Number.NaN);
   for (let x = leftLimit; x <= rightLimit; x += 1) {
     const values = envelopes
@@ -1404,6 +1422,7 @@ function emptyUpperArcEvidence(reason, metadata = {}) {
  * @param {Uint8Array[]} colorMasks
  * @param {number} width
  * @param {number} height
+ * @param {{minimumPeakCount?: 1 | 2}} [options]
  */
 export function extractUpperArcPeakEvidence(
   broadMask,
@@ -1411,6 +1430,7 @@ export function extractUpperArcPeakEvidence(
   colorMasks,
   width,
   height,
+  options = {},
 ) {
   const expectedLength = width * height;
   if (
@@ -1507,8 +1527,10 @@ export function extractUpperArcPeakEvidence(
     broad.peaks,
     width,
   );
+  const minimumPeakCount =
+    options.minimumPeakCount === 1 ? 1 : 2;
   if (
-    peaks.length < 2 ||
+    peaks.length < minimumPeakCount ||
     !isValidStateCount(peaks.length)
   ) {
     return emptyUpperArcEvidence("PEAK_COUNT_REJECTED", {
@@ -1527,8 +1549,9 @@ export function extractUpperArcPeakEvidence(
     apexRows.map((row) => Math.abs(row - apexMedian)),
   );
   if (
-    spacing.coefficientOfVariation > 0.24 ||
-    spanRatio < 0.22 ||
+    (peaks.length >= 2 &&
+      (spacing.coefficientOfVariation > 0.24 ||
+        spanRatio < 0.22)) ||
     apexMedianDeviation > Math.max(4, height * 0.07)
   ) {
     return emptyUpperArcEvidence("LATTICE_GEOMETRY_REJECTED", {
@@ -3274,6 +3297,100 @@ export function analyzeForegroundMasks(
           upperArcEvidence.gapCoefficientOfVariation ??
           null,
         spanRatio: upperArcEvidence.spanRatio ?? 0,
+      },
+    },
+  };
+}
+
+/**
+ * Reuse a full-document, cell-local peak/valley measurement when cropping a
+ * shared table-like chart grid changes the foreground/color quantization.
+ * The override is deliberately narrow: only a single extracted distribution
+ * may be replaced, and the supplied descriptor must already satisfy the
+ * strict physical topology contract. Independent full-width color series keep
+ * their normal per-series analysis.
+ *
+ * @param {ReturnType<typeof analyzeForegroundMasks>} analysis
+ * @param {{profile?: number[]; descriptor?: object; source?: string} | null | undefined} evidence
+ */
+export function applyVerifiedWaveformEvidence(
+  analysis,
+  evidence,
+) {
+  const profile = Array.isArray(evidence?.profile)
+    ? resample(evidence.profile)
+    : null;
+  const descriptor = evidence?.descriptor;
+  const stateCount = Number(descriptor?.stateCount);
+  const valleyCount = Math.max(0, stateCount - 1);
+  const topologyConsistent =
+    profile?.length === 256 &&
+    profile.every(Number.isFinite) &&
+    isValidStateCount(stateCount) &&
+    descriptor.regularized !== true &&
+    descriptor.observedStateCount === stateCount &&
+    descriptor.peakLocations?.length === stateCount &&
+    descriptor.peakWidths?.length === stateCount &&
+    descriptor.valleyLocations?.length === valleyCount &&
+    descriptor.valleyHeights?.length === valleyCount &&
+    descriptor.valleyDepths?.length === valleyCount &&
+    descriptor.valleyPositionRatios?.length === valleyCount &&
+    descriptor.peakValleyDistances?.length ===
+      valleyCount * 2 &&
+    descriptor.tailSlopes?.length === 2;
+  const declaredSeries =
+    Array.isArray(analysis?.series) &&
+    analysis.series.length
+      ? analysis.series
+      : [];
+  if (
+    !analysis ||
+    !topologyConsistent ||
+    declaredSeries.length !== 1
+  ) {
+    return analysis;
+  }
+
+  const irregularityScore =
+    distributionIrregularityScore(profile, descriptor);
+  const originalSeries = declaredSeries[0];
+  return {
+    ...analysis,
+    profile,
+    descriptor,
+    alternatives: [],
+    series: [
+      {
+        ...originalSeries,
+        seriesIndex: 0,
+        sourceIndex: 0,
+        profile,
+        descriptor,
+        irregularityScore,
+        observedColumnRatio: 1,
+        separationMode:
+          evidence.source ??
+          "table-grid-measured-topology",
+        selected: true,
+      },
+    ],
+    selectedSeriesIndex: 0,
+    distributionSelection: {
+      mode: "single",
+      distributionCount: 1,
+      selectedIndex: 0,
+      selectedSeriesIndex: 0,
+      irregularityScore,
+    },
+    preprocessing: {
+      ...analysis.preprocessing,
+      verifiedWaveformEvidence: {
+        applied: true,
+        source:
+          evidence.source ??
+          "table-grid-measured-topology",
+        stateCount,
+        valleyCount,
       },
     },
   };

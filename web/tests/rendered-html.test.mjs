@@ -334,24 +334,24 @@ async function verifyStandalonePackageDownload({
 
 test("ships the verified Windows standalone package as a web download", async () => {
   await verifyStandalonePackageDownload({
-    manifestFileName: "windows-package-v1.40.0.json",
+    manifestFileName: "windows-package-v1.41.0.json",
     checksumFileName: "vth-similarity-windows-x64.sha256",
-    expectedVersion: "1.40.0",
+    expectedVersion: "1.41.0",
     expectedFileName: "vth-similarity-windows-x64.zip",
     expectedDownloadFileName:
-      "vth-similarity-windows-x64-v1.40.0.zip",
+      "vth-similarity-windows-x64-v1.41.0.zip",
     assemble: assembleWindowsPackage,
   });
 });
 
 test("ships the verified Ubuntu external Web server package as a web download", async () => {
   await verifyStandalonePackageDownload({
-    manifestFileName: "ubuntu-package-v1.40.0.json",
+    manifestFileName: "ubuntu-package-v1.41.0.json",
     checksumFileName: "vth-similarity-ubuntu-x64.sha256",
-    expectedVersion: "1.40.0",
+    expectedVersion: "1.41.0",
     expectedFileName: "vth-similarity-ubuntu-x64.tar.gz",
     expectedDownloadFileName:
-      "vth-similarity-ubuntu-x64-v1.40.0.tar.gz",
+      "vth-similarity-ubuntu-x64-v1.41.0.tar.gz",
     assemble: assembleUbuntuPackage,
   });
 });
@@ -788,7 +788,7 @@ test("shares standardized candidates and anonymous relevance labels centrally", 
   assert.match(sharedCore, /encodeSharedCandidateCursor/);
   assert.match(sharedRoute, /createSharedTrainingCandidate/);
   assert.match(sharedRoute, /authoritativeProfile/);
-  assert.match(sharedRoute, /descriptorFromProfile/);
+  assert.match(sharedRoute, /authoritativeDescriptor/);
   assert.match(sharedRoute, /nextCursor/);
   assert.match(sharedStore, /VTH_SHARED_IMAGES/);
   assert.match(sharedStore, /source_image_key/);

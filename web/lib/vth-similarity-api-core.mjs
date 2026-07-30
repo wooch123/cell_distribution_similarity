@@ -6,7 +6,10 @@ import {
   cropInterleavedPixels,
   detectChartPanels,
 } from "./vth-chart-panel-core.mjs";
-import { analyzeForegroundMasks } from "./vth-image-analysis-core.mjs";
+import {
+  analyzeForegroundMasks,
+  applyVerifiedWaveformEvidence,
+} from "./vth-image-analysis-core.mjs";
 import { buildForegroundMasks } from "./vth-image-core.mjs";
 import {
   mergeCandidateSets,
@@ -889,6 +892,56 @@ function cloneAuthoritativeDescriptor(descriptor) {
   };
 }
 
+function hasStrictPhysicalTopology(descriptor) {
+  const stateCount = Number(descriptor?.stateCount);
+  const valleyCount = Math.max(0, stateCount - 1);
+  return (
+    isValidStateCount(stateCount) &&
+    descriptor.peakLocations?.length === stateCount &&
+    descriptor.peakLocations.every(
+      (location, index, locations) =>
+        Number.isFinite(location) &&
+        (index === 0 || locations[index - 1] < location),
+    ) &&
+    descriptor.peakWidths?.length === stateCount &&
+    descriptor.peakWidths.every(
+      (width) => Number.isFinite(width) && width > 0,
+    ) &&
+    descriptor.valleyLocations?.length === valleyCount &&
+    descriptor.valleyLocations.every(
+      (location, index) =>
+        Number.isFinite(location) &&
+        descriptor.peakLocations[index] < location &&
+        location < descriptor.peakLocations[index + 1],
+    ) &&
+    descriptor.valleyHeights?.length === valleyCount &&
+    descriptor.valleyHeights.every(Number.isFinite) &&
+    descriptor.valleyDepths?.length === valleyCount &&
+    descriptor.valleyDepths.every(Number.isFinite) &&
+    descriptor.valleyPositionRatios?.length === valleyCount &&
+    descriptor.valleyPositionRatios.every(
+      (ratio) =>
+        Number.isFinite(ratio) && ratio > 0 && ratio < 1,
+    ) &&
+    descriptor.peakValleyDistances?.length ===
+      valleyCount * 2 &&
+    descriptor.peakValleyDistances.every(Number.isFinite) &&
+    descriptor.tailSlopes?.length === 2 &&
+    descriptor.tailSlopes.every(Number.isFinite)
+  );
+}
+
+function authoritativeDescriptorForProfile(
+  profile,
+  descriptor,
+) {
+  const authoritative =
+    hasStrictPhysicalTopology(descriptor)
+      ? descriptor
+      : descriptorFromProfile(profile);
+  return cloneAuthoritativeDescriptor(authoritative);
+}
+
 function readingOrderPanels(detected, decoded) {
   const detectedPanels =
     detected.panels.length === 1 &&
@@ -982,11 +1035,14 @@ function validateSelectedFullDocumentWaveform({
       maximumPixels: 540_000,
     },
   );
-  const analysis = analyzeSimilarityPixels(
-    analysisRaster.data,
-    analysisRaster.width,
-    analysisRaster.height,
-    analysisRaster.scale ?? decoded.scale,
+  const analysis = applyVerifiedWaveformEvidence(
+    analyzeSimilarityPixels(
+      analysisRaster.data,
+      analysisRaster.width,
+      analysisRaster.height,
+      analysisRaster.scale ?? decoded.scale,
+    ),
+    panel.verifiedWaveform,
   );
   const { series: extractedSeries } =
     normalizedAnalysisSeries(analysis);
@@ -1013,9 +1069,14 @@ function validateSelectedFullDocumentWaveform({
     matched.series.profile,
     256,
   );
-  const authoritativeDescriptor = descriptorFromProfile(
-    authoritativeProfile,
-  );
+  const authoritativeDescriptor =
+    authoritativeDescriptorForProfile(
+      authoritativeProfile,
+      analysis.preprocessing?.verifiedWaveformEvidence
+        ?.applied === true
+        ? matched.series.descriptor
+        : null,
+    );
   return {
     panelCount: panels.length,
     matchedPanelIndex,
@@ -1031,9 +1092,7 @@ function validateSelectedFullDocumentWaveform({
       matched.profileSimilarity >=
         MIN_TRAINING_PROVENANCE_STATE_SIMILARITY,
     authoritativeProfile,
-    authoritativeDescriptor: cloneAuthoritativeDescriptor(
-      authoritativeDescriptor,
-    ),
+    authoritativeDescriptor,
     authoritativeSourceImage:
       encodeAuthoritativeSourceJpeg(sourceCrop),
   };
@@ -1257,9 +1316,11 @@ export async function validateTrainingWaveformImage({
     authoritativeHypothesis.profile,
     256,
   );
-  const authoritativeDescriptor = descriptorFromProfile(
-    authoritativeProfile,
-  );
+  const authoritativeDescriptor =
+    authoritativeDescriptorForProfile(
+      authoritativeProfile,
+      null,
+    );
 
   return {
     panelCount: 1,
@@ -1275,9 +1336,7 @@ export async function validateTrainingWaveformImage({
       matchingStateSimilarity >=
       MIN_TRAINING_PROVENANCE_STATE_SIMILARITY,
     authoritativeProfile,
-    authoritativeDescriptor: cloneAuthoritativeDescriptor(
-      authoritativeDescriptor,
-    ),
+    authoritativeDescriptor,
   };
 }
 
@@ -1528,12 +1587,14 @@ function queryForApi(
   };
 }
 
-function trainingWaveformForApi(profile) {
+function trainingWaveformForApi(profile, descriptor) {
   const normalizedProfile = resample(profile, 256).map(Number);
-  const descriptor = descriptorFromProfile(normalizedProfile);
   return {
     profile: normalizedProfile,
-    descriptor: cloneAuthoritativeDescriptor(descriptor),
+    descriptor: authoritativeDescriptorForProfile(
+      normalizedProfile,
+      descriptor,
+    ),
   };
 }
 
@@ -1696,11 +1757,14 @@ export async function searchSimilarityImage({
             height: decoded.height,
           }
         : sourceResolutionPanelPixels(decoded, sourceBounds);
-    const analysis = analyzeSimilarityPixels(
-      cropped.pixels,
-      cropped.width,
-      cropped.height,
-      cropped.scale ?? decoded.scale,
+    const analysis = applyVerifiedWaveformEvidence(
+      analyzeSimilarityPixels(
+        cropped.pixels,
+        cropped.width,
+        cropped.height,
+        cropped.scale ?? decoded.scale,
+      ),
+      panel.verifiedWaveform,
     );
     const {
       series,
@@ -1748,6 +1812,10 @@ export async function searchSimilarityImage({
       });
       const trainingWaveform = trainingWaveformForApi(
         seriesAnalysis.profile,
+        analysis.preprocessing?.verifiedWaveformEvidence
+          ?.applied === true
+          ? seriesAnalysis.descriptor
+          : null,
       );
       return {
         seriesIndex,

@@ -117,11 +117,16 @@ Web 서버 패키지에도 포함됩니다.
 `node scripts/generate-random-multichart-samples.mjs`, FHD 밀집 샘플은
 `node scripts/generate-fhd-30-chart-sample.mjs`로 재생성합니다.
 같은 샘플과 무작위 배치·저해상도 복원을 포함한 최대 30차트 분리기는
-Windows x64 및 Ubuntu x64 v1.40.0 독립판에도 함께 포함됩니다.
+Windows x64 및 Ubuntu x64 v1.41.0 독립판에도 함께 포함됩니다.
 v1.40.0 화면은 분석된 차트·색상 시리즈별 선택 학습을 지원합니다.
 160×90의 4차트, 240×135의 12차트, 조밀한 표형 격자 위 색상/검정
 유효 파형과 실제 색상 표를 짝지은 회귀로 초저해상도 분리와 표 오판정을
 동시에 검증합니다.
+v1.41.0은 800×450 이미지의 절반에 표처럼 밀집한 분포 차트와 공유 경계
+4×4 차트 격자를 셀별로 재분석합니다. 여러 셀에서 실제 peak와 인접
+valley가 함께 측정되고 복구 행·열 수가 물리 격자와 일치할 때만 전역
+표 판정을 해제합니다. 같은 크기의 텍스트 표, 단일 Gaussian 스파크라인
+표, 저품질 JPEG 및 회전 표는 계속 제외합니다.
 1672×941 진단 슬라이드에서는 회색 외곽선을 배경으로 오인하지 않고,
 좌측 4행×5열의 8-State VTH 파형 20개만 반복 격자로 복원합니다.
 우측 설명문·수치 표·단조 RBER 추세선 차트는 비분포 콘텐츠로 제외합니다.
@@ -180,9 +185,9 @@ Ubuntu x64 패키지는 별도 외부 Web 서버용 배포본입니다. 상단�
 `UBUNTU X64 · WEB SERVER` 버튼으로 내려받으며 Windows 오프라인 실행판과
 용도와 버튼을 분리합니다. 웹 다운로드는 두 운영체제 모두 schema-v1
 매니페스트와 SHA-256 조각 검증을 거쳐 브라우저에서 원본 패키지를
-재조립합니다. v1.40.0의 고정 매니페스트 경로는
-`/downloads/windows-package-v1.40.0.json`과
-`/downloads/ubuntu-package-v1.40.0.json`입니다. Ubuntu 매니페스트의
+재조립합니다. v1.41.0의 고정 매니페스트 경로는
+`/downloads/windows-package-v1.41.0.json`과
+`/downloads/ubuntu-package-v1.41.0.json`입니다. Ubuntu 매니페스트의
 `fileName`은 우선 `vth-similarity-ubuntu-x64.tar.gz`를 사용하며, 다운로드
 코어는 검증된 `.tar.gz` 또는 `.zip` 파일명을 그대로 받아 버전이 붙은
 파일명으로 저장합니다.

@@ -697,12 +697,12 @@ async function main() {
       "utf8",
     );
     assert(
-      bundledServerSource.includes("v1.40.0") &&
-        !bundledServerSource.includes("v1.39.0"),
+      bundledServerSource.includes("v1.41.0") &&
+        !bundledServerSource.includes("v1.40.0"),
       "Windows package contains a stale hosted download release.",
     );
     assert(
-      manifest.version === "1.40.0" &&
+      manifest.version === "1.41.0" &&
         manifest.platform === "windows-x64" &&
         manifest.network?.mode === "offline-loopback-only" &&
         manifest.network?.externalNetworkAllowed === false &&

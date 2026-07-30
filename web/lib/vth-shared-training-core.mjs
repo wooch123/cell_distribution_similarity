@@ -1,6 +1,7 @@
 import {
   descriptorFromProfile,
   isValidStateCount,
+  tryDescriptorFromPeakHints,
 } from "./vth-shape-core.mjs";
 import { normalizeTrainingSourceSelection } from "./vth-learning-core.mjs";
 
@@ -130,7 +131,7 @@ export function validateSharedTrainingPayload(payload) {
     throw new Error("Curve descriptor가 올바르지 않습니다.");
   }
   const rebuiltDescriptor = descriptorFromProfile(profile);
-  if (
+  const rebuiltDiffers =
     rebuiltDescriptor.stateCount !== suppliedDescriptor.stateCount ||
     rebuiltDescriptor.peakLocations.length !==
       suppliedDescriptor.peakLocations.length ||
@@ -138,12 +139,32 @@ export function validateSharedTrainingPayload(payload) {
     rebuiltDescriptor.peakLocations.some(
       (value, index) =>
         Math.abs(value - suppliedDescriptor.peakLocations[index]) > 0.03,
-    )
-  ) {
+    );
+  const guided = tryDescriptorFromPeakHints(
+    profile,
+    suppliedDescriptor.peakLocations,
+  );
+  const guidedMatches =
+    guided.ok &&
+    guided.descriptor.stateCount ===
+      suppliedDescriptor.stateCount &&
+    Math.abs(
+      guided.descriptor.area - suppliedDescriptor.area,
+    ) <= 0.03 &&
+    guided.descriptor.peakLocations.every(
+      (value, index) =>
+        Math.abs(
+          value - suppliedDescriptor.peakLocations[index],
+        ) <= 0.03,
+    );
+  if (rebuiltDiffers && !guidedMatches) {
     throw new Error(
       "Curve와 descriptor가 일치하지 않습니다. 그래프를 다시 분석해 주세요.",
     );
   }
+  const authoritativeDescriptor = rebuiltDiffers
+    ? guided.descriptor
+    : rebuiltDescriptor;
 
   const sourceSelection = normalizeTrainingSourceSelection(
     payload?.sourceSelection,
@@ -155,7 +176,7 @@ export function validateSharedTrainingPayload(payload) {
       .trim()
       .slice(0, 80) || "공용 VTH 분포",
     profile,
-    descriptor: rebuiltDescriptor,
+    descriptor: authoritativeDescriptor,
     contributorToken: String(payload.contributorToken),
     deletionToken: String(payload.deletionToken),
     consentVersion: requestedConsentVersion,
