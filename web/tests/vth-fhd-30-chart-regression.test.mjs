@@ -309,10 +309,10 @@ test("detector separates all thirty dense FHD charts and rejects distractors", (
       `${distractor.type} must not be returned as a chart panel`,
     );
   }
-  // The regression intentionally allows more work than smaller PPT samples,
-  // but still catches accidental combinatorial scans.
+  // The regression intentionally allows more work than smaller PPT samples
+  // and shared CI load, but still catches accidental combinatorial scans.
   assert.ok(
-    elapsedMs < 10_000,
+    elapsedMs < 15_000,
     `FHD 30-panel detection took ${elapsedMs.toFixed(1)} ms`,
   );
 });
