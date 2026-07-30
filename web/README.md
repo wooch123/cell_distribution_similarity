@@ -117,11 +117,15 @@ Web 서버 패키지에도 포함됩니다.
 `node scripts/generate-random-multichart-samples.mjs`, FHD 밀집 샘플은
 `node scripts/generate-fhd-30-chart-sample.mjs`로 재생성합니다.
 같은 샘플과 무작위 배치·저해상도 복원을 포함한 최대 30차트 분리기는
-Windows x64 및 Ubuntu x64 v1.42.0 독립판에도 함께 포함됩니다.
+Windows x64 및 Ubuntu x64 v1.43.0 독립판에도 함께 포함됩니다.
 v1.40.0 화면은 분석된 차트·색상 시리즈별 선택 학습을 지원합니다.
 160×90의 4차트, 240×135의 12차트, 조밀한 표형 격자 위 색상/검정
 유효 파형과 실제 색상 표를 짝지은 회귀로 초저해상도 분리와 표 오판정을
 동시에 검증합니다.
+v1.43.0은 큰 글자 제목·문서 본문·숫자 행·회전 텍스트의 반복 글자 형상과
+잉크 배치를 분석해 분포 차트로 오인하지 않도록 합니다. 실선·점선 격자가
+조밀한 실제 차트는 가이드 교차부의 파형 연속성과 물리 프레임 증거를
+검증해 표로 제외하지 않고 유효한 분포 Curve를 보존합니다.
 v1.42.0은 단일 차트 안의 가이드선이 조밀한 격자를 만들어 표처럼 보이는
 경우에도 후보별 물리 격자와 직선 제거 잔여 파형의 연속성을 증명해 실제
 분포를 유지합니다. 독립적인 전체 폭 색상 분포가 1~2개이면 각각 별도
@@ -191,9 +195,9 @@ Ubuntu x64 패키지는 별도 외부 Web 서버용 배포본입니다. 상단�
 `UBUNTU X64 · WEB SERVER` 버튼으로 내려받으며 Windows 오프라인 실행판과
 용도와 버튼을 분리합니다. 웹 다운로드는 두 운영체제 모두 schema-v1
 매니페스트와 SHA-256 조각 검증을 거쳐 브라우저에서 원본 패키지를
-재조립합니다. v1.42.0의 고정 매니페스트 경로는
-`/downloads/windows-package-v1.42.0.json`과
-`/downloads/ubuntu-package-v1.42.0.json`입니다. Ubuntu 매니페스트의
+재조립합니다. v1.43.0의 고정 매니페스트 경로는
+`/downloads/windows-package-v1.43.0.json`과
+`/downloads/ubuntu-package-v1.43.0.json`입니다. Ubuntu 매니페스트의
 `fileName`은 우선 `vth-similarity-ubuntu-x64.tar.gz`를 사용하며, 다운로드
 코어는 검증된 `.tar.gz` 또는 `.zip` 파일명을 그대로 받아 버전이 붙은
 파일명으로 저장합니다.

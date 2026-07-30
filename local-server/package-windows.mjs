@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(moduleDirectory, "..");
-const version = "1.42.0";
+const version = "1.43.0";
 const packageName = `vth-similarity-windows-x64-v${version}`;
 const artifactsDirectory = path.join(projectRoot, "artifacts", "windows");
 const cacheDirectory = path.join(artifactsDirectory, "cache");
@@ -359,6 +359,9 @@ Node.js v${nodeVersion} Windows x64 런타임이 압축된 상태로 포함되�
 - 그래프 안의 실선·점선 격자, 짧은 눈금, 부분 가이드선, 배경 잡음 군집을
   단계별로 제거하고 Curve가 선을 가로지르는 교차부만 연속성에 따라
   복원합니다.
+- 큰 글자 제목과 문서 본문은 반복 글자 형상과 잉크 배치를 검증해 차트
+  후보에서 제외하고, 조밀한 격자 안의 실제 파형은 가이드 교차 연속성을
+  확인해 보존합니다.
 - 파일 선택과 끌어놓기 외에 화면을 클릭한 뒤 Ctrl+V로 클립보드 이미지를
   바로 분석할 수 있습니다.
 - 브라우저에서 복원한 Curve와 원본 수치 Curve의 positive pair로 학습한
@@ -488,7 +491,9 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
       selectiveMultiChartTraining: true,
       arbitraryPositionWaveformDetection: true,
       borderSafeDocumentBackground: true,
+      largeDocumentTextRejection: true,
       repeatedWaveformGridRecovery: true,
+      denseGuideWaveformPreservation: true,
       colorSeriesSeparation: true,
       colorSeriesPolicy: {
         maxIndependentSeries: 2,

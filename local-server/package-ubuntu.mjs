@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(moduleDirectory, "..");
-const version = "1.42.0";
+const version = "1.43.0";
 const packageName = `vth-similarity-ubuntu-x64-v${version}`;
 const artifactsDirectory = path.join(projectRoot, "artifacts", "ubuntu");
 const cacheDirectory = path.join(artifactsDirectory, "cache");
@@ -461,6 +461,9 @@ Linux x64 실행 파일과 검색 코퍼스, 모델, 웹 화면, 로컬 학습 A
   간격과 가는 프레임을 원본 분석 크기에서 보존합니다.
 - 실선·점선 격자, 눈금선, 가이드선, 라벨과 배경 잡음을 제거한 뒤 로그
   스케일 Curve 형상을 비교합니다.
+- 큰 글자 제목과 문서 본문은 반복 글자 형상과 잉크 배치를 검증해 차트
+  후보에서 제외하고, 조밀한 격자 안의 실제 파형은 가이드 교차 연속성을
+  확인해 보존합니다.
 
 로컬 학습
 - 화면에서 한 장, 여러 파일 또는 폴더 전체를 분석해 이 서버의 data/
@@ -566,7 +569,9 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
       selectiveMultiChartTraining: true,
       arbitraryPositionWaveformDetection: true,
       borderSafeDocumentBackground: true,
+      largeDocumentTextRejection: true,
       repeatedWaveformGridRecovery: true,
+      denseGuideWaveformPreservation: true,
       colorSeriesSeparation: true,
       colorSeriesPolicy: {
         maxIndependentSeries: 2,

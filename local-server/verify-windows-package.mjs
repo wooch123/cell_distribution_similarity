@@ -698,6 +698,8 @@ async function main() {
         readme.includes("최대 2개") &&
         readme.includes("3개 이상의 색상 분포") &&
         readme.includes("가장 비정규적인 산포 하나만") &&
+        readme.includes("큰 글자 제목과 문서 본문") &&
+        readme.includes("가이드 교차 연속성") &&
         readme.includes("원하는") &&
         readme.includes(
           "선택하지 않은 차트와 시리즈는 학습 저장소로 보내지 않습니다",
@@ -719,12 +721,12 @@ async function main() {
       "utf8",
     );
     assert(
-      bundledServerSource.includes("v1.42.0") &&
-        !bundledServerSource.includes("v1.41.0"),
+      bundledServerSource.includes("v1.43.0") &&
+        !bundledServerSource.includes("v1.42.0"),
       "Windows package contains a stale hosted download release.",
     );
     assert(
-      manifest.version === "1.42.0" &&
+      manifest.version === "1.43.0" &&
         manifest.platform === "windows-x64" &&
         manifest.network?.mode === "offline-loopback-only" &&
         manifest.network?.externalNetworkAllowed === false &&
@@ -736,7 +738,9 @@ async function main() {
         manifest.bundled?.arbitraryPositionWaveformDetection ===
           true &&
         manifest.bundled?.borderSafeDocumentBackground === true &&
+        manifest.bundled?.largeDocumentTextRejection === true &&
         manifest.bundled?.repeatedWaveformGridRecovery === true &&
+        manifest.bundled?.denseGuideWaveformPreservation === true &&
         manifest.bundled?.colorSeriesSeparation === true &&
         manifest.bundled?.colorSeriesPolicy
           ?.maxIndependentSeries === 2 &&
