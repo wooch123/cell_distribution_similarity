@@ -2608,10 +2608,10 @@ export function VthSearchApp() {
                 onClick={() => void downloadUbuntuStandalone()}
                 disabled={isDownloadingWindows || isDownloadingUbuntu}
                 data-testid="ubuntu-download"
-                aria-label="Ubuntu x64 외부 Web 서버 독립판 다운로드"
+                aria-label="Ubuntu x64 및 ARM64 외부 Web 서버 독립판 다운로드"
               >
                 <span aria-live="polite">
-                  {ubuntuDownloadStatus || "UBUNTU X64 · WEB SERVER"}
+                  {ubuntuDownloadStatus || "UBUNTU X64 + ARM64 · WEB SERVER"}
                 </span>
                 <strong>
                   {isDownloadingUbuntu ? "패키지 준비 중…" : "외부 Web 서버 다운로드"}

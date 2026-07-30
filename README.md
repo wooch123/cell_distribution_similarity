@@ -78,9 +78,9 @@ descriptor와 선택 좌표를 전송합니다. 파일명·메타데이터를 �
 있습니다. Query와 평가자 코드는 서버에서 해시하고, 복수 평가자의 합의
 판정만 재학습 데이터로 집계합니다.
 
-## Windows 무설치판과 Ubuntu 외부 Web 서버판
+## Windows 무설치판과 Ubuntu Universal 외부 Web 서버판
 
-`artifacts/windows/vth-similarity-windows-x64-v1.43.0.zip`은 공식
+`artifacts/windows/vth-similarity-windows-x64-v1.44.0.zip`은 공식
 Windows x64 Node 런타임, 웹 빌드, 로컬 학습 API를 함께 담습니다. 다른
 Windows PC에서 압축을 푼 뒤 `start.bat`을 실행하면 설치 없이
 `http://127.0.0.1:4173`에서 동작합니다. 코퍼스, 모델, 웹 화면, 런타임이
@@ -114,6 +114,10 @@ FHD 한 이미지에서 오밀조밀하게 배치된 차트를 최대 30개까�
 추가 회귀는 160×90 이미지의 4개 차트와 240×135 이미지의 12개 차트를
 각각 분리하며, 조밀한 표 형태 격자 위의 유효 파형은 색상/검정 Curve 모두
 유지하고 같은 크기의 실제 색상 표는 계속 제외하는지 확인합니다.
+v1.44.0의 Ubuntu Universal 패키지는 공식 Linux x64와 ARM64 Node
+런타임을 하나의 `.tar.gz`에 함께 포함합니다. `start.sh`가 `uname -m`의
+`x86_64`/`amd64` 또는 `aarch64`/`arm64` 값을 판별해 맞는 런타임을
+자동 선택하며, 매니페스트의 플랫폼 계약은 `ubuntu-linux-universal`입니다.
 v1.43.0은 큰 글자 제목·문서 본문·숫자 행·회전 텍스트의 반복 글자 형상과
 잉크 배치를 분석해 분포 차트로 오인하지 않도록 합니다. 동시에 실선·점선
 격자가 조밀해 표처럼 보이는 실제 차트는 가이드 교차부의 파형 연속성과
@@ -143,11 +147,13 @@ v1.40.0은 현재 분석한 멀티 차트의 차트·색상 시리즈 선택 학
 경로에서 동일하게 검증합니다. 캡션 수와 달리 화면 밖으로 완전히 잘린
 peak는 임의 생성하지 않습니다.
 
-Ubuntu x64는 여러 사용자가 접속하는 외부 Web 서버용 독립 배포본입니다.
+Ubuntu Universal (x64 + ARM64)은 여러 사용자가 접속하는 외부 Web 서버용
+독립 배포본입니다.
 운영 페이지 상단에서 Windows의 `WINDOWS X64 · FULL OFFLINE` 버튼과
-Ubuntu의 `UBUNTU X64 · WEB SERVER` 버튼을 구분해 제공합니다.
+Ubuntu의 `UBUNTU X64 + ARM64 · WEB SERVER` 버튼을 구분해 제공합니다.
 Node.js나 npm을 설치하지 않고 `.tar.gz`를 풀어 `./start.sh`를 실행하면
-기본적으로 `0.0.0.0:4173`에서 수신합니다. 서버가 표시한
+현재 Linux 아키텍처에 맞는 번들 런타임으로 기본 `0.0.0.0:4173`에서
+수신합니다. 서버가 표시한
 `http://<Ubuntu 서버 IP>:4173/?access_token=...` URL을 다른 PC에서
 처음 한 번 열면 접근 키를 HttpOnly·SameSite 쿠키로 전환하고 주소창에서는
 즉시 제거합니다. `VTH_API_KEY`로 고정 키를 지정한 API 클라이언트는
@@ -160,14 +166,16 @@ Node.js나 npm을 설치하지 않고 `.tar.gz`를 풀어 `./start.sh`를 실행
 `data/` 학습 저장소와 추천 후보를 공유하지만 외부 공용 서버로 원본이나
 학습 데이터를 전송하지 않습니다.
 
-v1.43.0 웹 배포는
-`/downloads/windows-package-v1.43.0.json`과
-`/downloads/ubuntu-package-v1.43.0.json`을 고정 매니페스트 경로로
+v1.44.0 웹 배포는
+`/downloads/windows-package-v1.44.0.json`과
+`/downloads/ubuntu-package-v1.44.0.json`을 고정 매니페스트 경로로
 사용합니다. 두 매니페스트 모두 schema-v1 `browser-assembled` 계약과
 SHA-256 조각 목록을 제공하며 브라우저는 각 조각과 완성 파일을 검증한 뒤
 저장합니다. Windows 결과물은 ZIP이고 Ubuntu는
-`vth-similarity-ubuntu-x64.tar.gz`를 우선 사용합니다. 매니페스트가 검증된
-Ubuntu ZIP을 선언하는 경우에도 같은 공통 조립기가 확장자를 보존합니다.
+`vth-similarity-ubuntu-universal.tar.gz` 단일 결과물입니다. Ubuntu
+매니페스트는 `platform: ubuntu-linux-universal`,
+`architectures: [x64, arm64]`와 이 파일명을 함께 검증해야 다운로드할 수
+있습니다.
 Windows 패키지 내부에는 다운로드 자산을 다시 넣지 않아 재귀 패키징을
 방지합니다.
 

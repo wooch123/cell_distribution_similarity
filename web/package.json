@@ -12,9 +12,9 @@
     "test": "npm run build && node --test tests/*.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "package:windows": "node ../local-server/package-windows.mjs",
-    "verify:windows": "node ../local-server/verify-windows-package.mjs ../artifacts/windows/vth-similarity-windows-x64-v1.43.0.zip",
+    "verify:windows": "node ../local-server/verify-windows-package.mjs ../artifacts/windows/vth-similarity-windows-x64-v1.44.0.zip",
     "package:ubuntu": "node ../local-server/package-ubuntu.mjs",
-    "verify:ubuntu": "node ../local-server/verify-ubuntu-package.mjs ../artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.43.0.tar.gz",
+    "verify:ubuntu": "node ../local-server/verify-ubuntu-package.mjs ../artifacts/ubuntu/vth-similarity-ubuntu-universal-v1.44.0.tar.gz",
     "db:generate": "drizzle-kit generate",
     "corpus:import-faults": "node scripts/import-vnand-fault-distributions.mjs",
     "evaluate:fault-corpus": "node scripts/evaluate-fault-corpus-robustness.mjs"

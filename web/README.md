@@ -83,8 +83,8 @@ curl -X POST \
 Raw 이미지 외에도 `multipart/form-data`의 `image` 파일과
 `application/json`의 Base64 `imageDataUrl`을 받을 수 있습니다. 전체
 계약과 오류 코드는 `/similarity-search-openapi.json`에서 확인합니다.
-동일 엔드포인트와 계약은 Windows 패키지의 로컬 서버와 Ubuntu x64 외부
-Web 서버 패키지에도 포함됩니다.
+동일 엔드포인트와 계약은 Windows 패키지의 로컬 서버와 Ubuntu Universal
+(x64 + ARM64) 외부 Web 서버 패키지에도 포함됩니다.
 
 ## 개인정보 처리
 
@@ -117,11 +117,15 @@ Web 서버 패키지에도 포함됩니다.
 `node scripts/generate-random-multichart-samples.mjs`, FHD 밀집 샘플은
 `node scripts/generate-fhd-30-chart-sample.mjs`로 재생성합니다.
 같은 샘플과 무작위 배치·저해상도 복원을 포함한 최대 30차트 분리기는
-Windows x64 및 Ubuntu x64 v1.43.0 독립판에도 함께 포함됩니다.
+Windows x64 및 Ubuntu Universal v1.44.0 독립판에도 함께 포함됩니다.
 v1.40.0 화면은 분석된 차트·색상 시리즈별 선택 학습을 지원합니다.
 160×90의 4차트, 240×135의 12차트, 조밀한 표형 격자 위 색상/검정
 유효 파형과 실제 색상 표를 짝지은 회귀로 초저해상도 분리와 표 오판정을
 동시에 검증합니다.
+v1.44.0의 Ubuntu Universal 패키지는 공식 Linux x64와 ARM64 Node
+런타임을 하나의 `.tar.gz`에 포함합니다. `start.sh`가 `uname -m`의
+`x86_64`/`amd64` 또는 `aarch64`/`arm64` 값을 판별해 맞는 런타임을
+자동 선택하며, 매니페스트 플랫폼은 `ubuntu-linux-universal`입니다.
 v1.43.0은 큰 글자 제목·문서 본문·숫자 행·회전 텍스트의 반복 글자 형상과
 잉크 배치를 분석해 분포 차트로 오인하지 않도록 합니다. 실선·점선 격자가
 조밀한 실제 차트는 가이드 교차부의 파형 연속성과 물리 프레임 증거를
@@ -191,16 +195,20 @@ Windows 완전 독립판은 같은 웹 빌드, 검색 코퍼스, 모델, Node �
 `connect-src 'self' blob:`와 `/api/v1/runtime`의 오프라인 정책으로 외부 통신을
 차단합니다.
 
-Ubuntu x64 패키지는 별도 외부 Web 서버용 배포본입니다. 상단의
-`UBUNTU X64 · WEB SERVER` 버튼으로 내려받으며 Windows 오프라인 실행판과
-용도와 버튼을 분리합니다. 웹 다운로드는 두 운영체제 모두 schema-v1
-매니페스트와 SHA-256 조각 검증을 거쳐 브라우저에서 원본 패키지를
-재조립합니다. v1.43.0의 고정 매니페스트 경로는
-`/downloads/windows-package-v1.43.0.json`과
-`/downloads/ubuntu-package-v1.43.0.json`입니다. Ubuntu 매니페스트의
-`fileName`은 우선 `vth-similarity-ubuntu-x64.tar.gz`를 사용하며, 다운로드
-코어는 검증된 `.tar.gz` 또는 `.zip` 파일명을 그대로 받아 버전이 붙은
-파일명으로 저장합니다.
+Ubuntu Universal (x64 + ARM64) 패키지는 별도 외부 Web 서버용
+배포본입니다. 상단의 `UBUNTU X64 + ARM64 · WEB SERVER` 버튼으로
+내려받으며 Windows 오프라인 실행판과 용도와 버튼을 분리합니다. Node.js나
+npm 설치 없이 `.tar.gz`를 풀고 `./start.sh`를 실행하면 현재 Linux
+아키텍처에 맞는 번들 런타임을 선택합니다. 웹 다운로드는 두 운영체제 모두
+schema-v1 매니페스트와 SHA-256 조각 검증을 거쳐 브라우저에서 원본
+패키지를 재조립합니다. v1.44.0의 고정 매니페스트 경로는
+`/downloads/windows-package-v1.44.0.json`과
+`/downloads/ubuntu-package-v1.44.0.json`입니다. Ubuntu 매니페스트는
+`platform: ubuntu-linux-universal`,
+`architectures: [x64, arm64]`와
+`fileName: vth-similarity-ubuntu-universal.tar.gz`를 선언해야 하며,
+다운로드 코어는 이를 검증한 뒤
+`vth-similarity-ubuntu-universal-v1.44.0.tar.gz`로 저장합니다.
 
 ## 로컬 실행
 

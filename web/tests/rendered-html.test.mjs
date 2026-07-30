@@ -125,7 +125,7 @@ test("server-renders the VTH similarity product", async () => {
   assert.match(html, /검색 API 문서/);
   assert.match(html, /완전 독립판 다운로드/);
   assert.match(html, /WINDOWS X64 · FULL OFFLINE/);
-  assert.match(html, /UBUNTU X64 · WEB SERVER/);
+  assert.match(html, /UBUNTU X64 \+ ARM64 · WEB SERVER/);
   assert.match(html, /외부 Web 서버 다운로드/);
   assert.match(html, /ENGINE V3\.8/);
   assert.match(html, /WAVEFORM-ONLY/);
@@ -248,6 +248,8 @@ async function verifyStandalonePackageDownload({
   manifestFileName,
   checksumFileName,
   expectedVersion,
+  expectedPlatform,
+  expectedArchitectures,
   expectedFileName,
   expectedDownloadFileName,
   assemble,
@@ -285,6 +287,15 @@ async function verifyStandalonePackageDownload({
   assert.deepEqual(deployedParts, sourceParts);
   assert.equal(metadata.schemaVersion, 1);
   assert.equal(metadata.version, expectedVersion);
+  if (expectedPlatform) {
+    assert.equal(metadata.platform, expectedPlatform);
+  }
+  if (expectedArchitectures) {
+    assert.deepEqual(
+      metadata.architectures,
+      expectedArchitectures,
+    );
+  }
   assert.equal(metadata.fileName, expectedFileName);
   assert.equal(metadata.delivery, "browser-assembled");
   assert.equal(metadata.bytes, zip.length);
@@ -334,24 +345,26 @@ async function verifyStandalonePackageDownload({
 
 test("ships the verified Windows standalone package as a web download", async () => {
   await verifyStandalonePackageDownload({
-    manifestFileName: "windows-package-v1.43.0.json",
+    manifestFileName: "windows-package-v1.44.0.json",
     checksumFileName: "vth-similarity-windows-x64.sha256",
-    expectedVersion: "1.43.0",
+    expectedVersion: "1.44.0",
     expectedFileName: "vth-similarity-windows-x64.zip",
     expectedDownloadFileName:
-      "vth-similarity-windows-x64-v1.43.0.zip",
+      "vth-similarity-windows-x64-v1.44.0.zip",
     assemble: assembleWindowsPackage,
   });
 });
 
 test("ships the verified Ubuntu external Web server package as a web download", async () => {
   await verifyStandalonePackageDownload({
-    manifestFileName: "ubuntu-package-v1.43.0.json",
-    checksumFileName: "vth-similarity-ubuntu-x64.sha256",
-    expectedVersion: "1.43.0",
-    expectedFileName: "vth-similarity-ubuntu-x64.tar.gz",
+    manifestFileName: "ubuntu-package-v1.44.0.json",
+    checksumFileName: "vth-similarity-ubuntu-universal.sha256",
+    expectedVersion: "1.44.0",
+    expectedPlatform: "ubuntu-linux-universal",
+    expectedArchitectures: ["x64", "arm64"],
+    expectedFileName: "vth-similarity-ubuntu-universal.tar.gz",
     expectedDownloadFileName:
-      "vth-similarity-ubuntu-x64-v1.43.0.tar.gz",
+      "vth-similarity-ubuntu-universal-v1.44.0.tar.gz",
     assemble: assembleUbuntuPackage,
   });
 });

@@ -17,8 +17,8 @@ import { fileURLToPath } from "node:url";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(moduleDirectory, "..");
-const version = "1.43.0";
-const packageName = `vth-similarity-ubuntu-x64-v${version}`;
+const version = "1.44.0";
+const packageName = `vth-similarity-ubuntu-universal-v${version}`;
 const artifactsDirectory = path.join(projectRoot, "artifacts", "ubuntu");
 const cacheDirectory = path.join(artifactsDirectory, "cache");
 const stagingDirectory = path.join(artifactsDirectory, packageName);
@@ -31,7 +31,7 @@ const publicDownloadsDirectory = path.join(
   "downloads",
 );
 const publicChunksDirectory = path.join(publicDownloadsDirectory, "chunks");
-const publicArchiveName = "vth-similarity-ubuntu-x64.tar.gz";
+const publicArchiveName = "vth-similarity-ubuntu-universal.tar.gz";
 const publicMetadataPath = path.join(
   publicDownloadsDirectory,
   "ubuntu-package.json",
@@ -42,17 +42,41 @@ const publicVersionedMetadataPath = path.join(
 );
 const publicChecksumPath = path.join(
   publicDownloadsDirectory,
-  "vth-similarity-ubuntu-x64.sha256",
+  "vth-similarity-ubuntu-universal.sha256",
 );
 const publicChunkSize = 4 * 1024 * 1024;
 const nodeVersion = "24.14.0";
-const nodeArchiveRoot = `node-v${nodeVersion}-linux-x64`;
-const nodeArchiveName = `${nodeArchiveRoot}.tar.xz`;
-const nodeArchivePath = path.join(cacheDirectory, nodeArchiveName);
-const nodeArchiveUrl =
-  `https://nodejs.org/dist/v${nodeVersion}/${nodeArchiveName}`;
-const nodeArchiveSha256 =
-  "41cd79bb7877c81605a9e68ec4c91547774f46a40c67a17e34d7179ef11729df";
+const nodeRuntimes = [
+  {
+    id: "linux-x64",
+    architecture: "x64",
+    unameMachines: ["x86_64", "amd64"],
+    elfMachine: 62,
+    archiveSha256:
+      "41cd79bb7877c81605a9e68ec4c91547774f46a40c67a17e34d7179ef11729df",
+  },
+  {
+    id: "linux-arm64",
+    architecture: "arm64",
+    unameMachines: ["aarch64", "arm64"],
+    elfMachine: 183,
+    archiveSha256:
+      "e7adfca03d9173276114a6f2219df1a7d25e1bfd6bbd771d3f839118a2053094",
+  },
+].map((runtime) => {
+  const archiveRoot =
+    `node-v${nodeVersion}-linux-${runtime.architecture}`;
+  const archiveName = `${archiveRoot}.tar.xz`;
+  return {
+    ...runtime,
+    archiveRoot,
+    archiveName,
+    archivePath: path.join(cacheDirectory, archiveName),
+    archiveUrl:
+      `https://nodejs.org/dist/v${nodeVersion}/${archiveName}`,
+    executable: `runtime/${runtime.id}/node`,
+  };
+});
 const sampleFiles = [
   "vnand-ppt-12-chart-sample.png",
   "vnand-random-multichart-mixed-01.png",
@@ -94,28 +118,42 @@ function sha256(filePath) {
   });
 }
 
-async function ensureNodeArchive() {
+async function ensureNodeArchive(runtime) {
   await mkdir(cacheDirectory, { recursive: true });
   let shouldDownload = true;
   try {
-    shouldDownload = (await sha256(nodeArchivePath)) !== nodeArchiveSha256;
+    shouldDownload =
+      (await sha256(runtime.archivePath)) !== runtime.archiveSha256;
   } catch {
     shouldDownload = true;
   }
   if (shouldDownload) {
-    const response = await fetch(nodeArchiveUrl, { redirect: "follow" });
+    const response = await fetch(runtime.archiveUrl, {
+      redirect: "follow",
+    });
     if (!response.ok) {
       throw new Error(
-        `Node.js Ubuntu runtime download failed (${response.status}).`,
+        `Node.js Ubuntu ${runtime.architecture} runtime download failed ` +
+          `(${response.status}).`,
       );
     }
-    await writeFile(nodeArchivePath, Buffer.from(await response.arrayBuffer()));
-  }
-  const actualChecksum = await sha256(nodeArchivePath);
-  if (actualChecksum !== nodeArchiveSha256) {
-    throw new Error(
-      `Node.js archive checksum mismatch: ${actualChecksum}`,
+    await writeFile(
+      runtime.archivePath,
+      Buffer.from(await response.arrayBuffer()),
     );
+  }
+  const actualChecksum = await sha256(runtime.archivePath);
+  if (actualChecksum !== runtime.archiveSha256) {
+    throw new Error(
+      `Node.js ${runtime.architecture} archive checksum mismatch: ` +
+        actualChecksum,
+    );
+  }
+}
+
+async function ensureNodeArchives() {
+  for (const runtime of nodeRuntimes) {
+    await ensureNodeArchive(runtime);
   }
 }
 
@@ -157,7 +195,7 @@ async function cleanPreviousUbuntuDownloads() {
   await Promise.all(
     chunkEntries
       .filter((entry) =>
-        entry.startsWith("vth-similarity-ubuntu-x64-v"),
+        /^vth-similarity-ubuntu-(?:x64|universal)-v/.test(entry),
       )
       .map((entry) =>
         rm(path.join(publicChunksDirectory, entry), { force: true }),
@@ -169,7 +207,8 @@ async function cleanPreviousUbuntuDownloads() {
       .filter(
         (entry) =>
           /^ubuntu-package(?:-v\d+\.\d+\.\d+)?\.json$/.test(entry) ||
-          entry === "vth-similarity-ubuntu-x64.sha256",
+          entry === "vth-similarity-ubuntu-x64.sha256" ||
+          entry === "vth-similarity-ubuntu-universal.sha256",
       )
       .map((entry) =>
         rm(path.join(publicDownloadsDirectory, entry), { force: true }),
@@ -200,7 +239,7 @@ async function packageUbuntu() {
     ),
     access(path.join(projectRoot, "web", "node_modules", ".bin", "esbuild")),
   ]);
-  await ensureNodeArchive();
+  await ensureNodeArchives();
 
   await rm(stagingDirectory, { recursive: true, force: true });
   await rm(archivePath, { force: true });
@@ -211,7 +250,12 @@ async function packageUbuntu() {
   );
   await rm(extractionDirectory, { recursive: true, force: true });
   await Promise.all([
-    mkdir(path.join(stagingDirectory, "runtime"), { recursive: true }),
+    ...nodeRuntimes.map((runtime) =>
+      mkdir(
+        path.join(stagingDirectory, "runtime", runtime.id),
+        { recursive: true },
+      ),
+    ),
     mkdir(path.join(stagingDirectory, "server"), { recursive: true }),
     mkdir(path.join(stagingDirectory, "site"), { recursive: true }),
     mkdir(path.join(stagingDirectory, "data", "images"), {
@@ -221,25 +265,37 @@ async function packageUbuntu() {
   ]);
 
   try {
-    await run("tar", [
-      "-xJf",
-      nodeArchivePath,
-      "-C",
-      extractionDirectory,
-      `${nodeArchiveRoot}/bin/node`,
-      `${nodeArchiveRoot}/LICENSE`,
-    ]);
-    await Promise.all([
-      cp(
-        path.join(extractionDirectory, nodeArchiveRoot, "bin", "node"),
-        path.join(stagingDirectory, "runtime", "node"),
+    for (const runtime of nodeRuntimes) {
+      await run("tar", [
+        "-xJf",
+        runtime.archivePath,
+        "-C",
+        extractionDirectory,
+        `${runtime.archiveRoot}/bin/node`,
+        `${runtime.archiveRoot}/LICENSE`,
+      ]);
+      await cp(
+        path.join(
+          extractionDirectory,
+          runtime.archiveRoot,
+          "bin",
+          "node",
+        ),
+        path.join(stagingDirectory, runtime.executable),
+      );
+      await chmod(
+        path.join(stagingDirectory, runtime.executable),
+        0o755,
+      );
+    }
+    await cp(
+      path.join(
+        extractionDirectory,
+        nodeRuntimes[0].archiveRoot,
+        "LICENSE",
       ),
-      cp(
-        path.join(extractionDirectory, nodeArchiveRoot, "LICENSE"),
-        path.join(stagingDirectory, "runtime", "LICENSE"),
-      ),
-    ]);
-    await chmod(path.join(stagingDirectory, "runtime", "node"), 0o755);
+      path.join(stagingDirectory, "runtime", "LICENSE"),
+    );
   } finally {
     await rm(extractionDirectory, { recursive: true, force: true });
   }
@@ -298,11 +354,39 @@ fi
 VTH_LISTEN_HOST=\${VTH_HOST:-0.0.0.0}
 VTH_LISTEN_PORT=\${VTH_PORT:-4173}
 
+VTH_KERNEL=$(uname -s 2>/dev/null || printf 'unknown')
+if [ "$VTH_KERNEL" != "Linux" ]; then
+  echo "Unsupported operating system: $VTH_KERNEL (Ubuntu Linux required)." >&2
+  echo "이 패키지는 Ubuntu Linux 전용입니다." >&2
+  exit 126
+fi
+VTH_MACHINE=$(uname -m 2>/dev/null || printf 'unknown')
+case "$VTH_MACHINE" in
+  x86_64|amd64)
+    VTH_RUNTIME=linux-x64
+    ;;
+  aarch64|arm64)
+    VTH_RUNTIME=linux-arm64
+    ;;
+  *)
+    echo "Unsupported Ubuntu CPU architecture: $VTH_MACHINE" >&2
+    echo "지원하지 않는 Ubuntu CPU 아키텍처입니다. x86_64 또는 ARM64가 필요합니다." >&2
+    exit 126
+    ;;
+esac
+VTH_NODE="$PACKAGE_DIR/runtime/$VTH_RUNTIME/node"
+if [ ! -x "$VTH_NODE" ]; then
+  echo "Bundled Node.js runtime is missing or not executable: $VTH_NODE" >&2
+  echo "패키지를 다시 다운로드하고 tar.gz 형식으로 압축 해제해 주세요." >&2
+  exit 126
+fi
+
 if [ -z "\${VTH_API_KEY:-}" ]; then
   echo "A token-protected access URL will be printed when the server starts."
 else
   echo "Using the fixed access key from VTH_API_KEY."
 fi
+echo "Selected embedded Node.js runtime: $VTH_RUNTIME ($VTH_MACHINE)."
 echo "Starting on \${VTH_LISTEN_HOST}:\${VTH_LISTEN_PORT}."
 echo "Use one of the concrete token-protected URLs printed below."
 
@@ -315,7 +399,7 @@ if [ -n "\${VTH_PUBLIC_URL:-}" ]; then
   set -- "$@" --public-url "$VTH_PUBLIC_URL"
 fi
 
-exec "$PACKAGE_DIR/runtime/node" "$PACKAGE_DIR/server/server.mjs" "$@"
+exec "$VTH_NODE" "$PACKAGE_DIR/server/server.mjs" "$@"
 `;
   const environmentExample = `# Copy this file to vth.env and edit it.
 # start.sh automatically loads vth.env from this package directory.
@@ -396,8 +480,8 @@ echo "Installed $UNIT_PATH for $RUN_USER:$RUN_GROUP"
 echo "Check status: systemctl status $SERVICE_NAME"
 echo "Follow logs:  journalctl -u $SERVICE_NAME -f"
 `;
-  const readme = `유사 산포 검색 - Ubuntu Linux x64 독립 패키지
-=================================================
+  const readme = `유사 산포 검색 - Ubuntu Linux x64 + ARM64 Universal 독립 패키지
+==================================================================
 
 실행
 1. tar -xzf ${packageName}.tar.gz
@@ -408,9 +492,19 @@ echo "Follow logs:  journalctl -u $SERVICE_NAME -f"
 5. 종료할 때 터미널에서 Ctrl+C를 누릅니다.
 
 Node.js나 npm 설치는 필요하지 않습니다. 공식 Node.js v${nodeVersion}
-Linux x64 실행 파일과 검색 코퍼스, 모델, 웹 화면, 로컬 학습 API가 모두
-포함되어 있습니다. tar.gz는 start.sh의 실행 권한과 Linux 파일 모드를
+Linux x64와 ARM64 실행 파일, 검색 코퍼스, 모델, 웹 화면, 로컬 학습 API가
+모두 포함되어 있습니다. start.sh가 uname -m으로 CPU를 판별해
+x86_64/amd64에서는 x64 런타임을, aarch64/arm64에서는 ARM64 런타임을
+자동 선택합니다. tar.gz는 start.sh의 실행 권한과 Linux 파일 모드를
 보존하므로 ZIP 대신 사용합니다.
+
+실행 오류 확인
+- "exec format error"가 발생했던 이전 x64 전용 패키지 대신 파일명에
+  ubuntu-universal-v${version}이 있는 새 패키지를 사용하십시오.
+- 지원 CPU는 x86_64/amd64와 aarch64/arm64입니다. 다른 CPU에서는
+  start.sh가 실행 전에 아키텍처와 지원 범위를 명확히 출력합니다.
+- start.sh가 런타임 누락 또는 실행 권한 문제를 발견하면 재다운로드와
+  tar.gz 재압축 해제 안내를 출력합니다.
 
 네트워크와 보안
 - start.sh는 기본적으로 0.0.0.0:4173에서 수신하여 같은 LAN의 다른
@@ -525,20 +619,30 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
   const dataReadme = `사용자가 학습한 이미지와 training-index.json이 저장됩니다.
 서비스 실행 중에는 파일을 직접 편집하지 마세요.
 `;
-  const runtimePath = path.join(stagingDirectory, "runtime", "node");
+  const runtimeDeclarations = await Promise.all(
+    nodeRuntimes.map(async (runtime) => ({
+      architecture: runtime.architecture,
+      unameMachines: runtime.unameMachines,
+      elfMachine: runtime.elfMachine,
+      officialArchive: runtime.archiveUrl,
+      archiveSha256: runtime.archiveSha256,
+      executable: runtime.executable,
+      executableSha256: await sha256(
+        path.join(stagingDirectory, runtime.executable),
+      ),
+    })),
+  );
   const manifest = {
     name: "유사 산포 검색",
     version,
-    platform: "ubuntu-linux-x64",
-    architecture: "x86_64",
+    platform: "ubuntu-linux-universal",
+    architectures: ["x64", "arm64"],
     entrypoint: "start.sh",
     archiveFormat: "tar.gz",
     node: {
       version: nodeVersion,
-      officialArchive: nodeArchiveUrl,
-      archiveSha256: nodeArchiveSha256,
-      executable: "runtime/node",
-      executableSha256: await sha256(runtimePath),
+      selection: "uname-m",
+      runtimes: runtimeDeclarations,
       firstRunExtraction: false,
     },
     service: {
@@ -654,7 +758,7 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
       offset + publicChunkSize,
     );
     const fileName =
-      `vth-similarity-ubuntu-x64-v${version}.tar.gz.part-` +
+      `vth-similarity-ubuntu-universal-v${version}.tar.gz.part-` +
       String(index).padStart(3, "0");
     const partPath = path.join(publicChunksDirectory, fileName);
     const digest = createHash("sha256").update(bytes).digest("hex");
@@ -670,9 +774,10 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
   const publicMetadata = `${JSON.stringify(
     {
       schemaVersion: 1,
-      name: "유사 산포 검색 Ubuntu Linux x64 독립판",
+      name: "유사 산포 검색 Ubuntu Linux x64 + ARM64 Universal 독립판",
       version,
-      platform: "ubuntu-linux-x64",
+      platform: "ubuntu-linux-universal",
+      architectures: ["x64", "arm64"],
       fileName: publicArchiveName,
       mediaType: "application/gzip",
       delivery: "browser-assembled",

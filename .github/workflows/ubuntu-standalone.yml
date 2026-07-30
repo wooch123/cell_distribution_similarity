@@ -1,4 +1,4 @@
-name: Windows and Ubuntu x64 standalone
+name: Windows and Ubuntu Universal standalone
 
 on:
   push:
@@ -15,9 +15,9 @@ concurrency:
 
 jobs:
   package-and-verify:
-    name: Package and verify Windows and Ubuntu x64
+    name: Package Windows and Ubuntu Universal; verify x64
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Check out source
@@ -53,32 +53,66 @@ jobs:
       - name: Verify Windows package and offline runtime
         run: >-
           node local-server/verify-windows-package.mjs
-          artifacts/windows/vth-similarity-windows-x64-v1.43.0.zip
+          artifacts/windows/vth-similarity-windows-x64-v1.44.0.zip
 
-      - name: Package Ubuntu x64 standalone server
+      - name: Package Ubuntu Universal x64 + ARM64 standalone server
         run: node local-server/package-ubuntu.mjs
 
-      - name: Verify bundled runtime and start.sh
+      - name: Verify Ubuntu Universal package on Linux x64
         run: >-
           node local-server/verify-ubuntu-package.mjs
-          artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.43.0.tar.gz
+          artifacts/ubuntu/vth-similarity-ubuntu-universal-v1.44.0.tar.gz
 
       - name: Upload verified Windows package
         uses: actions/upload-artifact@v6
         with:
-          name: vth-similarity-windows-x64-v1.43.0
+          name: vth-similarity-windows-x64-v1.44.0
           if-no-files-found: error
           retention-days: 14
           path: |
-            artifacts/windows/vth-similarity-windows-x64-v1.43.0.zip
-            artifacts/windows/vth-similarity-windows-x64-v1.43.0.zip.sha256
+            artifacts/windows/vth-similarity-windows-x64-v1.44.0.zip
+            artifacts/windows/vth-similarity-windows-x64-v1.44.0.zip.sha256
 
       - name: Upload verified Ubuntu package
         uses: actions/upload-artifact@v6
         with:
-          name: vth-similarity-ubuntu-x64-v1.43.0
+          name: vth-similarity-ubuntu-universal-v1.44.0
           if-no-files-found: error
           retention-days: 14
           path: |
-            artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.43.0.tar.gz
-            artifacts/ubuntu/vth-similarity-ubuntu-x64-v1.43.0.tar.gz.sha256
+            artifacts/ubuntu/vth-similarity-ubuntu-universal-v1.44.0.tar.gz
+            artifacts/ubuntu/vth-similarity-ubuntu-universal-v1.44.0.tar.gz.sha256
+
+  verify-ubuntu-arm64:
+    name: Verify Ubuntu Universal package on Linux ARM64
+    needs: package-and-verify
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 24.14.0
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24.14.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install Web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Download Ubuntu Universal package
+        uses: actions/download-artifact@v6
+        with:
+          name: vth-similarity-ubuntu-universal-v1.44.0
+          path: artifacts/ubuntu
+
+      - name: Verify Ubuntu Universal package on Linux ARM64
+        run: >-
+          node local-server/verify-ubuntu-package.mjs
+          artifacts/ubuntu/vth-similarity-ubuntu-universal-v1.44.0.tar.gz

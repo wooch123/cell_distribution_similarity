@@ -3,12 +3,15 @@ import { createHash } from "node:crypto";
 import { createReadStream, constants as fsConstants } from "node:fs";
 import {
   access,
+  chmod,
+  mkdir,
   mkdtemp,
   open,
   readFile,
   readdir,
   rm,
   stat,
+  writeFile,
 } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
@@ -106,7 +109,14 @@ async function verifyChecksums(packageDirectory) {
   return checked;
 }
 
-async function verifyLinuxX64Executable(nodePath, expectedSha256) {
+async function verifyLinuxExecutable(
+  nodePath,
+  {
+    expectedSha256,
+    expectedElfMachine,
+    architecture,
+  },
+) {
   await access(nodePath, fsConstants.X_OK);
   const file = await open(nodePath, "r");
   try {
@@ -123,15 +133,15 @@ async function verifyLinuxX64Executable(nodePath, expectedSha256) {
     assert(header[4] === 2, "Embedded Node executable is not 64-bit.");
     assert(header[5] === 1, "Embedded Node executable is not little-endian.");
     assert(
-      header.readUInt16LE(18) === 62,
-      "Embedded Node executable is not Linux x86_64.",
+      header.readUInt16LE(18) === expectedElfMachine,
+      `Embedded Node executable is not Linux ${architecture}.`,
     );
   } finally {
     await file.close();
   }
   assert(
     (await sha256(nodePath)) === expectedSha256,
-    "Embedded Node executable checksum does not match the package manifest.",
+    `Embedded Linux ${architecture} Node checksum does not match the package manifest.`,
   );
 }
 
@@ -512,13 +522,77 @@ function firstExternalIpv4Address() {
   return "";
 }
 
+async function verifyUnsupportedArchitectureRejection(
+  packageDirectory,
+  temporaryDirectory,
+) {
+  const fakeBinDirectory = path.join(
+    temporaryDirectory,
+    "unsupported-architecture-bin",
+  );
+  const fakeUnamePath = path.join(fakeBinDirectory, "uname");
+  await mkdir(fakeBinDirectory, { recursive: true });
+  await writeFile(
+    fakeUnamePath,
+    `#!/usr/bin/env sh
+case "\${1:-}" in
+  -s) printf 'Linux\\n' ;;
+  -m) printf 'riscv64\\n' ;;
+  *) exit 2 ;;
+esac
+`,
+    "utf8",
+  );
+  await chmod(fakeUnamePath, 0o755);
+
+  const child = spawn(path.join(packageDirectory, "start.sh"), [], {
+    cwd: packageDirectory,
+    env: {
+      ...process.env,
+      PATH: `${fakeBinDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
+      VTH_API_KEY: "unsupported-architecture-check",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: false,
+  });
+  const stdout = [];
+  const stderr = [];
+  child.stdout.on("data", (chunk) => stdout.push(chunk));
+  child.stderr.on("data", (chunk) => stderr.push(chunk));
+  const exitCode = await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", resolve);
+  });
+  const output = `${Buffer.concat(stdout)}\n${Buffer.concat(stderr)}`;
+  assert(
+    exitCode === 126 &&
+      output.includes("Unsupported Ubuntu CPU architecture: riscv64") &&
+      output.includes("x86_64") &&
+      output.includes("ARM64") &&
+      !output.includes("exec format error"),
+    "start.sh did not reject an unsupported CPU before executing Node.",
+  );
+  return {
+    architecture: "riscv64",
+    exitCode,
+    rejectedBeforeExec: true,
+  };
+}
+
 async function verifyPackagedRuntimeService(packageDirectory) {
-  if (process.platform !== "linux" || process.arch !== "x64") {
+  if (
+    process.platform !== "linux" ||
+    !["x64", "arm64"].includes(process.arch)
+  ) {
     return {
       executed: false,
       reason: `host-is-${process.platform}-${process.arch}`,
     };
   }
+  const runtimeRelativePath =
+    process.arch === "arm64"
+      ? "runtime/linux-arm64/node"
+      : "runtime/linux-x64/node";
 
   const port = await reserveTcpPort();
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -634,12 +708,17 @@ async function verifyPackagedRuntimeService(packageDirectory) {
       stderr,
     ).toString("utf8")}`;
     assert(
-      output.includes("0.0.0.0") || externalAddress,
-      "Packaged runtime did not expose evidence of the 0.0.0.0 binding.",
+      (output.includes("0.0.0.0") || externalAddress) &&
+        output.includes(
+          process.arch === "arm64"
+            ? "Selected embedded Node.js runtime: linux-arm64"
+            : "Selected embedded Node.js runtime: linux-x64",
+        ),
+      "Packaged runtime did not select the native runtime or expose the LAN binding.",
     );
     return {
       executed: true,
-      runtime: "runtime/node",
+      runtime: runtimeRelativePath,
       listenHost: "0.0.0.0",
       externalAddressVerified: externalAddress || null,
       similarityResults: search.results.length,
@@ -709,14 +788,16 @@ async function main() {
       "utf8",
     );
     assert(
-      bundledServerSource.includes("v1.43.0") &&
-        !bundledServerSource.includes("v1.42.0"),
+      bundledServerSource.includes("v1.44.0") &&
+        !bundledServerSource.includes("v1.43.0"),
       "Ubuntu package contains a stale hosted download release.",
     );
     assert(
-      manifest.version === "1.43.0" &&
-        manifest.platform === "ubuntu-linux-x64" &&
-        manifest.architecture === "x86_64" &&
+      manifest.version === "1.44.0" &&
+        manifest.platform === "ubuntu-linux-universal" &&
+        JSON.stringify(manifest.architectures) ===
+          JSON.stringify(["x64", "arm64"]) &&
+        manifest.architecture === undefined &&
         manifest.entrypoint === "start.sh" &&
         manifest.archiveFormat === "tar.gz",
       "Ubuntu package identity is invalid.",
@@ -735,17 +816,55 @@ async function main() {
           "query-once-then-http-only-cookie",
       "Ubuntu LAN/offline network policy is invalid.",
     );
+    const expectedNodeRuntimes = [
+      {
+        architecture: "x64",
+        unameMachines: ["x86_64", "amd64"],
+        elfMachine: 62,
+        archiveName: "node-v24.14.0-linux-x64.tar.xz",
+        archiveSha256:
+          "41cd79bb7877c81605a9e68ec4c91547774f46a40c67a17e34d7179ef11729df",
+        executable: "runtime/linux-x64/node",
+      },
+      {
+        architecture: "arm64",
+        unameMachines: ["aarch64", "arm64"],
+        elfMachine: 183,
+        archiveName: "node-v24.14.0-linux-arm64.tar.xz",
+        archiveSha256:
+          "e7adfca03d9173276114a6f2219df1a7d25e1bfd6bbd771d3f839118a2053094",
+        executable: "runtime/linux-arm64/node",
+      },
+    ];
     assert(
       manifest.node?.version === "24.14.0" &&
-        manifest.node?.officialArchive?.endsWith(
-          "node-v24.14.0-linux-x64.tar.xz",
-        ) &&
-        manifest.node?.archiveSha256 ===
-          "41cd79bb7877c81605a9e68ec4c91547774f46a40c67a17e34d7179ef11729df" &&
-        manifest.node?.executable === "runtime/node" &&
+        manifest.node?.selection === "uname-m" &&
+        Array.isArray(manifest.node?.runtimes) &&
+        manifest.node.runtimes.length ===
+          expectedNodeRuntimes.length &&
         manifest.node?.firstRunExtraction === false,
       "Ubuntu Node runtime declaration is invalid.",
     );
+    for (const [index, expectedRuntime] of
+      expectedNodeRuntimes.entries()) {
+      const runtime = manifest.node.runtimes[index];
+      assert(
+        runtime?.architecture === expectedRuntime.architecture &&
+          JSON.stringify(runtime.unameMachines) ===
+            JSON.stringify(expectedRuntime.unameMachines) &&
+          runtime.elfMachine === expectedRuntime.elfMachine &&
+          runtime.officialArchive?.endsWith(
+            expectedRuntime.archiveName,
+          ) &&
+          runtime.archiveSha256 ===
+            expectedRuntime.archiveSha256 &&
+          runtime.executable === expectedRuntime.executable &&
+          /^[a-f0-9]{64}$/.test(
+            runtime.executableSha256 ?? "",
+          ),
+        `Ubuntu ${expectedRuntime.architecture} Node declaration is invalid.`,
+      );
+    }
     assert(
       manifest.bundled?.corpus === true &&
         manifest.bundled?.model === true &&
@@ -783,10 +902,21 @@ async function main() {
       "Ubuntu package contents are incomplete.",
     );
 
-    const nodePath = path.join(packageDirectory, "runtime", "node");
-    await verifyLinuxX64Executable(
-      nodePath,
-      manifest.node.executableSha256,
+    for (const [index, expectedRuntime] of
+      expectedNodeRuntimes.entries()) {
+      await verifyLinuxExecutable(
+        path.join(packageDirectory, expectedRuntime.executable),
+        {
+          expectedSha256:
+            manifest.node.runtimes[index].executableSha256,
+          expectedElfMachine: expectedRuntime.elfMachine,
+          architecture: expectedRuntime.architecture,
+        },
+      );
+    }
+    await assertMissing(
+      path.join(packageDirectory, "runtime", "node"),
+      "Universal package must not retain the legacy x64-only runtime/node.",
     );
     await stat(path.join(packageDirectory, "runtime", "LICENSE"));
     const startPath = path.join(packageDirectory, "start.sh");
@@ -796,9 +926,21 @@ async function main() {
     assert(
       startScript.startsWith("#!/usr/bin/env sh\n") &&
         startScript.includes("VTH_HOST:-0.0.0.0") &&
-        startScript.includes('"$PACKAGE_DIR/runtime/node"') &&
+        startScript.includes('VTH_KERNEL=$(uname -s') &&
+        startScript.includes('VTH_MACHINE=$(uname -m') &&
+        startScript.includes("x86_64|amd64)") &&
+        startScript.includes("VTH_RUNTIME=linux-x64") &&
+        startScript.includes("aarch64|arm64)") &&
+        startScript.includes("VTH_RUNTIME=linux-arm64") &&
+        startScript.includes("Unsupported Ubuntu CPU architecture") &&
+        startScript.includes(
+          'VTH_NODE="$PACKAGE_DIR/runtime/$VTH_RUNTIME/node"',
+        ) &&
+        startScript.includes('exec "$VTH_NODE"') &&
         startScript.includes("--host \"$VTH_LISTEN_HOST\"") &&
         startScript.includes("--public-url \"$VTH_PUBLIC_URL\"") &&
+        !startScript.includes('"$PACKAGE_DIR/runtime/node"') &&
+        !startScript.includes("command -v node") &&
         !startScript.includes("npm install") &&
         !startScript.includes("curl ") &&
         !startScript.includes("wget "),
@@ -851,7 +993,11 @@ async function main() {
       "utf8",
     );
     assert(
-      readme.includes("0.0.0.0:4173") &&
+      readme.includes("x64 + ARM64 Universal") &&
+        readme.includes("uname -m") &&
+        readme.includes("ubuntu-universal-v1.44.0") &&
+        readme.includes('"exec format error"') &&
+        readme.includes("0.0.0.0:4173") &&
         readme.includes("다른 PC") &&
         readme.includes("VTH_API_KEY") &&
         readme.includes("HttpOnly 쿠키") &&
@@ -883,6 +1029,11 @@ async function main() {
       "Ubuntu package must not recursively contain hosted downloads.",
     );
     const checkedFiles = await verifyChecksums(packageDirectory);
+    const unsupportedArchitecture =
+      await verifyUnsupportedArchitectureRejection(
+        packageDirectory,
+        temporaryDirectory,
+      );
     const service = await verifyService(
       packageDirectory,
       path.join(temporaryDirectory, "validation-data"),
@@ -895,6 +1046,7 @@ async function main() {
           archivePath,
           archiveSha256: expectedArchiveSha256,
           checkedFiles,
+          unsupportedArchitecture,
           service,
           packagedRuntimeService,
         },

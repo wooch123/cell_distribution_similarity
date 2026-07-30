@@ -1,5 +1,5 @@
-export const WINDOWS_PACKAGE_VERSION = "1.43.0";
-export const UBUNTU_PACKAGE_VERSION = "1.43.0";
+export const WINDOWS_PACKAGE_VERSION = "1.44.0";
+export const UBUNTU_PACKAGE_VERSION = "1.44.0";
 
 const DEFAULT_WINDOWS_MANIFEST_URL =
   `/downloads/windows-package-v${WINDOWS_PACKAGE_VERSION}.json`;
@@ -21,6 +21,8 @@ function validateManifest(
   manifest,
   fileNamePattern,
   expectedVersion,
+  expectedPlatform,
+  expectedArchitectures,
 ) {
   assert(manifest?.schemaVersion === 1, "패키지 메타데이터 버전이 올바르지 않습니다.");
   assert(
@@ -35,6 +37,24 @@ function validateManifest(
     manifest.version === expectedVersion,
     "요청한 패키지 버전과 메타데이터 버전이 일치하지 않습니다.",
   );
+  if (expectedPlatform) {
+    assert(
+      manifest.platform === expectedPlatform,
+      "패키지 플랫폼이 올바르지 않습니다.",
+    );
+  }
+  if (expectedArchitectures) {
+    assert(
+      Array.isArray(manifest.architectures) &&
+        manifest.architectures.length ===
+          expectedArchitectures.length &&
+        manifest.architectures.every(
+          (architecture, index) =>
+            architecture === expectedArchitectures[index],
+        ),
+      "패키지 CPU 아키텍처 구성이 올바르지 않습니다.",
+    );
+  }
   assert(
     typeof manifest.fileName === "string" &&
       fileNamePattern.test(manifest.fileName),
@@ -102,6 +122,8 @@ function versionedPackageFileName(fileName, version) {
  * @param {{
  *   defaultManifestUrl: string;
  *   expectedVersion: string;
+ *   expectedPlatform?: string;
+ *   expectedArchitectures?: string[];
  *   fileNamePattern: RegExp;
  * }} packageDefinition
  */
@@ -125,6 +147,8 @@ async function assemblePackage(
     await manifestResponse.json(),
     packageDefinition.fileNamePattern,
     packageDefinition.expectedVersion,
+    packageDefinition.expectedPlatform,
+    packageDefinition.expectedArchitectures,
   );
   const parts = [];
 
@@ -199,8 +223,9 @@ export function assembleWindowsPackage(options = {}) {
 }
 
 /**
- * Assemble the Ubuntu x64 external Web server package from the same verified
- * browser chunk delivery contract used by the Windows download.
+ * Assemble the Ubuntu Universal x64 + ARM64 external Web server package from
+ * the same verified browser chunk delivery contract used by the Windows
+ * download.
  *
  * @param {{
  *   fetchImpl?: typeof globalThis.fetch;
@@ -216,7 +241,8 @@ export function assembleUbuntuPackage(options = {}) {
   return assemblePackage(options, {
     defaultManifestUrl: DEFAULT_UBUNTU_MANIFEST_URL,
     expectedVersion: UBUNTU_PACKAGE_VERSION,
-    fileNamePattern:
-      /^vth-similarity-ubuntu-x64\.(?:zip|tar\.gz)$/,
+    expectedPlatform: "ubuntu-linux-universal",
+    expectedArchitectures: ["x64", "arm64"],
+    fileNamePattern: /^vth-similarity-ubuntu-universal\.tar\.gz$/,
   });
 }
