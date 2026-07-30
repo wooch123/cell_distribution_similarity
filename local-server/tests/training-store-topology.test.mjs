@@ -43,6 +43,14 @@ test("standalone training store accepts strict 20-peak topology and rejects mism
       authoritativeProfile: profile,
       authoritativeDescriptor: descriptor,
       profileSimilarity: 1,
+      panelCount: 4,
+      matchedPanelIndex: 2,
+      seriesCount: 3,
+      matchedSeriesIndex: 1,
+      authoritativeSourceImage: {
+        bytes: tinyPng,
+        mimeType: "image/png",
+      },
     }),
   }).initialize();
   const payload = {
@@ -53,6 +61,12 @@ test("standalone training store accepts strict 20-peak topology and rejects mism
     sourceImageDataUrl: tinyPngDataUrl,
     profile,
     descriptor,
+    sourceSelection: {
+      panelIndex: 2,
+      panelCount: 4,
+      seriesIndex: 1,
+      seriesCount: 3,
+    },
   };
 
   try {
@@ -62,6 +76,30 @@ test("standalone training store accepts strict 20-peak topology and rejects mism
     assert.equal(created.valleyLocations.length, 19);
     assert.equal(created.peakValleyDistances.length, 38);
     assert.equal(created.tailSlopes.length, 2);
+    assert.deepEqual(created.sourceSelection, payload.sourceSelection);
+    assert.deepEqual(
+      store.list()[0].sourceSelection,
+      payload.sourceSelection,
+    );
+
+    await assert.rejects(
+      store.upsertReady({
+        ...payload,
+        id: "source-panel-mismatch",
+        sourceSelection: {
+          ...payload.sourceSelection,
+          panelIndex: 0,
+        },
+      }),
+      (error) => {
+        assert.equal(error.status, 422);
+        assert.equal(
+          error.code,
+          "source_selection_image_mismatch",
+        );
+        return true;
+      },
+    );
 
     await assert.rejects(
       store.upsertReady({
@@ -87,6 +125,27 @@ test("standalone training store accepts strict 20-peak topology and rejects mism
         },
       }),
       /descriptor/,
+    );
+    await assert.rejects(
+      store.upsertReady({
+        ...payload,
+        id: "invalid-source-selection",
+        sourceSelection: {
+          panelIndex: 4,
+          panelCount: 4,
+          seriesIndex: 0,
+          seriesCount: 1,
+        },
+      }),
+      (error) => {
+        assert.equal(error.status, 400);
+        assert.equal(error.code, "invalid_source_selection");
+        assert.equal(
+          error.details.field,
+          "sourceSelection.panelIndex",
+        );
+        return true;
+      },
     );
   } finally {
     await rm(dataDirectory, { recursive: true, force: true });

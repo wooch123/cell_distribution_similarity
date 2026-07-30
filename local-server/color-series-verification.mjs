@@ -26,6 +26,19 @@ export function verifyColorSeriesSearch(payload, topK = 2) {
     panel.series.some(
       (series, index) =>
         series.seriesIndex !== index ||
+        serialized(series.trainingSelection) !==
+          serialized({
+            panelIndex: 0,
+            panelCount: 1,
+            seriesIndex: index,
+            seriesCount: 3,
+          }) ||
+        series.profile?.length !== 256 ||
+        series.profile.some((value) => !Number.isFinite(value)) ||
+        series.descriptor?.stateCount !==
+          series.descriptor?.peakLocations?.length ||
+        series.descriptor?.valleyLocations?.length !==
+          series.descriptor?.stateCount - 1 ||
         series.selected !== (index === panel.selectedSeriesIndex) ||
         series.separationMode !== "color" ||
         series.results?.length !== topK ||
@@ -37,8 +50,18 @@ export function verifyColorSeriesSearch(payload, topK = 2) {
     ) ||
     serialized(panel.query) !== serialized(selected?.query) ||
     serialized(panel.results) !== serialized(selected?.results) ||
+    serialized(panel.trainingSelection) !==
+      serialized(selected?.trainingSelection) ||
+    serialized(panel.profile) !== serialized(selected?.profile) ||
+    serialized(panel.descriptor) !==
+      serialized(selected?.descriptor) ||
     serialized(payload.query) !== serialized(panel.query) ||
-    serialized(payload.results) !== serialized(panel.results)
+    serialized(payload.results) !== serialized(panel.results) ||
+    serialized(payload.trainingSelection) !==
+      serialized(panel.trainingSelection) ||
+    serialized(payload.profile) !== serialized(panel.profile) ||
+    serialized(payload.descriptor) !==
+      serialized(panel.descriptor)
   ) {
     throw new Error(
       "Packaged search did not preserve per-panel color-series ranking and representative compatibility fields.",

@@ -8,7 +8,11 @@ import {
 } from "./vth-chart-panel-core.mjs";
 import { analyzeForegroundMasks } from "./vth-image-analysis-core.mjs";
 import { buildForegroundMasks } from "./vth-image-core.mjs";
-import { mergeCandidateSets } from "./vth-learning-core.mjs";
+import {
+  mergeCandidateSets,
+  normalizeTrainingSourceSelection,
+  trainingSourceSelection,
+} from "./vth-learning-core.mjs";
 import {
   inputDiagnostic,
   waveformFailureDiagnostic,
@@ -29,6 +33,7 @@ export const DEFAULT_SIMILARITY_RESULTS = 8;
 export const MIN_TRAINING_PROVENANCE_STATE_SIMILARITY = 0.985;
 export const MIN_TRAINING_CODEC_STABLE_SIMILARITY = 0.95;
 const MIN_TRAINING_STANDARD_CODEC_SIMILARITY = 0.97;
+const MIN_SOURCE_SELECTION_MATCH_MARGIN = 0.015;
 export { MAXIMUM_CHART_PANELS };
 export const SUPPORTED_SIMILARITY_IMAGE_TYPES = [
   "image/png",
@@ -730,20 +735,326 @@ function summarizeTrainingProvenanceMatch(
   };
 }
 
+function sourceSelectionImageMismatch(message, details) {
+  throw new SimilarityApiError(
+    message,
+    422,
+    "source_selection_image_mismatch",
+    details,
+  );
+}
+
+function sourceSelectionSeriesThreshold(
+  sourceStateCount,
+  submittedStateCount,
+) {
+  if (sourceStateCount === submittedStateCount) {
+    // Browser Canvas, jpeg-js and the search endpoint use bounded rasters
+    // with slightly different interpolation. Reuse the existing strict
+    // standard-codec floor so the same physical series remains selectable
+    // without permitting nearby unrelated same-State shapes.
+    return MIN_TRAINING_STANDARD_CODEC_SIMILARITY;
+  }
+  if (
+    isValidStateCount(sourceStateCount) &&
+    Math.abs(sourceStateCount - submittedStateCount) <= 1
+  ) {
+    return MIN_TRAINING_STANDARD_CODEC_SIMILARITY;
+  }
+  if (
+    (sourceStateCount === 7 && submittedStateCount === 9) ||
+    (sourceStateCount === 9 && submittedStateCount === 7)
+  ) {
+    return MIN_TRAINING_CODEC_STABLE_SIMILARITY;
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
+function matchSourceSelectionSeries(
+  extractedSeries,
+  normalizedProfile,
+  normalizedStateCount,
+) {
+  const scored = extractedSeries
+    .map((series, seriesIndex) => {
+      const sourceStateCount = Number(
+        series.descriptor?.stateCount ??
+          descriptorFromProfile(series.profile).stateCount,
+      );
+      const profileSimilarity = alignedCurveSimilarity(
+        series.profile,
+        normalizedProfile,
+      );
+      const threshold = sourceSelectionSeriesThreshold(
+        sourceStateCount,
+        normalizedStateCount,
+      );
+      return {
+        series,
+        seriesIndex,
+        sourceStateCount,
+        profileSimilarity,
+        threshold,
+        accepted: profileSimilarity >= threshold,
+      };
+    })
+    .sort(
+      (left, right) =>
+        Number(right.accepted) - Number(left.accepted) ||
+        right.profileSimilarity - left.profileSimilarity ||
+        left.seriesIndex - right.seriesIndex,
+    );
+  const accepted = scored.filter((candidate) => candidate.accepted);
+  if (!accepted.length) {
+    sourceSelectionImageMismatch(
+      "선택한 색상 시리즈와 제출한 profile/State를 학습 원본에서 강하게 일치시키지 못했습니다.",
+      {
+        submittedStateCount: normalizedStateCount,
+        bestProfileSimilarity:
+          scored[0]?.profileSimilarity ?? 0,
+        sourceSeriesStateCounts: scored.map(
+          (candidate) => candidate.sourceStateCount,
+        ),
+      },
+    );
+  }
+  const best = accepted[0];
+  const competitor = accepted[1];
+  if (
+    competitor &&
+    best.profileSimilarity - competitor.profileSimilarity <
+      MIN_SOURCE_SELECTION_MATCH_MARGIN
+  ) {
+    sourceSelectionImageMismatch(
+      "제출한 profile/State와 강하게 일치하는 색상 시리즈가 둘 이상이라 선택 결과가 모호합니다.",
+      {
+        submittedStateCount: normalizedStateCount,
+        bestProfileSimilarity: best.profileSimilarity,
+        competingProfileSimilarity:
+          competitor.profileSimilarity,
+        matchedSeriesIndexes: [
+          best.seriesIndex,
+          competitor.seriesIndex,
+        ],
+      },
+    );
+  }
+  return best;
+}
+
+function encodeAuthoritativeSourceJpeg(sourceCrop) {
+  const pixelCount = sourceCrop.width * sourceCrop.height;
+  const rgba = new Uint8Array(pixelCount * 4);
+  for (let index = 0; index < pixelCount; index += 1) {
+    const sourceOffset = index * 3;
+    const outputOffset = index * 4;
+    rgba[outputOffset] = sourceCrop.pixels[sourceOffset];
+    rgba[outputOffset + 1] =
+      sourceCrop.pixels[sourceOffset + 1];
+    rgba[outputOffset + 2] =
+      sourceCrop.pixels[sourceOffset + 2];
+    rgba[outputOffset + 3] = 255;
+  }
+  const encoded = jpeg.encode(
+    {
+      data: rgba,
+      width: sourceCrop.width,
+      height: sourceCrop.height,
+    },
+    92,
+  ).data;
+  return {
+    bytes: Uint8Array.from(encoded),
+    mimeType: "image/jpeg",
+    width: sourceCrop.width,
+    height: sourceCrop.height,
+  };
+}
+
+function cloneAuthoritativeDescriptor(descriptor) {
+  return {
+    ...descriptor,
+    peakLocations: [...descriptor.peakLocations],
+    peakWidths: [...descriptor.peakWidths],
+    valleyHeights: [...descriptor.valleyHeights],
+    valleyLocations: [...descriptor.valleyLocations],
+    valleyDepths: [...descriptor.valleyDepths],
+    valleyPositionRatios: [
+      ...descriptor.valleyPositionRatios,
+    ],
+    peakValleyDistances: [
+      ...descriptor.peakValleyDistances,
+    ],
+    tailSlopes: [...descriptor.tailSlopes],
+  };
+}
+
+function readingOrderPanels(detected, decoded) {
+  const detectedPanels =
+    detected.panels.length === 1 &&
+    detected.panels[0].detectionReason ===
+      "whole-image-fallback"
+      ? [
+          wholeImagePanel(
+            decoded.width,
+            decoded.height,
+            detected.panels[0],
+          ),
+        ]
+      : detected.panels;
+  return detectedPanels
+    .map((panel, originalIndex) => ({
+      panel,
+      originalIndex,
+      readingOrderIndex: Number.isInteger(panel.index)
+        ? panel.index
+        : originalIndex,
+    }))
+    .sort(
+      (left, right) =>
+        left.readingOrderIndex - right.readingOrderIndex ||
+        left.originalIndex - right.originalIndex,
+    )
+    .map(({ panel }, index) => ({
+      ...panel,
+      index,
+    }));
+}
+
+function validateSelectedFullDocumentWaveform({
+  decoded,
+  detected,
+  normalizedSourceSelection,
+  normalizedProfile,
+  normalizedStateCount,
+}) {
+  const panels = readingOrderPanels(detected, decoded);
+  if (
+    detected.truncated ||
+    panels.length > MAXIMUM_CHART_PANELS ||
+    panels.length !== normalizedSourceSelection.panelCount
+  ) {
+    sourceSelectionImageMismatch(
+      `선택 정보의 차트 수(${normalizedSourceSelection.panelCount})와 학습 원본에서 읽기 순서로 검출한 차트 수(${panels.length})가 일치하지 않습니다.`,
+      {
+        submittedPanelCount:
+          normalizedSourceSelection.panelCount,
+        detectedPanelCount: panels.length,
+        maximumPanelCount: MAXIMUM_CHART_PANELS,
+        truncated: Boolean(detected.truncated),
+      },
+    );
+  }
+  const matchedPanelIndex =
+    normalizedSourceSelection.panelIndex;
+  const panel = panels[matchedPanelIndex];
+  if (!panel) {
+    sourceSelectionImageMismatch(
+      "선택한 차트를 학습 원본의 읽기 순서에서 찾지 못했습니다.",
+      {
+        submittedPanelIndex: matchedPanelIndex,
+        detectedPanelCount: panels.length,
+      },
+    );
+  }
+  const sourceBounds = sourcePanelBounds(
+    panel,
+    decoded.width,
+    decoded.height,
+    decoded.sourceWidth,
+    decoded.sourceHeight,
+  );
+  const sourceCrop = cropInterleavedPixels(
+    decoded.sourceData,
+    decoded.sourceWidth,
+    decoded.sourceHeight,
+    3,
+    sourceBounds,
+  );
+  const analysisRaster = resizeRgb(
+    sourceCrop.pixels,
+    sourceCrop.width,
+    sourceCrop.height,
+    900,
+    600,
+    {
+      maximumScale: 16,
+      maximumPixels: 540_000,
+    },
+  );
+  const analysis = analyzeSimilarityPixels(
+    analysisRaster.data,
+    analysisRaster.width,
+    analysisRaster.height,
+    analysisRaster.scale ?? decoded.scale,
+  );
+  const { series: extractedSeries } =
+    normalizedAnalysisSeries(analysis);
+  if (
+    extractedSeries.length !==
+    normalizedSourceSelection.seriesCount
+  ) {
+    sourceSelectionImageMismatch(
+      `선택 정보의 색상 시리즈 수(${normalizedSourceSelection.seriesCount})와 선택한 차트에서 검증한 시리즈 수(${extractedSeries.length})가 일치하지 않습니다.`,
+      {
+        submittedSeriesCount:
+          normalizedSourceSelection.seriesCount,
+        detectedSeriesCount: extractedSeries.length,
+        matchedPanelIndex,
+      },
+    );
+  }
+  const matched = matchSourceSelectionSeries(
+    extractedSeries,
+    normalizedProfile,
+    normalizedStateCount,
+  );
+  const authoritativeProfile = resample(
+    matched.series.profile,
+    256,
+  );
+  const authoritativeDescriptor = descriptorFromProfile(
+    authoritativeProfile,
+  );
+  return {
+    panelCount: panels.length,
+    matchedPanelIndex,
+    seriesCount: extractedSeries.length,
+    matchedSeriesIndex: matched.seriesIndex,
+    fallbackUsed: Boolean(detected.fallbackUsed),
+    detectionReason: panel.detectionReason,
+    sourceBounds,
+    stateCount: authoritativeDescriptor.stateCount,
+    profileSimilarity: matched.profileSimilarity,
+    stateHypothesisMatched:
+      matched.sourceStateCount === normalizedStateCount &&
+      matched.profileSimilarity >=
+        MIN_TRAINING_PROVENANCE_STATE_SIMILARITY,
+    authoritativeProfile,
+    authoritativeDescriptor: cloneAuthoritativeDescriptor(
+      authoritativeDescriptor,
+    ),
+    authoritativeSourceImage:
+      encodeAuthoritativeSourceJpeg(sourceCrop),
+  };
+}
+
 /**
  * Verify that a ready-to-search training payload is backed by the submitted
  * source image rather than by caller-controlled Curve JSON alone.
  *
- * Raw `/training-images` uploads deliberately bypass this gate while pending;
- * every immediately ready candidate must contain exactly one isolated
- * waveform, occupy the source preview instead of sharing it with document
- * content, and reproduce the supplied canonical profile.
+ * Raw `/training-images` uploads deliberately bypass this gate while pending.
+ * Legacy selector-free requests retain the isolated-waveform contract.
+ * Selector-bearing requests provide the complete document: the server
+ * re-detects up to 30 charts, chooses the reading-order panel, and binds the
+ * submitted shape to one unambiguous source-derived color series.
  */
 export async function validateTrainingWaveformImage({
   bytes,
   mimeType,
   profile,
   stateCount,
+  sourceSelection,
 }) {
   if (
     !Array.isArray(profile) ||
@@ -757,6 +1068,8 @@ export async function validateTrainingWaveformImage({
     );
   }
   const normalizedProfile = profile.map(Number);
+  const normalizedSourceSelection =
+    normalizeTrainingSourceSelection(sourceSelection);
   const suppliedDescriptor = descriptorFromProfile(normalizedProfile);
   const normalizedStateCount = Number(
     stateCount ?? suppliedDescriptor.stateCount,
@@ -781,6 +1094,15 @@ export async function validateTrainingWaveformImage({
     distributionWaveformNotFound({
       detected,
       decoded,
+    });
+  }
+  if (normalizedSourceSelection) {
+    return validateSelectedFullDocumentWaveform({
+      decoded,
+      detected,
+      normalizedSourceSelection,
+      normalizedProfile,
+      normalizedStateCount,
     });
   }
   if (
@@ -947,31 +1269,15 @@ export async function validateTrainingWaveformImage({
     fallbackUsed: Boolean(detected.fallbackUsed),
     detectionReason: panel.detectionReason,
     sourceBounds,
-    stateCount: normalizedStateCount,
+    stateCount: authoritativeDescriptor.stateCount,
     profileSimilarity,
     stateHypothesisMatched:
       matchingStateSimilarity >=
       MIN_TRAINING_PROVENANCE_STATE_SIMILARITY,
     authoritativeProfile,
-    authoritativeDescriptor: {
-      ...authoritativeDescriptor,
-      peakLocations: [
-        ...authoritativeDescriptor.peakLocations,
-      ],
-      peakWidths: [...authoritativeDescriptor.peakWidths],
-      valleyHeights: [...authoritativeDescriptor.valleyHeights],
-      valleyLocations: [
-        ...authoritativeDescriptor.valleyLocations,
-      ],
-      valleyDepths: [...authoritativeDescriptor.valleyDepths],
-      valleyPositionRatios: [
-        ...authoritativeDescriptor.valleyPositionRatios,
-      ],
-      peakValleyDistances: [
-        ...authoritativeDescriptor.peakValleyDistances,
-      ],
-      tailSlopes: [...authoritativeDescriptor.tailSlopes],
-    },
+    authoritativeDescriptor: cloneAuthoritativeDescriptor(
+      authoritativeDescriptor,
+    ),
   };
 }
 
@@ -1222,6 +1528,15 @@ function queryForApi(
   };
 }
 
+function trainingWaveformForApi(profile) {
+  const normalizedProfile = resample(profile, 256).map(Number);
+  const descriptor = descriptorFromProfile(normalizedProfile);
+  return {
+    profile: normalizedProfile,
+    descriptor: cloneAuthoritativeDescriptor(descriptor),
+  };
+}
+
 function normalizedAnalysisSeries(analysis) {
   const declared =
     Array.isArray(analysis.series) && analysis.series.length
@@ -1425,6 +1740,15 @@ export async function searchSimilarityImage({
         cropped.width,
         cropped.height,
       );
+      const trainingSelection = trainingSourceSelection({
+        panelIndex,
+        panelCount: panels.length,
+        seriesIndex,
+        seriesCount: series.length,
+      });
+      const trainingWaveform = trainingWaveformForApi(
+        seriesAnalysis.profile,
+      );
       return {
         seriesIndex,
         sourceIndex:
@@ -1436,6 +1760,8 @@ export async function searchSimilarityImage({
           seriesAnalysis.irregularityScore ??
             analysis.distributionSelection.irregularityScore,
         ),
+        trainingSelection,
+        ...trainingWaveform,
         query,
         matchedCandidateCount: ranked.length,
         results: ranked
@@ -1467,6 +1793,9 @@ export async function searchSimilarityImage({
       seriesCount: seriesResults.length,
       selectedSeriesIndex,
       series: seriesResults,
+      trainingSelection: selectedSeries.trainingSelection,
+      profile: selectedSeries.profile,
+      descriptor: selectedSeries.descriptor,
       // Compatibility fields continue to mirror the representative (the
       // most-irregular distribution when several color traces coexist).
       query: selectedSeries.query,
@@ -1491,6 +1820,9 @@ export async function searchSimilarityImage({
     matchedCandidateCount: primary.matchedCandidateCount,
     processingMs: rounded(elapsed, 2),
     results: primary.results,
+    trainingSelection: primary.trainingSelection,
+    profile: primary.profile,
+    descriptor: primary.descriptor,
     panelCount: panelResults.length,
     panelLayout:
       panelResults.length === 1

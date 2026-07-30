@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "VTH Training API",
-    "version": "2.1.0",
+    "version": "2.3.0",
     "description": "V-NAND VTH graph images, separate standardized/source previews, and browser-extracted shape descriptors for incremental similarity retrieval. Loopback mode works without authentication by default. A non-loopback bind automatically enables an access key; use x-api-key or Bearer authentication for API clients, or open the server-provided access_token URL once to establish the HttpOnly browser cookie."
   },
   "servers": [
@@ -36,7 +36,7 @@
       },
       "post": {
         "summary": "Return ranked VTH shape matches for every chart and color series in one PNG or JPEG image",
-        "description": "Charts at different coordinates are detected and cropped in reading order. Multiple full-width waveform series inside one physical chart are temporarily separated by color, normalized without color/style features, and ranked independently in panel.series. Text, tables, empty axes, rectangles, and explanatory diagrams without a coherent distribution waveform are excluded; a request with no distribution waveform returns 422 distribution_waveform_not_found. The legacy panel query/results mirror its representative most-irregular series, and the top-level query/results mirror panel 0's representative series. The query image is processed in memory only and is not saved or used for training. Results include normalized score components and request-origin URLs for the standardized curve and, when available, its original source preview. Authentication is required when VTH_API_KEY is configured or the service is bound to a non-loopback host.",
+        "description": "Charts at different coordinates are detected and cropped in reading order. Multiple full-width waveform series inside one physical chart are temporarily separated by color, normalized without color/style features, and ranked independently in panel.series. Every series includes trainingSelection, a normalized 256-point profile, and its canonical descriptor; these fields plus the same complete image are sufficient to create one selected training request without a second Curve extractor. The panel and top-level compatibility fields mirror their representative series waveform and selector. Text, tables, empty axes, rectangles, and explanatory diagrams without a coherent distribution waveform are excluded; a request with no distribution waveform returns 422 distribution_waveform_not_found. The legacy panel query/results mirror its representative most-irregular series, and the top-level query/results mirror panel 0's representative series. The query image is processed in memory only and is not saved or used for training. Results include normalized score components and request-origin URLs for the standardized curve and, when available, its original source preview. Authentication is required when VTH_API_KEY is configured or the service is bound to a non-loopback host.",
         "security": [
           {},
           {
@@ -112,6 +112,13 @@
             }
           }
         },
+        "x-codeSamples": [
+          {
+            "lang": "Shell",
+            "label": "Search then train one selected series",
+            "source": "curl -sS -X POST 'http://127.0.0.1:4173/api/v1/similarity-search?topK=5' -H 'Content-Type: image/png' --data-binary '@document.png' > search.json\nSOURCE=\"data:image/png;base64,$(base64 < document.png | tr -d '\\n')\"\njq --arg source \"$SOURCE\" '.panels[0].series[0] | {schemaVersion:2,id:\"api-selected-001\",label:\"API selected series\",sourceImageDataUrl:$source,profile,descriptor,sourceSelection:.trainingSelection}' search.json > train.json\ncurl -sS -X POST 'http://127.0.0.1:4173/api/v1/training-samples' -H 'Content-Type: application/json' --data-binary '@train.json'"
+          }
+        ],
         "responses": {
           "200": {
             "description": "Ranked matching distributions",
@@ -191,6 +198,7 @@
       },
       "post": {
         "summary": "Verify a source waveform and add a server-authoritative learned sample",
+        "description": "Copy one series response's trainingSelection, profile and descriptor into sourceSelection, profile and descriptor, then send the same metadata-free complete search document as sourceImageDataUrl. No separate Curve extractor or imageDataUrl is required. The server redetects every panel, verifies panelCount/panelIndex, shape-matches the requested series inside that panel, regenerates every searchable field, and stores only the selected panel crop; caller profile JSON and numeric series ordering are never authoritative. Selector-free legacy requests still require one isolated waveform.",
         "security": [
           {},
           {
@@ -213,12 +221,19 @@
             }
           }
         },
+        "x-codeSamples": [
+          {
+            "lang": "Shell",
+            "label": "Build request from one search series",
+            "source": "SOURCE=\"data:image/png;base64,$(base64 < document.png | tr -d '\\n')\"\njq --arg source \"$SOURCE\" '.panels[0].series[0] | {schemaVersion:2,id:\"api-selected-001\",label:\"API selected series\",sourceImageDataUrl:$source,profile,descriptor,sourceSelection:.trainingSelection}' search.json > train.json\ncurl -sS -X POST 'http://127.0.0.1:4173/api/v1/training-samples' -H 'Content-Type: application/json' --data-binary '@train.json'"
+          }
+        ],
         "responses": {
           "201": {
             "description": "Immediately search-ready sample whose profile, descriptor, State, and standardized SVG were regenerated from sourceImageDataUrl"
           },
           "400": {
-            "description": "Malformed JSON, profile, descriptor, ID, image data URL, or missing sourceImageDataUrl"
+            "description": "Malformed JSON, profile, descriptor, ID, image data URL, missing sourceImageDataUrl, or invalid optional sourceSelection. Invalid selectors return error.code=invalid_source_selection."
           },
           "413": {
             "description": "JSON request exceeds 20MB or a decoded training image exceeds 12MB"
@@ -227,7 +242,7 @@
             "description": "Content-Type must be application/json"
           },
           "422": {
-            "description": "The source image is not one isolated distribution waveform or does not match the submitted profile"
+            "description": "The selector-free source is not one isolated waveform, its legacy profile does not match, or sourceSelection does not match the complete document panel/series layout and submitted source-derived shape (error.code=source_selection_image_mismatch)"
           },
           "503": {
             "description": "The source-authoritative waveform validator is unavailable"
@@ -304,7 +319,7 @@
             "description": "Search-ready when profile and descriptor are also provided"
           },
           "400": {
-            "description": "Malformed JSON, image data URL, profile, descriptor, ID, or ready-mode sourceImageDataUrl"
+            "description": "Malformed JSON, image data URL, profile, descriptor, ID, ready-mode sourceImageDataUrl, or invalid optional sourceSelection. Invalid selectors return error.code=invalid_source_selection."
           },
           "413": {
             "description": "Request body exceeds 12MB for raw images or 20MB for JSON, or a decoded image exceeds 12MB"
@@ -503,7 +518,7 @@
       },
       "SimilaritySearchResponse": {
         "type": "object",
-        "required": ["schemaVersion", "requestId", "service", "inputHandling", "warnings", "privacy", "model", "query", "candidateCount", "matchedCandidateCount", "processingMs", "results", "panelCount", "panelLayout", "panelDetection", "panels"],
+        "required": ["schemaVersion", "requestId", "service", "inputHandling", "warnings", "privacy", "model", "query", "candidateCount", "matchedCandidateCount", "processingMs", "results", "trainingSelection", "profile", "descriptor", "panelCount", "panelLayout", "panelDetection", "panels"],
         "properties": {
           "schemaVersion": {
             "type": "integer",
@@ -562,6 +577,15 @@
           },
           "query": {
             "$ref": "#/components/schemas/QueryAnalysis"
+          },
+          "trainingSelection": {
+            "$ref": "#/components/schemas/TrainingSelection"
+          },
+          "profile": {
+            "$ref": "#/components/schemas/TrainingProfile"
+          },
+          "descriptor": {
+            "$ref": "#/components/schemas/TrainingWaveformDescriptor"
           },
           "panelCount": {
             "type": "integer",
@@ -666,6 +690,111 @@
           }
         }
       },
+      "TrainingSelection": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["panelIndex", "panelCount", "seriesIndex", "seriesCount"],
+        "properties": {
+          "panelIndex": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 29
+          },
+          "panelCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30
+          },
+          "seriesIndex": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "seriesCount": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "description": "Zero-based physical panel and intra-panel series coordinates. panelIndex must be less than panelCount and seriesIndex must be less than seriesCount."
+      },
+      "TrainingProfile": {
+        "type": "array",
+        "minItems": 256,
+        "maxItems": 256,
+        "items": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "description": "Server-extracted normalized 256-point Curve. Copy this field unchanged into the selected training request."
+      },
+      "TrainingWaveformDescriptor": {
+        "type": "object",
+        "required": ["stateCount", "peakLocations", "peakWidths", "valleyHeights", "valleyLocations", "valleyDepths", "valleyPositionRatios", "peakValleyDistances", "tailSlopes", "area"],
+        "properties": {
+          "stateCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20
+          },
+          "observedStateCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20
+          },
+          "regularized": {
+            "type": "boolean"
+          },
+          "peakLocations": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": { "type": "number", "minimum": 0, "maximum": 1 }
+          },
+          "peakWidths": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+          },
+          "valleyHeights": {
+            "type": "array",
+            "maxItems": 19,
+            "items": { "type": "number", "minimum": 0, "maximum": 1 }
+          },
+          "valleyLocations": {
+            "type": "array",
+            "maxItems": 19,
+            "items": { "type": "number", "minimum": 0, "maximum": 1 }
+          },
+          "valleyDepths": {
+            "type": "array",
+            "maxItems": 19,
+            "items": { "type": "number", "minimum": 0, "maximum": 1 }
+          },
+          "valleyPositionRatios": {
+            "type": "array",
+            "maxItems": 19,
+            "items": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 }
+          },
+          "peakValleyDistances": {
+            "type": "array",
+            "maxItems": 38,
+            "items": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+          },
+          "tailSlopes": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": { "type": "number", "minimum": 0, "maximum": 1 }
+          },
+          "area": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1.5
+          }
+        },
+        "description": "Canonical descriptor rebuilt by the search service from profile. Copy it unchanged into the selected training request."
+      },
       "PanelLayout": {
         "type": "object",
         "required": ["rows", "columns"],
@@ -704,7 +833,7 @@
       },
       "PanelSearchResult": {
         "type": "object",
-        "required": ["panelIndex", "bounds", "confidence", "detectionReason", "axisMode", "seriesCount", "selectedSeriesIndex", "series", "query", "matchedCandidateCount", "results"],
+        "required": ["panelIndex", "bounds", "confidence", "detectionReason", "axisMode", "seriesCount", "selectedSeriesIndex", "series", "trainingSelection", "profile", "descriptor", "query", "matchedCandidateCount", "results"],
         "properties": {
           "panelIndex": {
             "type": "integer",
@@ -753,6 +882,17 @@
               "$ref": "#/components/schemas/SeriesSearchResult"
             }
           },
+          "trainingSelection": {
+            "$ref": "#/components/schemas/TrainingSelection"
+          },
+          "profile": {
+            "$ref": "#/components/schemas/TrainingProfile",
+            "description": "Representative series profile mirrored from series[selectedSeriesIndex]."
+          },
+          "descriptor": {
+            "$ref": "#/components/schemas/TrainingWaveformDescriptor",
+            "description": "Representative descriptor mirrored from series[selectedSeriesIndex]."
+          },
           "query": {
             "$ref": "#/components/schemas/QueryAnalysis"
           },
@@ -770,7 +910,7 @@
       },
       "SeriesSearchResult": {
         "type": "object",
-        "required": ["seriesIndex", "sourceIndex", "selected", "separationMode", "irregularityScore", "query", "matchedCandidateCount", "results"],
+        "required": ["seriesIndex", "sourceIndex", "selected", "separationMode", "irregularityScore", "trainingSelection", "profile", "descriptor", "query", "matchedCandidateCount", "results"],
         "properties": {
           "seriesIndex": {
             "type": "integer",
@@ -793,6 +933,15 @@
           "irregularityScore": {
             "type": "number",
             "minimum": 0
+          },
+          "trainingSelection": {
+            "$ref": "#/components/schemas/TrainingSelection"
+          },
+          "profile": {
+            "$ref": "#/components/schemas/TrainingProfile"
+          },
+          "descriptor": {
+            "$ref": "#/components/schemas/TrainingWaveformDescriptor"
           },
           "query": {
             "$ref": "#/components/schemas/QueryAnalysis"
@@ -832,9 +981,36 @@
                 "description": "Machine-readable detailed reason. The legacy error.code remains stable for existing clients."
               },
               "details": {
-                "$ref": "#/components/schemas/DiagnosticDetails"
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/DiagnosticDetails"
+                  },
+                  {
+                    "$ref": "#/components/schemas/SourceSelectionErrorDetails"
+                  }
+                ]
               }
             }
+          }
+        }
+      },
+      "SourceSelectionErrorDetails": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "reason"],
+        "properties": {
+          "field": {
+            "type": "string",
+            "pattern": "^sourceSelection(?:\\.[A-Za-z0-9_]+)?$"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "object_required",
+              "unknown_field",
+              "integer_required",
+              "out_of_range"
+            ]
           }
         }
       },
@@ -903,7 +1079,6 @@
         "type": "object",
         "required": [
           "id",
-          "imageDataUrl",
           "sourceImageDataUrl",
           "profile",
           "descriptor"
@@ -911,7 +1086,7 @@
         "properties": {
           "schemaVersion": {
             "type": "integer",
-            "const": 1
+            "const": 2
           },
           "id": {
             "type": "string"
@@ -921,11 +1096,15 @@
           },
           "imageDataUrl": {
             "type": "string",
-            "description": "Compatibility input only. The server discards this caller-controlled preview and generates the stored standardized SVG from the verified source waveform."
+            "description": "Optional compatibility input for legacy callers only. When present it must be a valid image data URL, but the server discards it and generates the stored standardized SVG from the verified source waveform."
           },
           "sourceImageDataUrl": {
             "type": "string",
-            "description": "Required PNG/JPEG provenance preview. Ready ingestion verifies one isolated distribution waveform, then stores a server-derived profile, descriptor, State, and standardized SVG from this source; raw image-only uploads remain pending."
+            "description": "Required PNG/JPEG provenance image. With sourceSelection this must be the same complete document used for search; the server redetects the selected panel/series and persists only its cropped preview. Without sourceSelection it must contain one isolated waveform. Raw image-only uploads remain pending."
+          },
+          "sourceSelection": {
+            "$ref": "#/components/schemas/TrainingSelection",
+            "description": "Optional selector copied from similarity panels[].series[].trainingSelection. It is bound to a same-document panel redetection plus source-derived shape match rather than trusting color-array order; the server regenerates stored shape fields and returns the persisted selector."
           },
           "profile": {
             "type": "array",

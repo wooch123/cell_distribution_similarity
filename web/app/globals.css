@@ -502,7 +502,7 @@ button:disabled {
 }
 
 .analysis-preview.has-chart-tabs {
-  padding-top: 72px;
+  padding-top: 108px;
 }
 
 .source-panel-view,
@@ -565,6 +565,10 @@ button:disabled {
   color: var(--ink);
 }
 
+.chart-panel-tabs button[data-training-selected="false"] {
+  opacity: 0.56;
+}
+
 .chart-panel-tabs button img {
   background: var(--white);
   grid-row: 1 / span 2;
@@ -587,6 +591,84 @@ button:disabled {
 .chart-panel-tabs button small {
   font-size: 7px;
   opacity: 0.76;
+}
+
+.training-selection-bar {
+  align-items: center;
+  background: rgba(11, 21, 20, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  color: var(--white);
+  display: flex;
+  gap: 7px;
+  left: 9px;
+  min-height: 32px;
+  padding: 4px 7px;
+  position: absolute;
+  right: 9px;
+  top: 63px;
+  z-index: 3;
+}
+
+.training-selection-bar label {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.training-selection-bar input {
+  accent-color: var(--mint);
+  cursor: pointer;
+  flex: 0 0 auto;
+  height: 16px;
+  margin: 0;
+  width: 16px;
+}
+
+.training-selection-bar label span,
+.training-selection-bar strong,
+.training-selection-bar button {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 7px;
+  white-space: nowrap;
+}
+
+.training-selection-bar label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.training-selection-bar strong {
+  color: var(--mint);
+  margin-left: auto;
+}
+
+.training-selection-bar button {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.36);
+  color: var(--white);
+  cursor: pointer;
+  min-height: 24px;
+  padding: 0 7px;
+}
+
+.training-selection-bar button:hover:not(:disabled),
+.training-selection-bar button:focus-visible {
+  background: var(--mint);
+  border-color: var(--mint);
+  color: var(--ink);
+}
+
+.training-selection-bar button:disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+
+.training-selection-bar input:focus-visible,
+.training-selection-bar button:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: 2px;
 }
 
 .source-panel-view {
@@ -2176,7 +2258,7 @@ footer > span {
   }
 
   .analysis-preview.has-chart-tabs {
-    padding-top: 68px;
+    padding-top: 104px;
   }
 
   .source-panel-view > img {

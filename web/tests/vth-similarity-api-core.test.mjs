@@ -48,6 +48,34 @@ const corpus = JSON.parse(
   ),
 );
 
+function assertTrainingWaveform(profile, descriptor) {
+  assert.equal(profile.length, 256);
+  assert.ok(profile.every(Number.isFinite));
+  assert.equal(descriptor.stateCount, descriptor.peakLocations.length);
+  assert.equal(descriptor.peakWidths.length, descriptor.stateCount);
+  assert.equal(
+    descriptor.valleyLocations.length,
+    descriptor.stateCount - 1,
+  );
+  assert.equal(
+    descriptor.valleyHeights.length,
+    descriptor.stateCount - 1,
+  );
+  assert.equal(
+    descriptor.valleyDepths.length,
+    descriptor.stateCount - 1,
+  );
+  assert.equal(
+    descriptor.valleyPositionRatios.length,
+    descriptor.stateCount - 1,
+  );
+  assert.equal(
+    descriptor.peakValleyDistances.length,
+    (descriptor.stateCount - 1) * 2,
+  );
+  assert.equal(descriptor.tailSlopes.length, 2);
+}
+
 function drawLine(rgb, width, height, x1, y1, x2, y2, thickness = 1) {
   const steps = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1), 1);
   for (let step = 0; step <= steps; step += 1) {
@@ -428,6 +456,31 @@ test("searches the public corpus and returns ordered absolute-URL results", asyn
   assert.equal(response.panelDetection.maxPanels, 30);
   assert.equal(response.panelDetection.truncated, false);
   assert.equal(response.panels.length, 1);
+  assert.deepEqual(response.trainingSelection, {
+    panelIndex: 0,
+    panelCount: 1,
+    seriesIndex: 0,
+    seriesCount: 1,
+  });
+  assert.deepEqual(
+    response.panels[0].trainingSelection,
+    response.trainingSelection,
+  );
+  assert.deepEqual(
+    response.panels[0].series[0].trainingSelection,
+    response.trainingSelection,
+  );
+  assertTrainingWaveform(response.profile, response.descriptor);
+  assert.deepEqual(response.panels[0].profile, response.profile);
+  assert.deepEqual(response.panels[0].descriptor, response.descriptor);
+  assert.deepEqual(
+    response.panels[0].series[0].profile,
+    response.profile,
+  );
+  assert.deepEqual(
+    response.panels[0].series[0].descriptor,
+    response.descriptor,
+  );
   assert.deepEqual(response.panels[0].query, response.query);
   assert.deepEqual(response.panels[0].results, response.results);
   assert.equal(response.candidateCount, corpus.candidates.length);
@@ -566,6 +619,24 @@ test("separates a multi-chart image and ranks every chart independently", async 
 
   for (const [index, panel] of response.panels.entries()) {
     assert.equal(panel.panelIndex, index);
+    assert.deepEqual(panel.trainingSelection, {
+      panelIndex: index,
+      panelCount: 2,
+      seriesIndex: panel.selectedSeriesIndex,
+      seriesCount: panel.seriesCount,
+    });
+    for (const [seriesIndex, series] of panel.series.entries()) {
+      assert.deepEqual(series.trainingSelection, {
+        panelIndex: index,
+        panelCount: 2,
+        seriesIndex,
+        seriesCount: panel.seriesCount,
+      });
+      assertTrainingWaveform(series.profile, series.descriptor);
+    }
+    const representative = panel.series[panel.selectedSeriesIndex];
+    assert.deepEqual(panel.profile, representative.profile);
+    assert.deepEqual(panel.descriptor, representative.descriptor);
     assert.ok(panel.confidence > 0.8);
     assert.equal(panel.detectionReason, "closed-plot-frame");
     assert.ok(panel.bounds.processed.width > 200);

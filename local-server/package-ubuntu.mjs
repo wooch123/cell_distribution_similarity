@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(moduleDirectory, "..");
-const version = "1.39.0";
+const version = "1.40.0";
 const packageName = `vth-similarity-ubuntu-x64-v${version}`;
 const artifactsDirectory = path.join(projectRoot, "artifacts", "ubuntu");
 const cacheDirectory = path.join(artifactsDirectory, "cache");
@@ -463,7 +463,13 @@ Linux x64 실행 파일과 검색 코퍼스, 모델, 웹 화면, 로컬 학습 A
 로컬 학습
 - 화면에서 한 장, 여러 파일 또는 폴더 전체를 분석해 이 서버의 data/
   폴더에 학습할 수 있습니다.
-- 한 차트에서 색으로 분리된 여러 시리즈도 각각 별도 후보로 검증·저장됩니다.
+- 현재 분석한 그림에서는 "학습 포함" 체크박스와 전체 선택/해제로 원하는
+  차트와 색상 시리즈만 골라 별도 후보로 검증·저장합니다. 선택하지 않은
+  차트와 시리즈는 학습 저장소로 보내지 않습니다. 메타데이터를 제거한 전체
+  입력에서 패널 수·좌표와 선택 시리즈 형상을 다시 검증하고 선택 패널
+  크롭만 저장합니다.
+- 여러 파일 또는 폴더 일괄 학습은 각 이미지에서 검출한 모든 차트와
+  시리즈를 순차 저장합니다.
 - 학습 후보는 서버를 다시 시작해도 유지되고 데이터 관리 탭에서 삭제할 수
   있습니다.
 - LAN 사용자는 같은 서버의 학습 후보와 추천 결과를 공유합니다.
@@ -482,6 +488,31 @@ export VTH_API_KEY='위에서-서버에-설정한-고정-키'
 curl -X POST "http://127.0.0.1:4173/api/v1/similarity-search?topK=5" \\
   -H "x-api-key: $VTH_API_KEY" \\
   -H "Content-Type: image/png" --data-binary "@graph.png"
+
+검색 응답의 panels[].series[].trainingSelection을 sourceSelection으로
+복사하고 같은 series의 256-point profile/canonical descriptor를 그대로
+사용하며, 검색에 사용한 동일한 전체 이미지를 sourceImageDataUrl에 넣어
+POST /api/v1/training-samples에 한 후보씩 보내면 선택한 차트·색상 시리즈만
+학습합니다. 서버는 전체 이미지에서 패널을 다시 찾고 선택 시리즈를
+형상으로 결속해 검색 Curve와 선택 패널 미리보기를 생성하며, 좌표·형상이
+원본과 다르면
+source_selection_image_mismatch로 거절합니다.
+호환용 imageDataUrl이나 별도 Curve 추출기는 필요하지 않습니다.
+
+최소 검색→첫 차트/첫 시리즈 학습:
+curl -sS -X POST \\
+  "http://127.0.0.1:4173/api/v1/similarity-search?topK=5" \\
+  -H "x-api-key: $VTH_API_KEY" \\
+  -H "Content-Type: image/png" --data-binary "@graph.png" > search.json
+SOURCE="data:image/png;base64,$(base64 < graph.png | tr -d '\\n')"
+jq --arg source "$SOURCE" \\
+  '.panels[0].series[0] |
+   {schemaVersion:2,id:"api-selected-001",label:"API selected series",
+    sourceImageDataUrl:$source,profile,descriptor,
+    sourceSelection:.trainingSelection}' search.json > train.json
+curl -sS -X POST "http://127.0.0.1:4173/api/v1/training-samples" \\
+  -H "x-api-key: $VTH_API_KEY" \\
+  -H "Content-Type: application/json" --data-binary "@train.json"
 
 파일 무결성
 checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 있습니다.
@@ -530,6 +561,7 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
       similaritySearchApi: true,
       multiChartPanelSplitting: true,
       multiChartMaximumPanels: 30,
+      selectiveMultiChartTraining: true,
       arbitraryPositionWaveformDetection: true,
       borderSafeDocumentBackground: true,
       repeatedWaveformGridRecovery: true,

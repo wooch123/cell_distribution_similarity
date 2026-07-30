@@ -34,8 +34,11 @@ PNG/JPEG/WEBP 로그 스케일 VTH 그래프를 파일 선택, 끌어놓기 또�
 적응 확대해 끊어진 축선의 짧은 간격을 복원하고 원본 좌표로 되돌려
 크롭합니다. 각 패널은 기존
 축·격자·라벨 제거와 비정규 Curve 선택을 독립 실행하고 화면 탭에서 별도
-검색 결과를 보여줍니다. 화면·여러 파일·폴더 학습에서도 분리된 차트마다
-독립 후보와 크롭 원본 미리보기를 저장합니다.
+검색 결과를 보여줍니다. 현재 분석한 그림은 분리된 차트와 색상 시리즈 중
+원하는 항목만 선택해 독립 후보와 크롭 원본 미리보기로 저장할 수 있습니다.
+학습 시에는 메타데이터를 제거한 동일한 전체 입력 JPEG에서 패널 수와
+좌표를 다시 검증하고, 선택한 패널만 서버에서 크롭해 보관합니다.
+여러 파일·폴더 일괄 학습은 각 이미지에서 검출한 모든 항목을 저장합니다.
 한 물리 차트 안에 검정·회색을 포함해 서로 다른 색의 full-width 파형이
 여러 개 있으면
 `series[]`로 분리해 각각 독립 검색·학습합니다. 색과 선 스타일은 분리
@@ -62,10 +65,13 @@ FHD 1920×1080 입력은 축소하지 않아 3–4px의 좁은 차트 간격과 
 검출/관측 State, peak·valley, 축 방식과 Curve 검증 근거를 함께 표시합니다.
 호스팅 버전은 분석만 할 때 입력 원본 이미지를 서버로 전송하지 않습니다.
 공유 동의 후 `공용 학습에 등록` 버튼을 누르면 추출한 256-point Curve,
-descriptor, 파일명·메타데이터를 제거하고 JPEG로 다시 만든 원본 미리보기를
+descriptor와 선택 좌표를 전송합니다. 파일명·메타데이터를 제거한 전체
+입력 JPEG는 좌표 검증에만 사용하고, 서버가 다시 크롭한 선택 패널만
 공용 학습 저장소에 등록합니다. 서버가 축 없는 표준 그래프를 별도로
 생성하며, 등록 후보는 다른 사용자의 검색에도 즉시 포함되고 추천 시
-표준 Curve와 학습 원본 미리보기가 함께 표시됩니다.
+표준 Curve와 학습 원본 미리보기가 함께 표시됩니다. 멀티 차트 그림은
+`학습 포함` 체크박스와 전체 선택/해제로 원하는 차트와 색상 시리즈만
+등록하며, 선택하지 않은 항목은 공용 또는 로컬 학습 저장소로 보내지 않습니다.
 공용 후보는 500개씩 cursor page로 조회하며 전체 2,000개까지 모두 합쳐
 검색하므로 오래된 등록 그림도 다른 사용자의 결과에서 누락되지 않습니다.
 추천 결과의 `유사/비유사` 판정도 별도 동의 후 익명 공용 라벨로 제출할 수
@@ -74,7 +80,7 @@ descriptor, 파일명·메타데이터를 제거하고 JPEG로 다시 만든 원
 
 ## Windows 무설치판과 Ubuntu 외부 Web 서버판
 
-`artifacts/windows/vth-similarity-windows-x64-v1.39.0.zip`은 공식
+`artifacts/windows/vth-similarity-windows-x64-v1.40.0.zip`은 공식
 Windows x64 Node 런타임, 웹 빌드, 로컬 학습 API를 함께 담습니다. 다른
 Windows PC에서 압축을 푼 뒤 `start.bat`을 실행하면 설치 없이
 `http://127.0.0.1:4173`에서 동작합니다. 코퍼스, 모델, 웹 화면, 런타임이
@@ -87,6 +93,8 @@ Windows PC에서 압축을 푼 뒤 `start.bat`을 실행하면 설치 없이
 함께 표시합니다. 화면에서 여러 파일 또는 폴더를 선택하면 폴더 안의 지원
 이미지를 개수 제한 없이 순차 분석해 학습합니다. 포함된 Node 런타임은 첫
 실행 때 Windows 기본 `tar.exe`로 패키지 내부에 자동 해제됩니다.
+현재 분석한 멀티 차트 그림은 각 차트와 색상 시리즈의 `학습 포함` 여부를
+개별 지정할 수 있고, 여러 파일·폴더 일괄 학습은 검출한 전체 항목을 저장합니다.
 학습 패널의 `데이터 관리` 탭에서는 저장된 전체 후보를 검색·미리보기하고,
 체크박스로 여러 항목을 선택해 한 번에 삭제할 수 있습니다.
 FHD 한 이미지에서 오밀조밀하게 배치된 차트를 최대 30개까지 좌표별로
@@ -106,8 +114,9 @@ FHD 한 이미지에서 오밀조밀하게 배치된 차트를 최대 30개까�
 추가 회귀는 160×90 이미지의 4개 차트와 240×135 이미지의 12개 차트를
 각각 분리하며, 조밀한 표 형태 격자 위의 유효 파형은 색상/검정 Curve 모두
 유지하고 같은 크기의 실제 색상 표는 계속 제외하는지 확인합니다.
-v1.39.0은 행·열 정렬을 전제로 하지 않는 전역 공간 탐색에 반복 색상
-격자 복구를 결합합니다. 위치, 크기, 간격을 사전에 알 수 없는 현업
+v1.40.0은 현재 분석한 멀티 차트의 차트·색상 시리즈 선택 학습을 추가하고,
+행·열 정렬을 전제로 하지 않는 전역 공간 탐색에 반복 색상 격자 복구를
+결합합니다. 위치, 크기, 간격을 사전에 알 수 없는 현업
 슬라이드는 그대로 독립 검출하고, 4×4처럼 반복되는 소형 VTH 패널은
 색상 Curve 투영으로 빠진 셀을 복원합니다. 제공된 4개 State Count Sweep
 슬라이드에서 좌측의 분포 패널 16개를 모두 분리하고, 우측 설명문·표·
@@ -134,9 +143,9 @@ Node.js나 npm을 설치하지 않고 `.tar.gz`를 풀어 `./start.sh`를 실행
 `data/` 학습 저장소와 추천 후보를 공유하지만 외부 공용 서버로 원본이나
 학습 데이터를 전송하지 않습니다.
 
-v1.39.0 웹 배포는
-`/downloads/windows-package-v1.39.0.json`과
-`/downloads/ubuntu-package-v1.39.0.json`을 고정 매니페스트 경로로
+v1.40.0 웹 배포는
+`/downloads/windows-package-v1.40.0.json`과
+`/downloads/ubuntu-package-v1.40.0.json`을 고정 매니페스트 경로로
 사용합니다. 두 매니페스트 모두 schema-v1 `browser-assembled` 계약과
 SHA-256 조각 목록을 제공하며 브라우저는 각 조각과 완성 파일을 검증한 뒤
 저장합니다. Windows 결과물은 ZIP이고 Ubuntu는
@@ -150,7 +159,8 @@ Windows 패키지 내부에는 다운로드 자산을 다시 넣지 않아 재�
 - `GET /api/v1/health`: 서비스와 ready/pending 개수 확인
 - `GET /api/v1/runtime`: 완전 오프라인 정책과 번들 포함 상태 확인
 - `POST /api/v1/similarity-search?topK=5`: PNG/JPEG를 받아 순위별 유사
-  그림 URL, 종합 점수, 세부 형상 점수와 유사 이유를 차트 패널별로 반환
+  그림 URL, 종합 점수, 세부 형상 점수, 유사 이유와 차트/시리즈별
+  `trainingSelection`을 반환
 - `POST /api/v1/training-images`: 원본 PNG/JPEG/WEBP 적재
 - `POST /api/v1/training-samples`: 이미지와 256-point Curve/descriptor를
   함께 넣어 즉시 검색 가능한 후보로 등록
@@ -169,12 +179,69 @@ Windows 패키지 내부에는 다운로드 자산을 다시 넣지 않아 재�
 다중 차트 응답의 `panelCount`, `panelLayout`, `panels[]`에는 행 우선 순서의
 좌표·검출 신뢰도·패널별 Query와 결과가 들어가며, 최상위 `query/results`는
 기존 클라이언트 호환을 위해 첫 번째 패널을 유지합니다.
+각 `panels[].series[]`는 `trainingSelection`뿐 아니라 학습 API에 그대로
+사용할 256-point `profile`과 canonical `descriptor`도 반환합니다.
+학습할 항목은 이 세 필드를 각각 `sourceSelection`, `profile`,
+`descriptor`에 복사하고 검색에 사용한 동일한 전체 이미지를
+`sourceImageDataUrl`로 보내 한 후보씩 학습 API에 등록합니다.
+별도 Curve 추출기와 `imageDataUrl`은 필요하지 않습니다. 서버는
+전체 이미지에서 패널을 다시 검출해 패널 수·인덱스를 확인하고, 해당
+패널 안에서 제출 Curve와 일치하는 원본 시리즈를 찾아
+profile·descriptor·State를 재생성합니다. 따라서 호출자가 보낸 Curve
+JSON이나 JPEG 디코딩 뒤 달라질 수 있는 색상 배열 순서는 검색 형상의
+권위 자료가 아닙니다. 선택 좌표와 검증된 원본의 패널/시리즈 또는 형상이
+다르면
+`422 source_selection_image_mismatch`로 거절합니다.
+
+로컬/Ubuntu 패키지의 최소 검색→선택 학습 예시는 다음과 같습니다.
+
+```bash
+curl -sS -X POST \
+  'http://127.0.0.1:4173/api/v1/similarity-search?topK=5' \
+  -H 'Content-Type: image/png' --data-binary '@document.png' > search.json
+
+SOURCE="data:image/png;base64,$(base64 < document.png | tr -d '\n')"
+jq --arg source "$SOURCE" \
+  '.panels[0].series[0] |
+   {schemaVersion:2,id:"api-selected-001",label:"API selected series",
+    sourceImageDataUrl:$source,profile,descriptor,
+    sourceSelection:.trainingSelection}' \
+  search.json > train.json
+
+curl -sS -X POST 'http://127.0.0.1:4173/api/v1/training-samples' \
+  -H 'Content-Type: application/json' --data-binary '@train.json'
+```
+
+호스팅 공용 등록은 파일명·메타데이터를 제거한 3MB 이하 JPEG를 먼저
+검색하고 그 정확히 같은 JPEG를 multipart `sourceImage`로 사용합니다.
+
+```bash
+curl -sS -X POST \
+  'https://dove9999.com/api/v1/similarity-search?topK=5' \
+  -H 'Content-Type: image/jpeg' --data-binary '@document.jpg' > search.json
+
+CONTRIBUTOR_TOKEN=$(openssl rand -hex 32)
+DELETION_TOKEN=$(openssl rand -hex 32)
+jq -c --arg contributor "$CONTRIBUTOR_TOKEN" --arg deletion "$DELETION_TOKEN" \
+  '.panels[0].series[0] |
+   {schemaVersion:2,label:"API selected series",profile,descriptor,
+    sourceSelection:.trainingSelection,sharingConsent:true,
+    consentVersion:"2026-07-30-v3",contributorToken:$contributor,
+    deletionToken:$deletion}' search.json > shared-payload.json
+
+curl -sS -X POST \
+  'https://dove9999.com/api/v1/shared-training-samples' \
+  -F "payload=$(cat shared-payload.json)" \
+  -F 'sourceImage=@document.jpg;type=image/jpeg'
+```
+
 각 Query는 `stateCount`, `peakCount`, `valleyCount`와
 `topologyConsistent`를 함께 반환하므로 연동 시스템도
 `peak=State`, `valley=peak-1` 계약을 즉시 검사할 수 있습니다.
 공용 API는 Curve와 descriptor를 검증해 D1에 저장하고, 서버가 생성한 축
-없는 표준 그래프와 브라우저가 파일명·메타데이터를 제거해 다시 만든 JPEG
-원본 미리보기를 R2에 분리 저장합니다.
+없는 표준 그래프와 서버가 검증된 전체 입력에서 잘라낸 선택 패널 JPEG
+미리보기를 R2에 분리 저장합니다. 다른 패널·표·설명 텍스트는 저장하지
+않습니다.
 동일 Curve fingerprint는 하나로 합치고, 하루 등록 제한과 업로더 전용 삭제
 토큰을 적용합니다.
 

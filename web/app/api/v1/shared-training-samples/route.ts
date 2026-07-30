@@ -19,14 +19,14 @@ const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 
 function validateSourceImage(part: FormDataEntryValue | null) {
   if (!(part instanceof File)) {
-    throw new Error("메타데이터를 제거한 원본 JPEG 미리보기가 필요합니다.");
+    throw new Error("메타데이터를 제거한 학습 검증용 JPEG가 필요합니다.");
   }
   if (
     part.type !== "image/jpeg" ||
     part.size < 4 ||
     part.size > MAX_SHARED_SOURCE_IMAGE_BYTES
   ) {
-    throw new Error("원본 미리보기는 3MB 이하 JPEG여야 합니다.");
+    throw new Error("학습 검증 이미지는 3MB 이하 JPEG여야 합니다.");
   }
   return part;
 }
@@ -89,7 +89,7 @@ export async function POST(request: Request) {
       sourceBytes[1] !== 0xd8 ||
       sourceBytes[2] !== 0xff
     ) {
-      throw new Error("원본 미리보기의 JPEG 데이터가 올바르지 않습니다.");
+      throw new Error("학습 검증 이미지의 JPEG 데이터가 올바르지 않습니다.");
     }
     const parsedPayload = JSON.parse(payloadPart);
     const normalizedPayload =
@@ -99,6 +99,7 @@ export async function POST(request: Request) {
       mimeType: "image/jpeg",
       profile: normalizedPayload.profile,
       stateCount: normalizedPayload.descriptor.stateCount,
+      sourceSelection: normalizedPayload.sourceSelection,
     });
     const authoritativeProfile =
       verification.authoritativeProfile;
@@ -115,7 +116,10 @@ export async function POST(request: Request) {
       authoritativePayload,
       url.origin,
       request.headers.get("cf-connecting-ip") || "",
-      { bytes: sourceBytes, mimeType: "image/jpeg" },
+      verification.authoritativeSourceImage ?? {
+        bytes: sourceBytes,
+        mimeType: "image/jpeg",
+      },
     );
     return sharedApiJson(
       request,

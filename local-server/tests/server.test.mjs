@@ -29,6 +29,15 @@ const tinyPng = Buffer.from(
 const demoQuery = await readFile(
   path.join(projectRoot, "web", "public", "demo-query.png"),
 );
+const multiChartQuery = await readFile(
+  path.join(
+    projectRoot,
+    "web",
+    "public",
+    "samples",
+    "vnand-ppt-12-chart-sample.png",
+  ),
+);
 const corpus = JSON.parse(
   await readFile(
     path.join(projectRoot, "web", "public", "corpus-index.json"),
@@ -117,6 +126,12 @@ function trainingPayload(
     },
     metadata: {
       learnedAt: "2026-07-27T00:00:00.000Z",
+    },
+    sourceSelection: {
+      panelIndex: 0,
+      panelCount: 1,
+      seriesIndex: 0,
+      seriesCount: 1,
     },
   };
 }
@@ -323,6 +338,10 @@ test("serves the web app and persists ready and pending training images", async 
       createdPayload.sample.sourceImage,
       "/api/v1/training-samples/sample-1/source-image",
     );
+    assert.deepEqual(
+      createdPayload.sample.sourceSelection,
+      trainingPayload().sourceSelection,
+    );
 
     const image = await fetch(
       `${running.baseUrl}/api/v1/training-samples/sample-1/image`,
@@ -345,11 +364,16 @@ test("serves the web app and persists ready and pending training images", async 
       `${running.baseUrl}/api/v1/training-samples/sample-1/source-image`,
     );
     assert.equal(sourceImage.status, 200);
-    assert.equal(sourceImage.headers.get("content-type"), "image/png");
-    assert.deepEqual(
-      Buffer.from(await sourceImage.arrayBuffer()),
-      trainingSourcePng,
+    assert.equal(sourceImage.headers.get("content-type"), "image/jpeg");
+    const storedSourceImage = Buffer.from(
+      await sourceImage.arrayBuffer(),
     );
+    assert.deepEqual([...storedSourceImage.subarray(0, 3)], [
+      0xff,
+      0xd8,
+      0xff,
+    ]);
+    assert.notDeepEqual(storedSourceImage, trainingSourcePng);
 
     const pending = await fetch(
       `${running.baseUrl}/api/v1/training-images?id=pending-1&label=Raw`,
@@ -380,6 +404,49 @@ test("serves the web app and persists ready and pending training images", async 
     assert.equal(finalHealth.ready, 1);
     assert.equal(finalHealth.pending, 1);
 
+    const invalidSelection = trainingPayload("invalid-selection");
+    invalidSelection.sourceSelection.panelIndex =
+      invalidSelection.sourceSelection.panelCount;
+    const invalidSelectionResponse = await fetch(
+      `${running.baseUrl}/api/v1/training-samples`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(invalidSelection),
+      },
+    );
+    assert.equal(invalidSelectionResponse.status, 400);
+    const invalidSelectionPayload =
+      await invalidSelectionResponse.json();
+    assert.equal(
+      invalidSelectionPayload.error.code,
+      "invalid_source_selection",
+    );
+    assert.equal(
+      invalidSelectionPayload.error.details.field,
+      "sourceSelection.panelIndex",
+    );
+
+    const mismatchedSeries = trainingPayload(
+      "mismatched-source-series",
+    );
+    mismatchedSeries.sourceSelection.seriesCount = 2;
+    const mismatchedSeriesResponse = await fetch(
+      `${running.baseUrl}/api/v1/training-samples`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(mismatchedSeries),
+      },
+    );
+    assert.equal(mismatchedSeriesResponse.status, 422);
+    const mismatchedSeriesPayload =
+      await mismatchedSeriesResponse.json();
+    assert.equal(
+      mismatchedSeriesPayload.error.code,
+      "source_selection_image_mismatch",
+    );
+
     const removed = await fetch(
       `${running.baseUrl}/api/v1/training-samples/sample-1`,
       { method: "DELETE" },
@@ -390,7 +457,101 @@ test("serves the web app and persists ready and pending training images", async 
   }
 });
 
-test("rejects unverified ready sources while preserving raw pending ingestion", async () => {
+test("round-trips one selected multi-chart series from search into training", async () => {
+  const running = await startServer();
+  try {
+    const sourceImageDataUrl =
+      `data:image/png;base64,${multiChartQuery.toString("base64")}`;
+    const searchResponse = await fetch(
+      `${running.baseUrl}/api/v1/similarity-search?topK=10`,
+      {
+        method: "POST",
+        headers: { "content-type": "image/png" },
+        body: multiChartQuery,
+      },
+    );
+    assert.equal(searchResponse.status, 200);
+    const searchPayload = await searchResponse.json();
+    assert.equal(searchPayload.panelCount, 12);
+
+    const selectedPanel = searchPayload.panels[7];
+    const selectedSeries = selectedPanel?.series?.[0];
+    assert.ok(selectedSeries);
+    assert.equal(selectedSeries.profile.length, 256);
+    assert.equal(
+      selectedSeries.descriptor.stateCount,
+      selectedSeries.query.stateCount,
+    );
+    assert.deepEqual(selectedSeries.trainingSelection, {
+      panelIndex: 7,
+      panelCount: 12,
+      seriesIndex: 0,
+      seriesCount: selectedPanel.seriesCount,
+    });
+
+    const learnedId = "roundtrip-panel-8-series-1";
+    const trainingRequest = {
+      schemaVersion: 2,
+      id: learnedId,
+      label: "Search API selected panel 8",
+      sourceImageDataUrl,
+      profile: selectedSeries.profile,
+      descriptor: selectedSeries.descriptor,
+      sourceSelection: selectedSeries.trainingSelection,
+      metadata: {
+        learnedAt: "2026-07-30T00:00:00.000Z",
+        source: "similarity-api-roundtrip-test",
+      },
+    };
+    assert.equal(
+      Object.hasOwn(trainingRequest, "imageDataUrl"),
+      false,
+      "a selector-bound round trip must not require a caller-rendered preview",
+    );
+
+    const trainingResponse = await fetch(
+      `${running.baseUrl}/api/v1/training-samples`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(trainingRequest),
+      },
+    );
+    assert.equal(trainingResponse.status, 201);
+    const trainingPayload = await trainingResponse.json();
+    assert.equal(trainingPayload.sample.id, learnedId);
+    assert.equal(trainingPayload.sample.status, "ready");
+    assert.deepEqual(
+      trainingPayload.sample.sourceSelection,
+      selectedSeries.trainingSelection,
+    );
+
+    const repeatedSearchResponse = await fetch(
+      `${running.baseUrl}/api/v1/similarity-search?topK=10`,
+      {
+        method: "POST",
+        headers: { "content-type": "image/png" },
+        body: multiChartQuery,
+      },
+    );
+    assert.equal(repeatedSearchResponse.status, 200);
+    const repeatedSearch = await repeatedSearchResponse.json();
+    const repeatedSeries =
+      repeatedSearch.panels[
+        selectedSeries.trainingSelection.panelIndex
+      ].series[selectedSeries.trainingSelection.seriesIndex];
+    assert.ok(
+      repeatedSeries.results.some(
+        (result) => result.id === learnedId,
+      ),
+      "the selected series must expose the newly trained candidate in search",
+    );
+  } finally {
+    await running.close();
+  }
+});
+
+test("rejects non-waveforms and selector-bound profile poisoning", async () => {
   const running = await startServer();
   try {
     const nonDistribution = nonDistributionPng();
@@ -449,7 +610,7 @@ test("rejects unverified ready sources while preserving raw pending ingestion", 
     const poisonedPayload = await poisonedResponse.json();
     assert.equal(
       poisonedPayload.error.code,
-      "training_profile_image_mismatch",
+      "source_selection_image_mismatch",
     );
 
     const pending = await fetch(
@@ -467,7 +628,10 @@ test("rejects unverified ready sources while preserving raw pending ingestion", 
     const ready = await fetch(
       `${running.baseUrl}/api/v1/training-samples`,
     ).then((response) => response.json());
-    assert.deepEqual(ready.samples, []);
+    assert.deepEqual(
+      ready.samples.map((sample) => sample.id),
+      [],
+    );
     const all = await fetch(
       `${running.baseUrl}/api/v1/training-samples?includePending=1`,
     ).then((response) => response.json());
@@ -476,7 +640,9 @@ test("rejects unverified ready sources while preserving raw pending ingestion", 
         sample.id,
         sample.status,
       ]),
-      [["raw-non-waveform", "pending"]],
+      [
+        ["raw-non-waveform", "pending"],
+      ],
     );
   } finally {
     await running.close();
@@ -723,9 +889,20 @@ test("protects network-bound training data with a bootstrap cookie", async () =>
       panelResultContract.properties.series.items.$ref,
       "#/components/schemas/SeriesSearchResult",
     );
+    const seriesResultContract =
+      openApi.components.schemas.SeriesSearchResult;
+    assert.ok(seriesResultContract.required.includes("profile"));
+    assert.ok(seriesResultContract.required.includes("descriptor"));
+    assert.equal(
+      seriesResultContract.properties.profile.$ref,
+      "#/components/schemas/TrainingProfile",
+    );
+    assert.equal(
+      seriesResultContract.properties.descriptor.$ref,
+      "#/components/schemas/TrainingWaveformDescriptor",
+    );
     assert.deepEqual(
-      openApi.components.schemas.SeriesSearchResult.properties
-        .separationMode.enum,
+      seriesResultContract.properties.separationMode.enum,
       [
         "color",
         "achromatic",
@@ -733,6 +910,17 @@ test("protects network-bound training data with a bootstrap cookie", async () =>
         "chromatic-union",
         "single",
       ],
+    );
+    const trainingInputContract =
+      openApi.components.schemas.TrainingSampleInput;
+    assert.ok(
+      trainingInputContract.required.includes("sourceImageDataUrl"),
+    );
+    assert.ok(trainingInputContract.required.includes("profile"));
+    assert.ok(trainingInputContract.required.includes("descriptor"));
+    assert.equal(
+      trainingInputContract.required.includes("imageDataUrl"),
+      false,
     );
 
     const unauthorizedList = await fetch(

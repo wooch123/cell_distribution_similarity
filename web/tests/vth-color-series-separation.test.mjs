@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import jpeg from "jpeg-js";
+import { encode as encodePng } from "fast-png";
+
 import { detectChartPanels } from "../lib/vth-chart-panel-core.mjs";
 import {
   analyzeForegroundMasks,
@@ -16,6 +19,7 @@ import {
 } from "../lib/vth-similarity-api-core.mjs";
 import { alignedCurveSimilarity } from "../lib/vth-shape-core.mjs";
 import {
+  COLOR_SERIES_PALETTE,
   chromaticAndNeutralPairFixture,
   chromaticAndNeutralSeriesFixture,
   coloredCellTableFixture,
@@ -40,6 +44,144 @@ function foregroundFor(fixture) {
     fixture.height,
     fixture.channels,
   );
+}
+
+function jpegBytesForRgb(pixels, width, height, quality = 92) {
+  const rgba = new Uint8Array(width * height * 4);
+  for (let index = 0; index < width * height; index += 1) {
+    rgba[index * 4] = pixels[index * 3];
+    rgba[index * 4 + 1] = pixels[index * 3 + 1];
+    rgba[index * 4 + 2] = pixels[index * 3 + 2];
+    rgba[index * 4 + 3] = 255;
+  }
+  return jpeg.encode({ data: rgba, width, height }, quality).data;
+}
+
+function twoPanelDocumentFixture(
+  first,
+  second,
+  { jpegQuality } = {},
+) {
+  const margin = 12;
+  const gutter = 24;
+  const secondOffsetY = 72;
+  const width =
+    margin * 2 + first.width + gutter + second.width;
+  const height =
+    margin * 2 +
+    Math.max(first.height, secondOffsetY + second.height);
+  const pixels = new Uint8Array(width * height * 3).fill(255);
+  const blit = (fixture, offsetX, offsetY) => {
+    for (let y = 0; y < fixture.height; y += 1) {
+      const sourceOffset = y * fixture.width * 3;
+      const targetOffset =
+        ((offsetY + y) * width + offsetX) * 3;
+      pixels.set(
+        fixture.pixels.subarray(
+          sourceOffset,
+          sourceOffset + fixture.width * 3,
+        ),
+        targetOffset,
+      );
+    }
+  };
+  blit(first, margin, margin);
+  blit(
+    second,
+    margin + first.width + gutter,
+    margin + secondOffsetY,
+  );
+  return {
+    width,
+    height,
+    channels: 3,
+    pixels,
+    bytes:
+      jpegQuality === undefined
+        ? encodePng({
+            width,
+            height,
+            data: pixels,
+            channels: 3,
+            depth: 8,
+          })
+        : jpegBytesForRgb(
+            pixels,
+            width,
+            height,
+            jpegQuality,
+          ),
+    mimeType:
+      jpegQuality === undefined ? "image/png" : "image/jpeg",
+  };
+}
+
+function ambiguousTwinSeriesFixture() {
+  const fixture = colorSeriesChartFixture({
+    width: 600,
+    height: 360,
+    seriesCount: 2,
+    crossingMode: "near",
+  });
+  const pixels = Uint8Array.from(fixture.pixels);
+  const red = COLOR_SERIES_PALETTE[0];
+  const blue = COLOR_SERIES_PALETTE[1];
+  const matches = (offset, color) =>
+    pixels[offset] === color[0] &&
+    pixels[offset + 1] === color[1] &&
+    pixels[offset + 2] === color[2];
+  const redCurvePixels = [];
+  for (
+    let y = fixture.bounds.top;
+    y <= fixture.bounds.bottom;
+    y += 1
+  ) {
+    for (
+      let x = fixture.bounds.left;
+      x <= fixture.bounds.right;
+      x += 1
+    ) {
+      const offset = (y * fixture.width + x) * 3;
+      if (matches(offset, red)) {
+        redCurvePixels.push({ x, y });
+      } else if (matches(offset, blue)) {
+        pixels[offset] = 255;
+        pixels[offset + 1] = 255;
+        pixels[offset + 2] = 255;
+      }
+    }
+  }
+  for (const { x, y } of redCurvePixels) {
+    const shiftedY = y + 10;
+    const progress =
+      (x - fixture.bounds.left) /
+      Math.max(1, fixture.bounds.right - fixture.bounds.left);
+    const shiftedX =
+      x + Math.round(Math.sin(progress * Math.PI * 4) * 3);
+    if (
+      shiftedX < fixture.bounds.left ||
+      shiftedX > fixture.bounds.right ||
+      shiftedY > fixture.bounds.bottom
+    ) {
+      continue;
+    }
+    const offset =
+      (shiftedY * fixture.width + shiftedX) * 3;
+    pixels[offset] = blue[0];
+    pixels[offset + 1] = blue[1];
+    pixels[offset + 2] = blue[2];
+  }
+  return {
+    ...fixture,
+    pixels,
+    bytes: encodePng({
+      width: fixture.width,
+      height: fixture.height,
+      data: pixels,
+      channels: 3,
+      depth: 8,
+    }),
+  };
 }
 
 function assertSeriesContract(analysis, expectedCount) {
@@ -239,6 +381,52 @@ test("separates a black distribution from red and blue series without promoting 
   assert.equal(response.panelCount, 1);
   assert.equal(response.panels[0].seriesCount, 3);
   assert.equal(response.panels[0].series.length, 3);
+  assert.deepEqual(
+    response.panels[0].series.map(
+      (series) => series.trainingSelection,
+    ),
+    [0, 1, 2].map((seriesIndex) => ({
+      panelIndex: 0,
+      panelCount: 1,
+      seriesIndex,
+      seriesCount: 3,
+    })),
+  );
+  assert.deepEqual(
+    response.panels[0].trainingSelection,
+    response.panels[0].series[
+      response.panels[0].selectedSeriesIndex
+    ].trainingSelection,
+  );
+  assert.deepEqual(
+    response.trainingSelection,
+    response.panels[0].trainingSelection,
+  );
+  for (const series of response.panels[0].series) {
+    assert.equal(series.profile.length, 256);
+    assert.equal(
+      series.descriptor.stateCount,
+      series.descriptor.peakLocations.length,
+    );
+    assert.equal(
+      series.descriptor.valleyLocations.length,
+      series.descriptor.stateCount - 1,
+    );
+  }
+  const selectedResponseSeries =
+    response.panels[0].series[
+      response.panels[0].selectedSeriesIndex
+    ];
+  assert.deepEqual(
+    response.panels[0].profile,
+    selectedResponseSeries.profile,
+  );
+  assert.deepEqual(
+    response.panels[0].descriptor,
+    selectedResponseSeries.descriptor,
+  );
+  assert.deepEqual(response.profile, response.panels[0].profile);
+  assert.deepEqual(response.descriptor, response.panels[0].descriptor);
   assert.deepEqual(
     [...response.panels[0].series]
       .map((series) => series.separationMode)
@@ -562,6 +750,330 @@ test("training provenance accepts every extracted color series as an independent
     );
     assert.ok(validated.profileSimilarity >= 0.985);
   }
+});
+
+test("rejects arbitrary 4/9 sourceSelection coordinates on a one-chart crop", async () => {
+  const fixture = colorSeriesChartFixture({
+    width: 600,
+    height: 360,
+    seriesCount: 3,
+    crossingMode: "near",
+  });
+  const analysis = await analyzeSimilarityImage(
+    fixture.bytes,
+    fixture.mimeType,
+  );
+  assertSeriesContract(analysis, 3);
+  const selected = analysis.series[2];
+  await assert.rejects(
+    () =>
+      validateTrainingWaveformImage({
+        bytes: fixture.bytes,
+        mimeType: fixture.mimeType,
+        profile: selected.profile,
+        stateCount: selected.descriptor.stateCount,
+        sourceSelection: {
+          panelIndex: 4,
+          panelCount: 9,
+          seriesIndex: 2,
+          seriesCount: 3,
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof SimilarityApiError);
+      assert.equal(error.status, 422);
+      assert.equal(
+        error.code,
+        "source_selection_image_mismatch",
+      );
+      return true;
+    },
+  );
+});
+
+test("sourceSelection re-detects a full document, selects its reading-order panel, and returns only that authoritative JPEG crop", async () => {
+  const fixture = mixedPanelColorSeriesFixture();
+  const firstReference = colorSeriesChartFixture({
+    width: 520,
+    height: 330,
+    seriesCount: 2,
+    crossingMode: "near",
+  });
+  const secondReference = monochromeSeriesChartFixture({
+    width: 520,
+    height: 330,
+  });
+  const firstAnalysis = await analyzeSimilarityImage(
+    firstReference.bytes,
+    firstReference.mimeType,
+  );
+  const secondAnalysis = await analyzeSimilarityImage(
+    secondReference.bytes,
+    secondReference.mimeType,
+  );
+  const firstSelected = firstAnalysis.series[1];
+  const firstValidated = await validateTrainingWaveformImage({
+    bytes: fixture.bytes,
+    mimeType: fixture.mimeType,
+    profile: firstSelected.profile,
+    stateCount: firstSelected.descriptor.stateCount,
+    sourceSelection: {
+      panelIndex: 0,
+      panelCount: 2,
+      seriesIndex: 1,
+      seriesCount: 2,
+    },
+  });
+
+  assert.equal(firstValidated.panelCount, 2);
+  assert.equal(firstValidated.matchedPanelIndex, 0);
+  assert.equal(firstValidated.seriesCount, 2);
+  assert.equal(firstValidated.matchedSeriesIndex, 1);
+  assert.ok(firstValidated.profileSimilarity >= 0.985);
+  assert.ok(
+    firstValidated.sourceBounds.width < fixture.width / 2,
+    "the stored source must be the selected panel crop, not the slide",
+  );
+  assert.equal(
+    firstValidated.authoritativeSourceImage.mimeType,
+    "image/jpeg",
+  );
+  assert.equal(
+    firstValidated.authoritativeSourceImage.width,
+    firstValidated.sourceBounds.width,
+  );
+  assert.equal(
+    firstValidated.authoritativeSourceImage.height,
+    firstValidated.sourceBounds.height,
+  );
+  assert.deepEqual(
+    [...firstValidated.authoritativeSourceImage.bytes.slice(0, 3)],
+    [0xff, 0xd8, 0xff],
+  );
+
+  const secondSelected = secondAnalysis.series[0];
+  const secondValidated = await validateTrainingWaveformImage({
+    bytes: fixture.bytes,
+    mimeType: fixture.mimeType,
+    profile: secondSelected.profile,
+    stateCount: secondSelected.descriptor.stateCount,
+    sourceSelection: {
+      panelIndex: 1,
+      panelCount: 2,
+      seriesIndex: 0,
+      seriesCount: 1,
+    },
+  });
+  assert.equal(secondValidated.panelCount, 2);
+  assert.equal(secondValidated.matchedPanelIndex, 1);
+  assert.equal(secondValidated.seriesCount, 1);
+  assert.equal(secondValidated.matchedSeriesIndex, 0);
+  assert.ok(
+    secondValidated.sourceBounds.x >
+      firstValidated.sourceBounds.x,
+    "panelIndex must follow detector reading order",
+  );
+});
+
+test("sourceSelection matches profile and State when JPEG hue ordering changes the extracted series index", async () => {
+  const baseline = colorSeriesChartFixture({
+    width: 520,
+    height: 330,
+    seriesCount: 3,
+    crossingMode: "near",
+  });
+  const reordered = colorSeriesChartFixture({
+    width: 520,
+    height: 330,
+    seriesCount: 3,
+    crossingMode: "near",
+    colors: [
+      COLOR_SERIES_PALETTE[2],
+      COLOR_SERIES_PALETTE[0],
+      COLOR_SERIES_PALETTE[1],
+    ],
+  });
+  const trailing = monochromeSeriesChartFixture({
+    width: 520,
+    height: 330,
+  });
+  const document = twoPanelDocumentFixture(
+    reordered,
+    trailing,
+    { jpegQuality: 94 },
+  );
+  const baselineAnalysis = await analyzeSimilarityImage(
+    baseline.bytes,
+    baseline.mimeType,
+  );
+  const submitted = baselineAnalysis.series[2];
+  const validated = await validateTrainingWaveformImage({
+    bytes: document.bytes,
+    mimeType: document.mimeType,
+    profile: submitted.profile,
+    stateCount: submitted.descriptor.stateCount,
+    sourceSelection: {
+      panelIndex: 0,
+      panelCount: 2,
+      seriesIndex: 2,
+      seriesCount: 3,
+    },
+  });
+
+  assert.equal(validated.panelCount, 2);
+  assert.equal(validated.matchedPanelIndex, 0);
+  assert.equal(validated.seriesCount, 3);
+  assert.equal(
+    validated.matchedSeriesIndex,
+    0,
+    "the shape moved from submitted index 2 to source index 0 after hue reordering",
+  );
+  assert.ok(validated.profileSimilarity >= 0.985);
+  assert.ok(
+    alignedCurveSimilarity(
+      validated.authoritativeProfile,
+      submitted.profile,
+    ) >= 0.985,
+  );
+});
+
+test("sourceSelection rejects every full-document coordinate or shape mismatch", async (context) => {
+  const fixture = mixedPanelColorSeriesFixture();
+  const reference = colorSeriesChartFixture({
+    width: 520,
+    height: 330,
+    seriesCount: 2,
+    crossingMode: "near",
+  });
+  const analysis = await analyzeSimilarityImage(
+    reference.bytes,
+    reference.mimeType,
+  );
+  const selected = analysis.series[1];
+  const baseInput = {
+    bytes: fixture.bytes,
+    mimeType: fixture.mimeType,
+    profile: selected.profile,
+    stateCount: selected.descriptor.stateCount,
+  };
+  const rejectsSelectionMismatch = async (input) => {
+    await assert.rejects(
+      () => validateTrainingWaveformImage(input),
+      (error) => {
+        assert.ok(error instanceof SimilarityApiError);
+        assert.equal(error.status, 422);
+        assert.equal(
+          error.code,
+          "source_selection_image_mismatch",
+        );
+        return true;
+      },
+    );
+  };
+
+  await context.test("panelCount mismatch", () =>
+    rejectsSelectionMismatch({
+      ...baseInput,
+      sourceSelection: {
+        panelIndex: 0,
+        panelCount: 3,
+        seriesIndex: 1,
+        seriesCount: 2,
+      },
+    }),
+  );
+  await context.test("panelIndex targets another chart", () =>
+    rejectsSelectionMismatch({
+      ...baseInput,
+      sourceSelection: {
+        panelIndex: 1,
+        panelCount: 2,
+        seriesIndex: 1,
+        seriesCount: 2,
+      },
+    }),
+  );
+  await context.test("seriesCount mismatch", () =>
+    rejectsSelectionMismatch({
+      ...baseInput,
+      sourceSelection: {
+        panelIndex: 0,
+        panelCount: 2,
+        seriesIndex: 1,
+        seriesCount: 3,
+      },
+    }),
+  );
+  await context.test("profile mismatch", () =>
+    rejectsSelectionMismatch({
+      ...baseInput,
+      profile: Array.from(
+        { length: 256 },
+        (_, index) => (index % 2 === 0 ? 0 : 1),
+      ),
+      sourceSelection: {
+        panelIndex: 0,
+        panelCount: 2,
+        seriesIndex: 1,
+        seriesCount: 2,
+      },
+    }),
+  );
+  await context.test("State mismatch", () =>
+    rejectsSelectionMismatch({
+      ...baseInput,
+      stateCount: 12,
+      sourceSelection: {
+        panelIndex: 0,
+        panelCount: 2,
+        seriesIndex: 1,
+        seriesCount: 2,
+      },
+    }),
+  );
+});
+
+test("sourceSelection rejects an ambiguous profile shared by multiple color series", async () => {
+  const fixture = ambiguousTwinSeriesFixture();
+  const analysis = await analyzeSimilarityImage(
+    fixture.bytes,
+    fixture.mimeType,
+  );
+  assertSeriesContract(analysis, 2);
+  assert.ok(
+    alignedCurveSimilarity(
+      analysis.series[0].profile,
+      analysis.series[1].profile,
+    ) >= 0.985,
+    "fixture must present two independently colored but shape-ambiguous traces",
+  );
+
+  await assert.rejects(
+    () =>
+      validateTrainingWaveformImage({
+        bytes: fixture.bytes,
+        mimeType: fixture.mimeType,
+        profile: analysis.series[0].profile,
+        stateCount:
+          analysis.series[0].descriptor.stateCount,
+        sourceSelection: {
+          panelIndex: 0,
+          panelCount: 1,
+          seriesIndex: 0,
+          seriesCount: 2,
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof SimilarityApiError);
+      assert.equal(error.status, 422);
+      assert.equal(
+        error.code,
+        "source_selection_image_mismatch",
+      );
+      assert.match(error.message, /모호/);
+      return true;
+    },
+  );
 });
 
 test("keeps physical panel and color-series dimensions independent on a mixed slide", async () => {

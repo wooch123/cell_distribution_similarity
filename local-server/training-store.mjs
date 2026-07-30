@@ -16,6 +16,13 @@ const UPLOAD_IMAGE_MIME_TYPES = new Set([
   "image/webp",
 ]);
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+const MAXIMUM_TRAINING_PANEL_COUNT = 30;
+const SOURCE_SELECTION_FIELDS = [
+  "panelIndex",
+  "panelCount",
+  "seriesIndex",
+  "seriesCount",
+];
 
 function safeId(value) {
   const normalized = String(value || `user-${randomUUID()}`)
@@ -37,6 +44,96 @@ function numberArray(value, expectedLength = null) {
     return null;
   }
   return result;
+}
+
+function invalidSourceSelection(field, reason, message) {
+  return Object.assign(new Error(message), {
+    status: 400,
+    code: "invalid_source_selection",
+    details: {
+      field: field
+        ? `sourceSelection.${field}`
+        : "sourceSelection",
+      reason,
+    },
+  });
+}
+
+function normalizeTrainingSourceSelection(value) {
+  if (value === undefined) return undefined;
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value)
+  ) {
+    throw invalidSourceSelection(
+      "",
+      "object_required",
+      "sourceSelection은 객체여야 합니다.",
+    );
+  }
+  const extraField = Object.keys(value).find(
+    (field) => !SOURCE_SELECTION_FIELDS.includes(field),
+  );
+  if (extraField) {
+    throw invalidSourceSelection(
+      extraField,
+      "unknown_field",
+      `sourceSelection.${extraField} 필드는 지원하지 않습니다.`,
+    );
+  }
+  const normalized = {};
+  for (const field of SOURCE_SELECTION_FIELDS) {
+    if (
+      typeof value[field] !== "number" ||
+      !Number.isSafeInteger(value[field])
+    ) {
+      throw invalidSourceSelection(
+        field,
+        "integer_required",
+        `sourceSelection.${field}는 정수여야 합니다.`,
+      );
+    }
+    normalized[field] = value[field];
+  }
+  if (
+    normalized.panelCount < 1 ||
+    normalized.panelCount > MAXIMUM_TRAINING_PANEL_COUNT
+  ) {
+    throw invalidSourceSelection(
+      "panelCount",
+      "out_of_range",
+      `sourceSelection.panelCount는 1~${MAXIMUM_TRAINING_PANEL_COUNT}이어야 합니다.`,
+    );
+  }
+  if (
+    normalized.panelIndex < 0 ||
+    normalized.panelIndex >= normalized.panelCount
+  ) {
+    throw invalidSourceSelection(
+      "panelIndex",
+      "out_of_range",
+      "sourceSelection.panelIndex는 panelCount 범위 안이어야 합니다.",
+    );
+  }
+  if (normalized.seriesCount < 1) {
+    throw invalidSourceSelection(
+      "seriesCount",
+      "out_of_range",
+      "sourceSelection.seriesCount는 1 이상이어야 합니다.",
+    );
+  }
+  if (
+    normalized.seriesIndex < 0 ||
+    normalized.seriesIndex >= normalized.seriesCount
+  ) {
+    throw invalidSourceSelection(
+      "seriesIndex",
+      "out_of_range",
+      "sourceSelection.seriesIndex는 seriesCount 범위 안이어야 합니다.",
+    );
+  }
+  return normalized;
 }
 
 function isValidPhysicalStateCount(value) {
@@ -260,9 +357,16 @@ export class TrainingStore {
       throw new Error("정확히 256개 숫자로 된 profile이 필요합니다.");
     }
     const submittedDescriptor = validateDescriptor(payload?.descriptor);
-    // Retain request-shape compatibility, but never persist this
-    // caller-controlled standardized preview.
-    decodeImageDataUrl(payload?.imageDataUrl);
+    const sourceSelection = normalizeTrainingSourceSelection(
+      payload?.sourceSelection,
+    );
+    // Retain request-shape compatibility when an older caller still sends
+    // this preview, but never require or persist caller-controlled
+    // standardized pixels. The verified source waveform below is the only
+    // authority used to render the stored SVG.
+    if (payload?.imageDataUrl !== undefined) {
+      decodeImageDataUrl(payload.imageDataUrl);
+    }
     if (!payload?.sourceImageDataUrl) {
       throw new Error(
         "즉시 검색 가능한 학습 sample에는 sourceImageDataUrl이 필요합니다.",
@@ -283,7 +387,25 @@ export class TrainingStore {
       mimeType: sourceImage.mimeType,
       profile: submittedProfile,
       stateCount: submittedDescriptor.stateCount,
+      sourceSelection,
     });
+    if (
+      sourceSelection &&
+      (verification?.panelCount !== sourceSelection.panelCount ||
+        verification?.matchedPanelIndex !==
+          sourceSelection.panelIndex ||
+        verification?.seriesCount !== sourceSelection.seriesCount)
+    ) {
+      throw Object.assign(
+        new Error(
+          "sourceSelection의 패널/색상 시리즈 좌표가 검증된 학습 원본과 일치하지 않습니다.",
+        ),
+        {
+          status: 422,
+          code: "source_selection_image_mismatch",
+        },
+      );
+    }
     const profile = numberArray(
       verification?.authoritativeProfile,
       256,
@@ -309,7 +431,7 @@ export class TrainingStore {
       const imageFile = await this.#writeImage(id, image);
       const sourceImageFile = await this.#writeImage(
         id,
-        sourceImage,
+        verification?.authoritativeSourceImage ?? sourceImage,
         "source",
       );
       const learnedAt =
@@ -322,7 +444,9 @@ export class TrainingStore {
         imageFile,
         mimeType: image.mimeType,
         sourceImageFile,
-        sourceImageMimeType: sourceImage.mimeType,
+        sourceImageMimeType:
+          verification?.authoritativeSourceImage?.mimeType ??
+          sourceImage.mimeType,
         profile,
         stateCount: descriptor.stateCount,
         family: "learned",
@@ -344,6 +468,7 @@ export class TrainingStore {
           authoritativeSourceProfile: true,
           profileSimilarity: verification.profileSimilarity,
         },
+        ...(sourceSelection ? { sourceSelection } : {}),
       };
       await this.#replaceRecord(record);
       return publicRecord(record);
@@ -469,4 +594,5 @@ export {
   decodeImageDataUrl,
   safeId,
   validateDescriptor,
+  normalizeTrainingSourceSelection,
 };

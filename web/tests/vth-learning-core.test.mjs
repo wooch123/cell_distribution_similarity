@@ -8,7 +8,10 @@ import {
   chooseRandomDemoCandidate,
   deleteLearnedCandidateSelection,
   deletableLearnedCandidateIds,
+  filterSelectedTrainingUnits,
   mergeCandidateSets,
+  normalizeTrainingSourceSelection,
+  trainingSourceSelection,
 } from "../lib/vth-learning-core.mjs";
 import {
   canonicalShapeFingerprintInput,
@@ -44,6 +47,12 @@ test("chooses a different random demo when alternatives exist", () => {
 });
 
 test("builds a validated learned candidate and API payload", () => {
+  const sourceSelection = {
+    panelIndex: 1,
+    panelCount: 3,
+    seriesIndex: 0,
+    seriesCount: 2,
+  };
   const candidate = buildLearnedCandidate({
     id: "user-123",
     label: "Retention sample",
@@ -52,6 +61,7 @@ test("builds a validated learned candidate and API payload", () => {
     profile,
     descriptor,
     learnedAt: "2026-07-27T00:00:00.000Z",
+    sourceSelection,
   });
   const payload = buildTrainingApiPayload(
     candidate,
@@ -67,21 +77,34 @@ test("builds a validated learned candidate and API payload", () => {
   assert.equal(payload.imageDataUrl, "data:image/png;base64,AA==");
   assert.equal(payload.sourceImageDataUrl, "data:image/jpeg;base64,/9j/2Q==");
   assert.equal(candidate.sourceImage, "blob:source");
+  assert.deepEqual(candidate.sourceSelection, sourceSelection);
+  assert.deepEqual(payload.sourceSelection, sourceSelection);
 });
 
 test("builds and validates a consented shared training payload", () => {
+  const selectedSeries = {
+    profile,
+    descriptor,
+    trainingSelection: {
+      panelIndex: 2,
+      panelCount: 4,
+      seriesIndex: 1,
+      seriesCount: 3,
+    },
+  };
   const candidate = buildLearnedCandidate({
     id: "shared-pending-test",
     label: "공용 Retention 분포",
     image: "",
-    profile,
-    descriptor,
+    profile: selectedSeries.profile,
+    descriptor: selectedSeries.descriptor,
     storage: "shared",
+    sourceSelection: selectedSeries.trainingSelection,
   });
   const token = "a".repeat(43);
   const payload = buildSharedTrainingApiPayload(
     candidate,
-    descriptor,
+    selectedSeries.descriptor,
     {
       contributorToken: token,
       deletionToken: "b".repeat(43),
@@ -95,6 +118,17 @@ test("builds and validates a consented shared training payload", () => {
   assert.equal(validated.profile.length, 256);
   assert.equal(validated.descriptor.peakLocations.length, 8);
   assert.equal(validated.descriptor.valleyDepths.length, 7);
+  assert.deepEqual(payload.profile, selectedSeries.profile);
+  assert.deepEqual(payload.descriptor, selectedSeries.descriptor);
+  assert.deepEqual(
+    payload.sourceSelection,
+    selectedSeries.trainingSelection,
+  );
+  assert.deepEqual(
+    validated.sourceSelection,
+    selectedSeries.trainingSelection,
+  );
+  assert.equal(payload.consentVersion, SHARED_TRAINING_CONSENT_VERSION);
   assert.equal(candidate.shared, true);
   assert.equal(
     canonicalShapeFingerprintInput(profile, 8),
@@ -104,6 +138,86 @@ test("builds and validates a consented shared training payload", () => {
   assert.match(svg, /^<\?xml/);
   assert.match(svg, /<polyline points="/);
   assert.doesNotMatch(svg, /Retention|script|foreignObject/);
+});
+
+test("normalizes strict source selections and filters flattened training units", () => {
+  const selection = trainingSourceSelection({
+    panelIndex: 1,
+    panelCount: 3,
+    seriesIndex: 2,
+    seriesCount: 4,
+  });
+  assert.deepEqual(selection, {
+    panelIndex: 1,
+    panelCount: 3,
+    seriesIndex: 2,
+    seriesCount: 4,
+  });
+  assert.deepEqual(
+    filterSelectedTrainingUnits(
+      [
+        { analysis: { id: "first" } },
+        { analysis: { id: "second" } },
+        { analysis: { id: "third" } },
+      ],
+      new Set(["third", "first"]),
+    ).map((unit) => unit.analysis.id),
+    ["first", "third"],
+  );
+  assert.deepEqual(filterSelectedTrainingUnits([], new Set(["first"])), []);
+  assert.deepEqual(
+    filterSelectedTrainingUnits(
+      [{ analysis: { id: "first" } }],
+      new Set(),
+    ),
+    [],
+  );
+
+  for (const invalid of [
+    null,
+    {
+      panelIndex: "0",
+      panelCount: 1,
+      seriesIndex: 0,
+      seriesCount: 1,
+    },
+    {
+      panelIndex: 1,
+      panelCount: 1,
+      seriesIndex: 0,
+      seriesCount: 1,
+    },
+    {
+      panelIndex: 0,
+      panelCount: 31,
+      seriesIndex: 0,
+      seriesCount: 1,
+    },
+    {
+      panelIndex: 0,
+      panelCount: 1,
+      seriesIndex: 1,
+      seriesCount: 1,
+    },
+    {
+      panelIndex: 0,
+      panelCount: 1,
+      seriesIndex: 0,
+      seriesCount: 1,
+      panelId: "unsupported",
+    },
+  ]) {
+    assert.throws(
+      () => normalizeTrainingSourceSelection(invalid),
+      (error) => {
+        assert.equal(error.code, "invalid_source_selection");
+        assert.equal(error.status, 400);
+        assert.ok(error.details.field.startsWith("sourceSelection"));
+        return true;
+      },
+    );
+  }
+  assert.equal(normalizeTrainingSourceSelection(undefined), undefined);
 });
 
 test("shared training rejects unconsented or malformed profiles", () => {
@@ -126,6 +240,26 @@ test("shared training rejects unconsented or malformed profiles", () => {
         profile: Array(255).fill(0.5),
       }),
     /profile 길이/,
+  );
+  const legacy = validateSharedTrainingPayload({
+    ...base,
+    consentVersion: "2026-07-28-v2",
+  });
+  assert.equal(legacy.consentVersion, "2026-07-28-v2");
+  assert.equal(legacy.sourceSelection, undefined);
+  assert.throws(
+    () =>
+      validateSharedTrainingPayload({
+        ...base,
+        consentVersion: "2026-07-28-v2",
+        sourceSelection: {
+          panelIndex: 0,
+          panelCount: 1,
+          seriesIndex: 0,
+          seriesCount: 1,
+        },
+      }),
+    /동의 버전/,
   );
 });
 

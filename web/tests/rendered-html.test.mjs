@@ -158,7 +158,7 @@ test("public shared ready ingestion rejects a non-waveform source before storage
       profile: candidate.profile,
       descriptor,
       sharingConsent: true,
-      consentVersion: "2026-07-28-v2",
+      consentVersion: "2026-07-30-v3",
       contributorToken: "a".repeat(32),
       deletionToken: "b".repeat(32),
     }),
@@ -334,24 +334,24 @@ async function verifyStandalonePackageDownload({
 
 test("ships the verified Windows standalone package as a web download", async () => {
   await verifyStandalonePackageDownload({
-    manifestFileName: "windows-package-v1.39.0.json",
+    manifestFileName: "windows-package-v1.40.0.json",
     checksumFileName: "vth-similarity-windows-x64.sha256",
-    expectedVersion: "1.39.0",
+    expectedVersion: "1.40.0",
     expectedFileName: "vth-similarity-windows-x64.zip",
     expectedDownloadFileName:
-      "vth-similarity-windows-x64-v1.39.0.zip",
+      "vth-similarity-windows-x64-v1.40.0.zip",
     assemble: assembleWindowsPackage,
   });
 });
 
 test("ships the verified Ubuntu external Web server package as a web download", async () => {
   await verifyStandalonePackageDownload({
-    manifestFileName: "ubuntu-package-v1.39.0.json",
+    manifestFileName: "ubuntu-package-v1.40.0.json",
     checksumFileName: "vth-similarity-ubuntu-x64.sha256",
-    expectedVersion: "1.39.0",
+    expectedVersion: "1.40.0",
     expectedFileName: "vth-similarity-ubuntu-x64.tar.gz",
     expectedDownloadFileName:
-      "vth-similarity-ubuntu-x64-v1.39.0.tar.gz",
+      "vth-similarity-ubuntu-x64-v1.40.0.tar.gz",
     assemble: assembleUbuntuPackage,
   });
 });
@@ -629,6 +629,10 @@ test("shares standardized candidates and anonymous relevance labels centrally", 
   assert.match(source, /detectChartPanels/);
   assert.match(source, /extractChartProfiles/);
   assert.match(source, /data-testid="chart-panel-tabs"/);
+  assert.match(source, /data-testid="training-selection-bar"/);
+  assert.match(source, /data-testid="active-training-selection"/);
+  assert.match(source, /data-testid="select-all-training-units"/);
+  assert.match(source, /data-testid="clear-training-units"/);
   assert.match(source, /data-testid="source-panel-crop"/);
   assert.match(source, /data-testid="normalized-curve-view"/);
   assert.match(source, /data-testid="panel-extraction-evidence"/);
@@ -641,10 +645,37 @@ test("shares standardized candidates and anonymous relevance labels centrally", 
   assert.match(source, /제거 라벨/);
   assert.match(source, /Curve 검증/);
   assert.match(source, /panelExtractionQuality/);
-  assert.match(source, /분리 차트.*개 모두/s);
   assert.match(
     source,
-    /차트 내부의 색상별 시리즈.*각각 독립\s+후보로 저장합니다/s,
+    /const \[selectedTrainingAnalysisIds,\s*setSelectedTrainingAnalysisIds\]\s*=\s*useState<string\[]>\(\[\]\)/s,
+  );
+  assert.match(
+    source,
+    /const trainingQueries = filterSelectedTrainingUnits\(\s*panelQueries,\s*selectedTrainingAnalysisIds,\s*\)/s,
+  );
+  assert.match(
+    learningCore,
+    /export function filterSelectedTrainingUnits\(units, selectedIds\)/,
+  );
+  assert.match(
+    source,
+    /if \(!trainingQueries\.length\) \{\s*setError\("학습할 차트 또는 색상 시리즈를 1개 이상 선택해 주세요\."\)/s,
+  );
+  assert.match(
+    source,
+    /onClick=\{\(\) => void learnCurrentImage\(\)\}\s*disabled=\{[\s\S]*?selectedTrainingQueries\.length === 0[\s\S]*?\}\s*data-testid="learn-current-image"/,
+  );
+  assert.match(
+    source,
+    /현재 분석한 그림은 위 선택 도구에서\s*원하는 차트와 색상 시리즈만 학습할 수 있습니다/s,
+  );
+  assert.match(
+    source,
+    /현재 분석한 그림은 위 선택\s*도구에서 원하는 차트와 색상 시리즈만 공용 등록할 수\s*있으며/s,
+  );
+  assert.match(
+    source,
+    /여러 파일\s*또는 폴더 일괄 학습은[\s\S]*?검출한 모든 차트와\s*시리즈를 순차 저장합니다/s,
   );
   assert.match(source, /seriesCount/);
   assert.match(source, /selectedSeriesIndex/);
@@ -694,7 +725,11 @@ test("shares standardized candidates and anonymous relevance labels centrally", 
   assert.doesNotMatch(source, /body:\s*file|XMLHttpRequest/);
   assert.match(source, /new FormData\(\)/);
   assert.match(source, /form\.append\("sourceImage"/);
-  assert.match(source, /sanitizedSourceImageBlob/);
+  assert.match(source, /sourceDocumentBlob/);
+  assert.match(
+    source,
+    /canvasToVerificationJpeg\(documentCanvas\)/,
+  );
   assert.doesNotMatch(source, /https:\/\/dove9999\.com/);
   assert.match(source, /\/api\/v1\/runtime/);
   assert.match(source, /externalNetworkAllowed/);
@@ -737,7 +772,6 @@ test("shares standardized candidates and anonymous relevance labels centrally", 
   assert.match(learningCore, /deleteLearnedCandidateSelection/);
   assert.match(learningCore, /deletableLearnedCandidateIds/);
   assert.match(source, /webkitdirectory/);
-  assert.match(source, /지원\s+이미지를\s+빠짐없이\s+순차 학습/);
   assert.match(source, /data-testid="learn-current-image"/);
   assert.match(source, /다른 사용자의 검색에도 즉시 노출됩니다/);
   assert.match(source, /추천 시 원본도 함께 표시/);
@@ -804,13 +838,15 @@ test("shares standardized candidates and anonymous relevance labels centrally", 
 });
 
 test("publishes the complete 30-panel similarity API contract", async () => {
-  const openapi = JSON.parse(
-    await readFile(
+  const [openapi, standaloneOpenapi] = await Promise.all(
+    [
       new URL(
         "../public/similarity-search-openapi.json",
         import.meta.url,
       ),
-      "utf8",
+      new URL("../../local-server/openapi.json", import.meta.url),
+    ].map(async (url) =>
+      JSON.parse(await readFile(url, "utf8")),
     ),
   );
   const healthMultiChart =
@@ -818,12 +854,107 @@ test("publishes the complete 30-panel similarity API contract", async () => {
       .properties;
   const searchProperties =
     openapi.components.schemas.SearchResponse.properties;
+  assert.equal(openapi.info.version, "1.2.0");
   assert.equal(healthMultiChart.maxPanels.const, 30);
   assert.equal(searchProperties.panelCount.maximum, 30);
   assert.equal(searchProperties.panels.maxItems, 30);
   assert.equal(
     searchProperties.panelDetection.properties.maxPanels.const,
     30,
+  );
+  for (const [document, responseSchemaName] of [
+    [openapi, "SearchResponse"],
+    [standaloneOpenapi, "SimilaritySearchResponse"],
+  ]) {
+    const schemas = document.components.schemas;
+    const selectionSchema = schemas.TrainingSelection;
+    const responseProperties = schemas[responseSchemaName].properties;
+    assert.equal(
+      responseProperties.trainingSelection.$ref,
+      "#/components/schemas/TrainingSelection",
+    );
+    assert.equal(
+      schemas.PanelSearchResult.properties.trainingSelection.$ref,
+      "#/components/schemas/TrainingSelection",
+    );
+    assert.equal(
+      schemas.SeriesSearchResult.properties.trainingSelection.$ref,
+      "#/components/schemas/TrainingSelection",
+    );
+    for (const schemaName of [
+      responseSchemaName,
+      "PanelSearchResult",
+      "SeriesSearchResult",
+    ]) {
+      assert.ok(schemas[schemaName].required.includes("profile"));
+      assert.ok(schemas[schemaName].required.includes("descriptor"));
+      assert.equal(
+        schemas[schemaName].properties.profile.$ref,
+        "#/components/schemas/TrainingProfile",
+      );
+      assert.equal(
+        schemas[schemaName].properties.descriptor.$ref,
+        "#/components/schemas/TrainingWaveformDescriptor",
+      );
+    }
+    assert.equal(schemas.TrainingProfile.minItems, 256);
+    assert.equal(schemas.TrainingProfile.maxItems, 256);
+    assert.equal(selectionSchema.additionalProperties, false);
+    assert.deepEqual(selectionSchema.required, [
+      "panelIndex",
+      "panelCount",
+      "seriesIndex",
+      "seriesCount",
+    ]);
+    assert.equal(selectionSchema.properties.panelIndex.maximum, 29);
+    assert.equal(selectionSchema.properties.panelCount.maximum, 30);
+  }
+  assert.equal(standaloneOpenapi.info.version, "2.3.0");
+  assert.equal(
+    standaloneOpenapi.components.schemas.TrainingSampleInput.required.includes(
+      "imageDataUrl",
+    ),
+    false,
+  );
+  assert.equal(
+    standaloneOpenapi.components.schemas.TrainingSampleInput.properties
+      .sourceSelection.$ref,
+    "#/components/schemas/TrainingSelection",
+  );
+  assert.match(
+    standaloneOpenapi.paths["/api/v1/training-samples"].post.description,
+    /trainingSelection, profile and descriptor.*No separate Curve extractor or imageDataUrl is required.*numeric series ordering are never authoritative/s,
+  );
+  assert.match(
+    standaloneOpenapi.paths["/api/v1/training-samples"].post[
+      "x-codeSamples"
+    ][0].source,
+    /sourceImageDataUrl.*profile,descriptor.*sourceSelection/s,
+  );
+  assert.match(
+    standaloneOpenapi.paths["/api/v1/training-samples"].post.responses["422"]
+      .description,
+    /source_selection_image_mismatch/,
+  );
+  assert.match(
+    standaloneOpenapi.paths["/api/v1/training-samples"].post.responses["400"]
+      .description,
+    /invalid_source_selection/,
+  );
+  assert.match(
+    standaloneOpenapi.paths["/api/v1/training-images"].post.responses["400"]
+      .description,
+    /invalid_source_selection/,
+  );
+  assert.deepEqual(
+    standaloneOpenapi.components.schemas.SourceSelectionErrorDetails.properties
+      .reason.enum,
+    [
+      "object_required",
+      "unknown_field",
+      "integer_required",
+      "out_of_range",
+    ],
   );
 });
 
@@ -841,7 +972,7 @@ test("hosting metadata is ready for Sites ownership", async () => {
       "utf8",
     ),
   );
-  assert.equal(openapi.info.version, "4.0.0");
+  assert.equal(openapi.info.version, "4.2.0");
   assert.ok(openapi.paths["/api/v1/shared-relevance-reports"]);
   assert.ok(openapi.paths["/api/v1/shared-relevance-export"]);
   assert.ok(
@@ -863,15 +994,49 @@ test("hosting metadata is ready for Sites ownership", async () => {
   );
   assert.match(
     openapi.paths["/api/v1/shared-training-samples"].post.description,
-    /source-derived profile.*canonical descriptor.*State/s,
+    /redetects every panel.*caller profile JSON is never authoritative/s,
   );
   assert.match(
     openapi.paths["/api/v1/shared-training-samples"].post.description,
-    /differ from the input/,
+    /unrelated slide text, tables and panels are not persisted/,
+  );
+  assert.match(
+    openapi.paths["/api/v1/shared-training-samples"].post[
+      "x-codeSamples"
+    ][0].source,
+    /profile,descriptor.*sourceSelection.*2026-07-30-v3.*sourceImage=@document\.jpg/s,
+  );
+  assert.ok(
+    openapi.components.schemas.SharedTrainingInput.properties
+      .consentVersion.enum.includes("2026-07-30-v3"),
   );
   assert.equal(
-    openapi.components.schemas.SharedTrainingInput.properties
-      .consentVersion.const,
-    "2026-07-28-v2",
+    openapi.components.schemas.SharedTrainingInput.properties.sourceSelection
+      .$ref,
+    "#/components/schemas/TrainingSelection",
+  );
+  assert.equal(
+    openapi.components.schemas.TrainingSelection.additionalProperties,
+    false,
+  );
+  assert.match(
+    openapi.paths["/api/v1/shared-training-samples"].post.responses["400"]
+      .description,
+    /invalid_source_selection/,
+  );
+  assert.match(
+    openapi.paths["/api/v1/shared-training-samples"].post.responses["422"]
+      .description,
+    /source_selection_image_mismatch/,
+  );
+  assert.deepEqual(
+    openapi.components.schemas.SourceSelectionErrorDetails.properties.reason
+      .enum,
+    [
+      "object_required",
+      "unknown_field",
+      "integer_required",
+      "out_of_range",
+    ],
   );
 });

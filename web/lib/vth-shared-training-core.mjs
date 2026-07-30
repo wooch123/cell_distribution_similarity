@@ -2,8 +2,10 @@ import {
   descriptorFromProfile,
   isValidStateCount,
 } from "./vth-shape-core.mjs";
+import { normalizeTrainingSourceSelection } from "./vth-learning-core.mjs";
 
-export const SHARED_TRAINING_CONSENT_VERSION = "2026-07-28-v2";
+export const SHARED_TRAINING_CONSENT_VERSION = "2026-07-30-v3";
+const LEGACY_SHARED_TRAINING_CONSENT_VERSION = "2026-07-28-v2";
 export const MAX_SHARED_SOURCE_IMAGE_BYTES = 3 * 1024 * 1024;
 export const MAX_SHARED_CANDIDATES = 2000;
 export const MAX_SHARED_CANDIDATES_PER_DAY = 200;
@@ -37,7 +39,20 @@ export function validateSharedTrainingPayload(payload) {
   if (payload?.sharingConsent !== true) {
     throw new Error("공용 학습 후보 공유 동의가 필요합니다.");
   }
-  if (payload?.consentVersion !== SHARED_TRAINING_CONSENT_VERSION) {
+  const requestedConsentVersion = String(
+    payload?.consentVersion || "",
+  );
+  const requestsSourceSelection =
+    payload?.sourceSelection !== undefined;
+  const legacySelectorFreeConsent =
+    !requestsSourceSelection &&
+    requestedConsentVersion ===
+      LEGACY_SHARED_TRAINING_CONSENT_VERSION;
+  if (
+    requestedConsentVersion !==
+      SHARED_TRAINING_CONSENT_VERSION &&
+    !legacySelectorFreeConsent
+  ) {
     throw new Error("지원하지 않는 공유 동의 버전입니다.");
   }
   if (!TOKEN_PATTERN.test(String(payload?.contributorToken || ""))) {
@@ -130,6 +145,9 @@ export function validateSharedTrainingPayload(payload) {
     );
   }
 
+  const sourceSelection = normalizeTrainingSourceSelection(
+    payload?.sourceSelection,
+  );
   return {
     schemaVersion: 2,
     label: String(payload?.label || "공용 VTH 분포")
@@ -140,7 +158,8 @@ export function validateSharedTrainingPayload(payload) {
     descriptor: rebuiltDescriptor,
     contributorToken: String(payload.contributorToken),
     deletionToken: String(payload.deletionToken),
-    consentVersion: SHARED_TRAINING_CONSENT_VERSION,
+    consentVersion: requestedConsentVersion,
+    ...(sourceSelection ? { sourceSelection } : {}),
   };
 }
 

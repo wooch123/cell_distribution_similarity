@@ -3,6 +3,14 @@ import {
   isValidStateCount,
 } from "./vth-shape-core.mjs";
 
+const MAXIMUM_TRAINING_PANEL_COUNT = 30;
+const SOURCE_SELECTION_FIELDS = [
+  "panelIndex",
+  "panelCount",
+  "seriesIndex",
+  "seriesCount",
+];
+
 function copyNumberArray(value, expectedLength = null) {
   if (!Array.isArray(value)) return null;
   const copied = value.map(Number);
@@ -13,6 +21,119 @@ function copyNumberArray(value, expectedLength = null) {
     return null;
   }
   return copied;
+}
+
+function invalidSourceSelection(field, reason, message) {
+  return Object.assign(new Error(message), {
+    status: 400,
+    code: "invalid_source_selection",
+    details: {
+      field: field
+        ? `sourceSelection.${field}`
+        : "sourceSelection",
+      reason,
+    },
+  });
+}
+
+export function normalizeTrainingSourceSelection(value) {
+  if (value === undefined) return undefined;
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value)
+  ) {
+    throw invalidSourceSelection(
+      "",
+      "object_required",
+      "sourceSelection은 객체여야 합니다.",
+    );
+  }
+  const extraField = Object.keys(value).find(
+    (field) => !SOURCE_SELECTION_FIELDS.includes(field),
+  );
+  if (extraField) {
+    throw invalidSourceSelection(
+      extraField,
+      "unknown_field",
+      `sourceSelection.${extraField} 필드는 지원하지 않습니다.`,
+    );
+  }
+  const normalized = {};
+  for (const field of SOURCE_SELECTION_FIELDS) {
+    if (
+      typeof value[field] !== "number" ||
+      !Number.isSafeInteger(value[field])
+    ) {
+      throw invalidSourceSelection(
+        field,
+        "integer_required",
+        `sourceSelection.${field}는 정수여야 합니다.`,
+      );
+    }
+    normalized[field] = value[field];
+  }
+  if (
+    normalized.panelCount < 1 ||
+    normalized.panelCount > MAXIMUM_TRAINING_PANEL_COUNT
+  ) {
+    throw invalidSourceSelection(
+      "panelCount",
+      "out_of_range",
+      `sourceSelection.panelCount는 1~${MAXIMUM_TRAINING_PANEL_COUNT}이어야 합니다.`,
+    );
+  }
+  if (
+    normalized.panelIndex < 0 ||
+    normalized.panelIndex >= normalized.panelCount
+  ) {
+    throw invalidSourceSelection(
+      "panelIndex",
+      "out_of_range",
+      "sourceSelection.panelIndex는 panelCount 범위 안이어야 합니다.",
+    );
+  }
+  if (normalized.seriesCount < 1) {
+    throw invalidSourceSelection(
+      "seriesCount",
+      "out_of_range",
+      "sourceSelection.seriesCount는 1 이상이어야 합니다.",
+    );
+  }
+  if (
+    normalized.seriesIndex < 0 ||
+    normalized.seriesIndex >= normalized.seriesCount
+  ) {
+    throw invalidSourceSelection(
+      "seriesIndex",
+      "out_of_range",
+      "sourceSelection.seriesIndex는 seriesCount 범위 안이어야 합니다.",
+    );
+  }
+  return normalized;
+}
+
+export function trainingSourceSelection(analysis) {
+  return normalizeTrainingSourceSelection({
+    panelIndex: analysis?.panelIndex,
+    panelCount: analysis?.panelCount,
+    seriesIndex: analysis?.seriesIndex,
+    seriesCount: analysis?.seriesCount,
+  });
+}
+
+export function filterSelectedTrainingUnits(units, selectedIds) {
+  if (!Array.isArray(units)) return [];
+  const ids = new Set(
+    selectedIds && typeof selectedIds[Symbol.iterator] === "function"
+      ? [...selectedIds].map(String)
+      : [],
+  );
+  if (!ids.size) return [];
+  return units.filter((unit) => {
+    const id = unit?.analysis?.id ?? unit?.id;
+    return typeof id === "string" && ids.has(id);
+  });
 }
 
 export function chooseRandomDemoCandidate(
@@ -42,6 +163,9 @@ export function buildLearnedCandidate(input) {
     storage = "browser",
     canDelete = false,
   } = input;
+  const sourceSelection = normalizeTrainingSourceSelection(
+    input.sourceSelection,
+  );
   const descriptor = input.descriptor ?? input;
   const safeProfile = copyNumberArray(profile, 256);
   const stateCount = Number(descriptor?.stateCount);
@@ -118,6 +242,7 @@ export function buildLearnedCandidate(input) {
     storage,
     shared: storage === "shared",
     canDelete: Boolean(canDelete),
+    ...(sourceSelection ? { sourceSelection } : {}),
   };
 }
 
@@ -129,6 +254,9 @@ export function buildTrainingApiPayload(
   if (!candidate?.learned) {
     throw new Error("학습 후보만 API payload로 변환할 수 있습니다.");
   }
+  const sourceSelection = normalizeTrainingSourceSelection(
+    candidate.sourceSelection,
+  );
   return {
     schemaVersion: 2,
     id: candidate.id,
@@ -154,6 +282,7 @@ export function buildTrainingApiPayload(
       learnedAt: candidate.learnedAt,
       source: "vth-browser-ui",
     },
+    ...(sourceSelection ? { sourceSelection } : {}),
   };
 }
 
@@ -174,6 +303,9 @@ export function buildSharedTrainingApiPayload(
   // hypothesis for local search, which is valid locally but must not make the
   // public payload internally contradictory.
   const canonicalDescriptor = descriptorFromProfile(candidate.profile);
+  const sourceSelection = normalizeTrainingSourceSelection(
+    candidate.sourceSelection,
+  );
   return {
     schemaVersion: 2,
     label: candidate.label,
@@ -203,6 +335,7 @@ export function buildSharedTrainingApiPayload(
     consentVersion,
     contributorToken,
     deletionToken,
+    ...(sourceSelection ? { sourceSelection } : {}),
   };
 }
 

@@ -8,6 +8,7 @@ import {
   renderStandardizedCurveSvg,
   validateSharedTrainingPayload,
 } from "../lib/vth-shared-training-core.mjs";
+import { normalizeTrainingSourceSelection } from "../lib/vth-learning-core.mjs";
 
 type SharedTrainingCandidate = {
   id: string;
@@ -29,6 +30,12 @@ type SharedTrainingCandidate = {
   learned: true;
   learnedAt: string;
   storage: "shared";
+  sourceSelection?: {
+    panelIndex: number;
+    panelCount: number;
+    seriesIndex: number;
+    seriesCount: number;
+  };
 };
 
 type SharedCandidateRow = {
@@ -81,6 +88,9 @@ async function sha256(value: string | Uint8Array) {
 
 function toCandidate(row: SharedCandidateRow, origin: string) {
   const descriptor = JSON.parse(row.descriptor_json) as Record<string, unknown>;
+  const sourceSelection = normalizeTrainingSourceSelection(
+    descriptor.sourceSelection,
+  );
   return {
     id: row.id,
     label: row.label,
@@ -109,6 +119,7 @@ function toCandidate(row: SharedCandidateRow, origin: string) {
     learned: true,
     learnedAt: row.created_at,
     storage: "shared",
+    ...(sourceSelection ? { sourceSelection } : {}),
   } as SharedTrainingCandidate;
 }
 
@@ -311,7 +322,12 @@ export async function createSharedTrainingCandidate(
       });
     }
     const profileJson = JSON.stringify(normalized.profile);
-    const descriptorJson = JSON.stringify(normalized.descriptor);
+    const descriptorJson = JSON.stringify({
+      ...normalized.descriptor,
+      ...(normalized.sourceSelection
+        ? { sourceSelection: normalized.sourceSelection }
+        : {}),
+    });
     if (existing) {
       await db
         .prepare(

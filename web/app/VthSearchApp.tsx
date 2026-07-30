@@ -34,7 +34,9 @@ import {
   chooseRandomDemoCandidate,
   deleteLearnedCandidateSelection,
   deletableLearnedCandidateIds,
+  filterSelectedTrainingUnits,
   mergeCandidateSets,
+  trainingSourceSelection,
 } from "../lib/vth-learning-core.mjs";
 import {
   createSharingToken,
@@ -78,6 +80,12 @@ type Candidate = {
   storage?: string;
   shared?: boolean;
   canDelete?: boolean;
+  sourceSelection?: {
+    panelIndex: number;
+    panelCount: number;
+    seriesIndex: number;
+    seriesCount: number;
+  };
 };
 
 type Reranker = {
@@ -157,6 +165,7 @@ type Analysis = {
   id: string;
   fileName: string;
   imageUrl: string;
+  sourceDocumentBlob: Blob;
   panelIndex: number;
   panelCount: number;
   detectedPanelCount: number;
@@ -363,6 +372,18 @@ async function canvasToBlob(
   return blob;
 }
 
+async function canvasToVerificationJpeg(canvas: HTMLCanvasElement) {
+  const maximumBytes = 3 * 1024 * 1024;
+  let lastBlob: Blob | null = null;
+  for (const quality of [1, 0.94, 0.88, 0.8, 0.72]) {
+    lastBlob = await canvasToBlob(canvas, "image/jpeg", quality);
+    if (lastBlob.size <= maximumBytes) return lastBlob;
+  }
+  throw new Error(
+    `메타데이터 제거 학습 검증 이미지가 3MB를 초과합니다 (${lastBlob?.size ?? 0} bytes).`,
+  );
+}
+
 function boundedRasterScale(
   width: number,
   height: number,
@@ -434,6 +455,25 @@ async function extractChartProfiles(file: Blob) {
     documentContext.fillStyle = "#ffffff";
     documentContext.fillRect(0, 0, documentWidth, documentHeight);
     documentContext.drawImage(bitmap, 0, 0, documentWidth, documentHeight);
+    // Freeze one metadata-free JPEG before analysis and reuse these exact
+    // bytes for ready-training provenance. Re-decoding here keeps browser
+    // panel/series selection aligned with the server-side verification image
+    // even when JPEG chroma quantization moves a trace across a hue bin.
+    const sourceDocumentBlob =
+      await canvasToVerificationJpeg(documentCanvas);
+    const verificationBitmap = await createImageBitmap(
+      sourceDocumentBlob,
+    );
+    documentContext.fillStyle = "#ffffff";
+    documentContext.fillRect(0, 0, documentWidth, documentHeight);
+    documentContext.drawImage(
+      verificationBitmap,
+      0,
+      0,
+      documentWidth,
+      documentHeight,
+    );
+    verificationBitmap.close();
     const documentPixels = documentContext.getImageData(
       0,
       0,
@@ -540,19 +580,19 @@ async function extractChartProfiles(file: Blob) {
       );
 
       const analysisScale = boundedRasterScale(
-        sourceBounds.width,
-        sourceBounds.height,
+        documentBounds.width,
+        documentBounds.height,
         1100,
         720,
         800_000,
       );
       const width = Math.max(
         1,
-        Math.round(sourceBounds.width * analysisScale),
+        Math.round(documentBounds.width * analysisScale),
       );
       const height = Math.max(
         1,
-        Math.round(sourceBounds.height * analysisScale),
+        Math.round(documentBounds.height * analysisScale),
       );
       const canvas = document.createElement("canvas");
       canvas.width = width;
@@ -568,11 +608,11 @@ async function extractChartProfiles(file: Blob) {
       context.fillStyle = "#ffffff";
       context.fillRect(0, 0, width, height);
       context.drawImage(
-        bitmap,
-        sourceBounds.x,
-        sourceBounds.y,
-        sourceBounds.width,
-        sourceBounds.height,
+        documentCanvas,
+        documentBounds.x,
+        documentBounds.y,
+        documentBounds.width,
+        documentBounds.height,
         0,
         0,
         width,
@@ -614,46 +654,11 @@ async function extractChartProfiles(file: Blob) {
           };
         };
       };
-      let previewBlob: Blob = file;
-      if (useDetectedBounds) {
-        const previewScale = Math.min(
-          1,
-          1280 / sourceBounds.width,
-          960 / sourceBounds.height,
-        );
-        const previewCanvas = document.createElement("canvas");
-        previewCanvas.width = Math.max(
-          1,
-          Math.round(sourceBounds.width * previewScale),
-        );
-        previewCanvas.height = Math.max(
-          1,
-          Math.round(sourceBounds.height * previewScale),
-        );
-        const previewContext = previewCanvas.getContext("2d");
-        if (!previewContext) {
-          throw new Error("분리 차트 미리보기를 만들 수 없습니다.");
-        }
-        previewContext.fillStyle = "#ffffff";
-        previewContext.fillRect(
-          0,
-          0,
-          previewCanvas.width,
-          previewCanvas.height,
-        );
-        previewContext.drawImage(
-          bitmap,
-          sourceBounds.x,
-          sourceBounds.y,
-          sourceBounds.width,
-          sourceBounds.height,
-          0,
-          0,
-          previewCanvas.width,
-          previewCanvas.height,
-        );
-        previewBlob = await canvasToBlob(previewCanvas);
-      }
+      // Reuse the exact bounded raster that produced the profile. In
+      // particular, a tiny chart must be enlarged before JPEG encoding;
+      // otherwise a later server-side upscale cannot recover its thin
+      // peak/valley strokes and the provenance verifier may see fewer States.
+      const previewBlob = await canvasToBlob(canvas, "image/jpeg", 1);
       panels.push({
         ...extracted,
         previewBlob,
@@ -676,6 +681,7 @@ async function extractChartProfiles(file: Blob) {
     }
     return {
       panels,
+      sourceDocumentBlob,
       layout: detection.layout,
       fallbackUsed: detection.fallbackUsed,
       detectedPanelCount: detection.detectedPanelCount,
@@ -771,30 +777,6 @@ function standardizedProfilePngDataUrl(profile: number[]) {
   return canvas.toDataURL("image/png");
 }
 
-async function sanitizedSourceImageBlob(imageUrl: string) {
-  const response = await fetch(imageUrl);
-  if (!response.ok) throw new Error("학습 원본 미리보기를 읽지 못했습니다.");
-  const bitmap = await createImageBitmap(await response.blob());
-  const scale = Math.min(1, 1280 / bitmap.width, 960 / bitmap.height);
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-  const context = canvas.getContext("2d");
-  if (!context) {
-    bitmap.close();
-    throw new Error("학습 원본 미리보기를 만들 수 없습니다.");
-  }
-  context.fillStyle = "#ffffff";
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  bitmap.close();
-  const blob = await new Promise<Blob | null>((resolve) =>
-    canvas.toBlob(resolve, "image/jpeg", 0.86),
-  );
-  if (!blob) throw new Error("학습 원본 미리보기를 만들 수 없습니다.");
-  return blob;
-}
-
 async function blobToDataUrl(blob: Blob) {
   return await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -886,6 +868,8 @@ export function VthSearchApp() {
   const [learnedCandidates, setLearnedCandidates] = useState<Candidate[]>([]);
   const [panelQueries, setPanelQueries] = useState<PanelQuery[]>([]);
   const [activePanelIndex, setActivePanelIndex] = useState(0);
+  const [selectedTrainingAnalysisIds, setSelectedTrainingAnalysisIds] =
+    useState<string[]>([]);
   const [feedback, setFeedback] = useState<Record<string, RelevanceLabel>>({});
   const [queryCode, setQueryCode] = useState("");
   const [annotatorCode, setAnnotatorCode] = useState("");
@@ -963,6 +947,18 @@ export function VthSearchApp() {
         learnedCandidates,
       ) as Candidate[],
     [corpus?.candidates, learnedCandidates],
+  );
+  const selectedTrainingAnalysisIdSet = useMemo(
+    () => new Set(selectedTrainingAnalysisIds),
+    [selectedTrainingAnalysisIds],
+  );
+  const selectedTrainingQueries = useMemo(
+    () =>
+      filterSelectedTrainingUnits(
+        panelQueries,
+        selectedTrainingAnalysisIds,
+      ) as PanelQuery[],
+    [panelQueries, selectedTrainingAnalysisIds],
   );
   const filteredLearnedCandidates = useMemo(() => {
     const query = managementQuery.trim().toLocaleLowerCase("ko-KR");
@@ -1301,6 +1297,8 @@ export function VthSearchApp() {
                 id: analysisId,
                 fileName: suffix ? `${file.name} · ${suffix}` : file.name,
                 imageUrl,
+                sourceDocumentBlob:
+                  documentAnalysis.sourceDocumentBlob,
                 panelIndex,
                 panelCount: documentAnalysis.panels.length,
                 detectedPanelCount: documentAnalysis.detectedPanelCount,
@@ -1360,6 +1358,9 @@ export function VthSearchApp() {
         setActivePanelIndex(0);
         const previousPanelQueries = panelQueriesRef.current;
         panelQueriesRef.current = nextPanelQueries;
+        setSelectedTrainingAnalysisIds(
+          nextPanelQueries.map((panelQuery) => panelQuery.analysis.id),
+        );
         setPanelQueries(nextPanelQueries);
         for (const panelQuery of previousPanelQueries) {
           URL.revokeObjectURL(panelQuery.analysis.imageUrl);
@@ -1423,6 +1424,33 @@ export function VthSearchApp() {
       nextInteraction.submittedFeedbackJudgmentCount,
     );
     setQueryCode(nextInteraction.queryCode);
+  };
+
+  const setTrainingAnalysisSelected = (
+    analysisId: string,
+    selected: boolean,
+  ) => {
+    if (learningBusyRef.current) return;
+    setSelectedTrainingAnalysisIds((current) => {
+      const next = new Set(current);
+      if (selected) next.add(analysisId);
+      else next.delete(analysisId);
+      return panelQueries
+        .map((panelQuery) => panelQuery.analysis.id)
+        .filter((id) => next.has(id));
+    });
+  };
+
+  const selectAllTrainingAnalyses = () => {
+    if (learningBusyRef.current) return;
+    setSelectedTrainingAnalysisIds(
+      panelQueries.map((panelQuery) => panelQuery.analysis.id),
+    );
+  };
+
+  const clearTrainingAnalysisSelection = () => {
+    if (learningBusyRef.current) return;
+    setSelectedTrainingAnalysisIds([]);
   };
 
   const toggleFeedback = (candidateId: string, label: RelevanceLabel) => {
@@ -1791,9 +1819,10 @@ export function VthSearchApp() {
     trainingAnalysis: Analysis,
     label: string,
   ) => {
-    const sourceImageBlob = await sanitizedSourceImageBlob(
-      trainingAnalysis.imageUrl,
-    );
+    // The selector is verified against the complete metadata-free document.
+    // The server crops and persists only the selected panel, so unrelated
+    // slide text/tables are neither learned nor shown as the source preview.
+    const sourceImageBlob = trainingAnalysis.sourceDocumentBlob;
     if (isStandaloneRuntime()) {
       const pendingCandidate = buildLearnedCandidate({
         id: `local-${crypto.randomUUID()}`,
@@ -1803,6 +1832,7 @@ export function VthSearchApp() {
         descriptor: trainingAnalysis.descriptor,
         storage: "api",
         canDelete: true,
+        sourceSelection: trainingSourceSelection(trainingAnalysis),
       }) as Candidate;
       const response = await fetch("/api/v1/training-samples", {
         method: "POST",
@@ -1865,6 +1895,7 @@ export function VthSearchApp() {
       profile: trainingAnalysis.profile,
       descriptor: trainingAnalysis.descriptor,
       storage: "shared",
+      sourceSelection: trainingSourceSelection(trainingAnalysis),
     }) as Candidate;
     const form = new FormData();
     form.append(
@@ -1881,7 +1912,7 @@ export function VthSearchApp() {
         ),
       ),
     );
-    form.append("sourceImage", sourceImageBlob, "source-preview.jpg");
+    form.append("sourceImage", sourceImageBlob, "source-document.jpg");
     const response = await fetch(
       sharedApiUrl("/api/v1/shared-training-samples"),
       {
@@ -1946,6 +1977,14 @@ export function VthSearchApp() {
       setError("진행 중인 분석 또는 학습이 끝난 뒤 다시 시도해 주세요.");
       return;
     }
+    const trainingQueries = filterSelectedTrainingUnits(
+      panelQueries,
+      selectedTrainingAnalysisIds,
+    ) as PanelQuery[];
+    if (!trainingQueries.length) {
+      setError("학습할 차트 또는 색상 시리즈를 1개 이상 선택해 주세요.");
+      return;
+    }
     learningBusyRef.current = true;
     setIsLearning(true);
     setError("");
@@ -1956,10 +1995,10 @@ export function VthSearchApp() {
         (isStandaloneRuntime() ? "내 VTH 분포" : "공용 VTH 분포");
       const outcomes = [];
       const failures: string[] = [];
-      for (const [unitIndex, panelQuery] of panelQueries.entries()) {
+      for (const [unitIndex, panelQuery] of trainingQueries.entries()) {
         setLearningStatus(
-          panelQueries.length > 1
-            ? `분리 데이터 ${unitIndex + 1}/${panelQueries.length} 저장 중…`
+          trainingQueries.length > 1
+            ? `선택 데이터 ${unitIndex + 1}/${trainingQueries.length} 저장 중…`
             : "현재 차트 저장 중…",
         );
         try {
@@ -1998,7 +2037,7 @@ export function VthSearchApp() {
       }
       setLearningStatus(
         panelQueries.length > 1
-          ? `${panelQueries.length}개 차트/색상 시리즈를 개별 후보로 처리했습니다 · 신규 ${added}개` +
+          ? `선택한 ${trainingQueries.length}/${panelQueries.length}개 차트/색상 시리즈를 개별 후보로 처리했습니다 · 신규 ${added}개` +
               `${deduplicated ? ` · 중복 연결 ${deduplicated}개` : ""}` +
               `${failures.length ? ` · 실패 ${failures.length}개` : ""}`
           : deduplicated
@@ -2096,6 +2135,8 @@ export function VthSearchApp() {
                 id: crypto.randomUUID(),
                 fileName: suffix ? `${file.name} · ${suffix}` : file.name,
                 imageUrl,
+                sourceDocumentBlob:
+                  documentAnalysis.sourceDocumentBlob,
                 panelIndex,
                 panelCount: documentAnalysis.panels.length,
                 detectedPanelCount:
@@ -2630,6 +2671,9 @@ export function VthSearchApp() {
                             panelIndex === activePanelIndex ? 0 : -1
                           }
                           disabled={isSubmittingFeedback}
+                          data-training-selected={selectedTrainingAnalysisIdSet.has(
+                            panelQuery.analysis.id,
+                          )}
                           key={panelQuery.analysis.id}
                           onClick={() => selectAnalyzedPanel(panelIndex)}
                           onKeyDown={(event) => {
@@ -2680,11 +2724,74 @@ export function VthSearchApp() {
                               : ""}
                           </span>
                           <small>
-                            {panelQuery.analysis.descriptor.stateCount} State
+                            {panelQuery.analysis.descriptor.stateCount} State ·{" "}
+                            {selectedTrainingAnalysisIdSet.has(
+                              panelQuery.analysis.id,
+                            )
+                              ? "학습 포함"
+                              : "학습 제외"}
                           </small>
                         </button>
                       ))}
                     </div>
+                  </div>
+                )}
+                {panelQueries.length > 1 && analysis && (
+                  <div
+                    className="training-selection-bar"
+                    role="group"
+                    aria-label="분리 차트 학습 대상 선택"
+                    data-testid="training-selection-bar"
+                  >
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={selectedTrainingAnalysisIdSet.has(
+                          analysis.id,
+                        )}
+                        onChange={(event) =>
+                          setTrainingAnalysisSelected(
+                            analysis.id,
+                            event.target.checked,
+                          )
+                        }
+                        disabled={isAnalyzing || isLearning}
+                        data-testid="active-training-selection"
+                      />
+                      <span>
+                        {chartSeriesSuffix(analysis) ||
+                          `차트 ${analysis.panelIndex + 1}`}{" "}
+                        학습 포함
+                      </span>
+                    </label>
+                    <strong aria-live="polite">
+                      {selectedTrainingQueries.length}/{panelQueries.length}개
+                      선택
+                    </strong>
+                    <button
+                      type="button"
+                      onClick={selectAllTrainingAnalyses}
+                      disabled={
+                        isAnalyzing ||
+                        isLearning ||
+                        selectedTrainingQueries.length === panelQueries.length
+                      }
+                      data-testid="select-all-training-units"
+                    >
+                      전체 선택
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearTrainingAnalysisSelection}
+                      disabled={
+                        isAnalyzing ||
+                        isLearning ||
+                        selectedTrainingQueries.length === 0
+                      }
+                      data-testid="clear-training-units"
+                    >
+                      전체 해제
+                    </button>
                   </div>
                 )}
                 {panelQueries.length > 1 && (
@@ -3123,10 +3230,10 @@ export function VthSearchApp() {
                   <>
                     축 없는 표준 Curve와 메타데이터를 제거한 원본 미리보기를
                     패키지의 data 폴더에만 저장합니다. 인터넷이나 dove9999.com으로
-                    전송하지 않습니다. 선택한 여러 파일 또는 폴더 안의 지원
-                    이미지를 빠짐없이 순차 학습하며, 한 이미지에서 좌표별로
-                    분리한 차트와 차트 내부의 색상별 시리즈는 각각 독립
-                    후보로 저장합니다.
+                    전송하지 않습니다. 현재 분석한 그림은 위 선택 도구에서
+                    원하는 차트와 색상 시리즈만 학습할 수 있습니다. 여러 파일
+                    또는 폴더 일괄 학습은 각 이미지에서 검출한 모든 차트와
+                    시리즈를 순차 저장합니다.
                   </>
                 ) : (
                   <>
@@ -3134,9 +3241,10 @@ export function VthSearchApp() {
                     저장하고 전체 후보를 page 단위로 불러옵니다. 등록 직후 다른
                     사용자에게도 검색 후보로 노출되며 추천 카드에 원본이 함께
                     표시됩니다. 선택한 여러 파일 또는 폴더 안의 지원 이미지를
-                    빠짐없이 순차 학습하며, 한 이미지에서 좌표별로 분리한
-                    차트와 차트 내부의 색상별 시리즈는 각각 독립 후보로
-                    저장합니다.
+                    빠짐없이 순차 학습합니다. 현재 분석한 그림은 위 선택
+                    도구에서 원하는 차트와 색상 시리즈만 공용 등록할 수
+                    있으며, 여러 파일 또는 폴더 일괄 학습은 검출한 모든
+                    차트와 시리즈를 저장합니다.
                     모델 가중치는 복수 전문가 합의와 회귀 게이트를 통과한 뒤에만
                     갱신됩니다.{" "}
                     <a
@@ -3169,8 +3277,8 @@ export function VthSearchApp() {
               />
               <span>
                 {standaloneMode
-                  ? "파일명·메타데이터를 제외한 원본 미리보기와 표준 Curve를 이 PC에만 저장하는 데 동의합니다."
-                  : "파일명·메타데이터를 제외한 원본 미리보기, 표준 Curve와 라벨을 공용 검색 후보로 공유하는 데 동의합니다."}
+                  ? "선택 좌표 검증을 위해 메타데이터를 제거한 전체 입력을 이 PC에서 처리하고, 선택 패널 미리보기와 표준 Curve만 이 PC에 저장하는 데 동의합니다."
+                  : "선택 좌표 검증을 위해 메타데이터를 제거한 전체 입력을 서버에서 처리하고, 선택 패널 미리보기·표준 Curve·라벨·선택 위치만 공용 검색 후보로 저장하는 데 동의합니다."}
               </span>
             </label>
             <div className="learning-actions">
@@ -3180,6 +3288,7 @@ export function VthSearchApp() {
                 disabled={
                   isAnalyzing ||
                   isLearning ||
+                  selectedTrainingQueries.length === 0 ||
                   !sharingConsent ||
                   !sharedTrainingAvailable
                 }
@@ -3189,8 +3298,8 @@ export function VthSearchApp() {
                   ? "학습 처리 중…"
                   : panelQueries.length > 1
                     ? standaloneMode
-                      ? `분리 데이터 ${panelQueries.length}개 모두 학습`
-                      : `분리 데이터 ${panelQueries.length}개 모두 공용 등록`
+                      ? `선택 ${selectedTrainingQueries.length}/${panelQueries.length}개 학습`
+                      : `선택 ${selectedTrainingQueries.length}/${panelQueries.length}개 공용 등록`
                     : standaloneMode
                       ? "현재 그림 학습"
                       : "현재 그림 공용 등록"}

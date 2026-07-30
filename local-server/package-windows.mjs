@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(moduleDirectory, "..");
-const version = "1.39.0";
+const version = "1.40.0";
 const packageName = `vth-similarity-windows-x64-v${version}`;
 const artifactsDirectory = path.join(projectRoot, "artifacts", "windows");
 const cacheDirectory = path.join(artifactsDirectory, "cache");
@@ -367,11 +367,15 @@ Node.js v${nodeVersion} Windows x64 런타임이 압축된 상태로 포함되�
 
 이 PC 전용 화면 학습
 - 산포 그림을 분석한 뒤 학습 패널을 열고 저장 동의에 체크합니다.
-- 한 파일에서 분리된 차트는 각각 별도의 학습 후보와 원본 크롭으로 저장됩니다.
-- 한 차트에서 분리된 여러 색상 시리즈도 각각 별도 학습 후보로 저장되며,
-  같은 원본 차트 크롭을 provenance로 검증합니다.
+- 현재 분석한 그림에서는 "학습 포함" 체크박스와 전체 선택/해제로 원하는
+  차트와 색상 시리즈만 골라 별도의 학습 후보와 원본 크롭으로 저장합니다.
+- 메타데이터를 제거한 전체 입력에서 패널 수·좌표와 선택 시리즈 형상을
+  다시 검증하고 서버가 자른 선택 패널만 저장합니다.
+- 선택하지 않은 차트와 시리즈는 학습 저장소로 보내지 않습니다. 주변
+  표·설명도 저장하지 않습니다.
 - "여러 파일 학습" 또는 "폴더 전체 학습"으로 선택한 지원 이미지를 개수
-  제한 없이 순차 분석하고 저장할 수 있습니다.
+  제한 없이 순차 분석하고, 각 이미지에서 검출한 모든 차트와 시리즈를
+  저장할 수 있습니다.
 - "이 PC에 학습"을 누르면 축 없는 표준 Curve, descriptor와
   파일명·메타데이터를 제거한 원본 미리보기가 data 폴더에 저장됩니다.
 - 학습 후보가 추천되면 표준 Curve와 저장한 원본 미리보기를 함께 보여줍니다.
@@ -393,11 +397,39 @@ Invoke-WebRequest -Method Post \`
 
 검색 결과의 panelCount, panelLayout, panels 배열은 분리된 차트의 좌표와
 검출 신뢰도를 포함합니다. 각 panel의 seriesCount, selectedSeriesIndex,
-series 배열에는 색으로 분리된 시리즈별 query와 results가 들어 있습니다.
+series 배열에는 색으로 분리된 시리즈별 query, results와
+trainingSelection, 256-point profile, canonical descriptor가 들어 있습니다.
 하위 호환용 panel query/results는 대표 시리즈를, 최상위 query/results는
 첫 번째 차트의 대표 시리즈를 가리킵니다. 각 results 배열은 rank, score,
 세부 형상 scores, 유사 이유, 표준 추천 그림 URL과 학습 원본 그림 URL을
 포함합니다. 검색 입력 그림은 저장하거나 학습에 사용하지 않습니다.
+선택한 시리즈를 학습할 때는 해당 trainingSelection을 sourceSelection으로
+복사하고 같은 series의 profile/descriptor를 그대로 사용하며, 검색에 사용한
+동일한 전체 이미지를 sourceImageDataUrl에 넣어
+POST /api/v1/training-samples에 한 후보씩 보냅니다. 서버는 전체 이미지에서
+패널을 다시 찾고 선택 시리즈를 형상으로 결속해 검색 Curve와 선택 패널
+미리보기를 생성하며, 원본과 선택 좌표·형상이 다르면
+source_selection_image_mismatch로 거절합니다.
+호환용 imageDataUrl이나 별도 Curve 추출기는 필요하지 않습니다.
+
+PowerShell에서 첫 차트의 첫 시리즈를 검색 응답 그대로 학습:
+$sourceBytes = [IO.File]::ReadAllBytes(".\\graph.png")
+$search = Invoke-RestMethod -Method Post \`
+  -Uri "http://127.0.0.1:4173/api/v1/similarity-search?topK=5" \`
+  -ContentType "image/png" -InFile ".\\graph.png"
+$series = $search.panels[0].series[0]
+$trainingBody = [ordered]@{
+  schemaVersion = 2
+  id = "api-selected-001"
+  label = "API selected series"
+  sourceImageDataUrl = "data:image/png;base64,$([Convert]::ToBase64String($sourceBytes))"
+  profile = $series.profile
+  descriptor = $series.descriptor
+  sourceSelection = $series.trainingSelection
+} | ConvertTo-Json -Depth 12
+Invoke-RestMethod -Method Post \`
+  -Uri "http://127.0.0.1:4173/api/v1/training-samples" \`
+  -ContentType "application/json" -Body $trainingBody
 
 PowerShell에서 원본 그림 밀어넣기:
 Invoke-WebRequest -Method Post \`
@@ -405,7 +437,7 @@ Invoke-WebRequest -Method Post \`
   -ContentType "image/png" -InFile ".\\graph.png"
 
 원본 그림만 넣은 항목은 status=pending으로 안전하게 보관됩니다. 검색에 즉시
-사용하려면 256-point profile과 descriptor를 포함한 JSON을
+사용하려면 검색 응답의 256-point profile과 descriptor를 포함한 JSON을
 POST /api/v1/training-samples 로 보냅니다.
 정확한 JSON 스키마는 OpenAPI 문서를 참고하세요.
 
@@ -449,6 +481,7 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
       similaritySearchApi: true,
       multiChartPanelSplitting: true,
       multiChartMaximumPanels: 30,
+      selectiveMultiChartTraining: true,
       arbitraryPositionWaveformDetection: true,
       borderSafeDocumentBackground: true,
       repeatedWaveformGridRecovery: true,

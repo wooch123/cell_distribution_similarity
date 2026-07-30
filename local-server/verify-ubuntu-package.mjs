@@ -689,12 +689,12 @@ async function main() {
       "utf8",
     );
     assert(
-      bundledServerSource.includes("v1.39.0") &&
-        !bundledServerSource.includes("v1.38.0"),
+      bundledServerSource.includes("v1.40.0") &&
+        !bundledServerSource.includes("v1.39.0"),
       "Ubuntu package contains a stale hosted download release.",
     );
     assert(
-      manifest.version === "1.39.0" &&
+      manifest.version === "1.40.0" &&
         manifest.platform === "ubuntu-linux-x64" &&
         manifest.architecture === "x86_64" &&
         manifest.entrypoint === "start.sh" &&
@@ -732,6 +732,7 @@ async function main() {
         manifest.bundled?.similaritySearchApi === true &&
         manifest.bundled?.multiChartPanelSplitting === true &&
         manifest.bundled?.multiChartMaximumPanels === 30 &&
+        manifest.bundled?.selectiveMultiChartTraining === true &&
         manifest.bundled?.arbitraryPositionWaveformDetection ===
           true &&
         manifest.bundled?.borderSafeDocumentBackground === true &&
@@ -839,7 +840,11 @@ async function main() {
         readme.includes("최대") &&
         readme.includes("30개 차트") &&
         readme.includes("FHD 밀집 샘플") &&
-        readme.includes("색상 시리즈"),
+        readme.includes("색상 시리즈") &&
+        readme.includes("학습 포함") &&
+        readme.includes("전체 선택/해제") &&
+        readme.includes("선택하지 않은") &&
+        readme.includes("학습 저장소로 보내지 않습니다"),
       "Ubuntu LAN and standalone instructions are incomplete.",
     );
     await assertMissing(

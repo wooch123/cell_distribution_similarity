@@ -41,6 +41,35 @@
 표·격자 우세, 연속 파형 부족, 후보 탈락·충돌을 구분하는
 `VTH-DETECT-*` 코드와 조치·검출 통계를 제공합니다. 웹 화면도 기존 오류
 영역에 같은 코드, 판정 원인, 권장 조치, 입력/분석 해상도를 표시합니다.
+각 `panels[].series[]`는 외부 학습 API의 `sourceSelection`, `profile`,
+`descriptor`로 그대로 사용할 `trainingSelection`, 256-point `profile`,
+canonical `descriptor`를 반환합니다. 검색에 사용한 동일한 전체 이미지를
+함께 보내면 별도 Curve 추출기 없이 서버가 패널 수·인덱스를 다시 확인하고 선택
+패널 안에서 제출 Curve와 일치하는 원본 시리즈를 찾아
+profile·descriptor·State를 재생성합니다. 패널/시리즈 배치나 형상이
+원본과 다르면
+`422 source_selection_image_mismatch`를 반환합니다.
+
+공용 API에서는 메타데이터를 제거한 3MB 이하 JPEG를 먼저 검색한 뒤 정확히
+같은 JPEG를 multipart 학습 요청에 사용합니다.
+
+```bash
+curl -sS -X POST \
+  'https://dove9999.com/api/v1/similarity-search?topK=5' \
+  -H 'Content-Type: image/jpeg' --data-binary '@document.jpg' > search.json
+CONTRIBUTOR_TOKEN=$(openssl rand -hex 32)
+DELETION_TOKEN=$(openssl rand -hex 32)
+jq -c --arg contributor "$CONTRIBUTOR_TOKEN" --arg deletion "$DELETION_TOKEN" \
+  '.panels[0].series[0] |
+   {schemaVersion:2,label:"API selected series",profile,descriptor,
+    sourceSelection:.trainingSelection,sharingConsent:true,
+    consentVersion:"2026-07-30-v3",contributorToken:$contributor,
+    deletionToken:$deletion}' search.json > shared-payload.json
+curl -sS -X POST \
+  'https://dove9999.com/api/v1/shared-training-samples' \
+  -F "payload=$(cat shared-payload.json)" \
+  -F 'sourceImage=@document.jpg;type=image/jpeg'
+```
 1920×1080 FHD 입력은 1600×900으로 축소하지 않고 원본 분석 크기를
 보존해 3–4px의 좁은 차트 간격과 가는 프레임을 유지합니다.
 
@@ -63,8 +92,11 @@ Web 서버 패키지에도 포함됩니다.
 브라우저의 Canvas에서 사각 프레임 또는 특허 도면의 열린 L자 축을 검출하고,
 축·격자·내부 수직 기준선·분리된 텍스트 라벨을 제거한 뒤 Curve를 추출합니다.
 서로 떨어진 프레임/L축이 두 개 이상이면 먼저 좌표별 차트로 크롭하고 화면의
-차트 탭에서 각각의 검색 결과를 전환합니다. 학습 시에는 각 크롭을 별도
-후보와 별도 원본 미리보기로 저장합니다.
+차트 탭에서 각각의 검색 결과를 전환합니다. 현재 그림을 학습할 때는
+`학습 포함` 체크박스와 전체 선택/해제로 원하는 차트와 색상 시리즈만
+별도 후보로 저장합니다. 메타데이터를 제거한 전체 입력 JPEG는 선택 좌표
+검증에만 사용하고, 서버가 다시 자른 선택 패널 미리보기만 저장합니다.
+선택하지 않은 항목과 주변 표·설명 텍스트는 학습 저장소에 남지 않습니다.
 입력 영역의 `랜덤 멀티 차트 분석`은 매번 서로 다른 임의 배치 샘플을
 선택합니다. 고해상도 2장과 저해상도 1장은 차트 외에 표·플로우차트·사진성
 블록을 함께 포함합니다. 네 번째 `경계 없는 Curve` 샘플은 프레임과 축 없이
@@ -85,7 +117,8 @@ Web 서버 패키지에도 포함됩니다.
 `node scripts/generate-random-multichart-samples.mjs`, FHD 밀집 샘플은
 `node scripts/generate-fhd-30-chart-sample.mjs`로 재생성합니다.
 같은 샘플과 무작위 배치·저해상도 복원을 포함한 최대 30차트 분리기는
-Windows x64 및 Ubuntu x64 v1.39.0 독립판에도 함께 포함됩니다.
+Windows x64 및 Ubuntu x64 v1.40.0 독립판에도 함께 포함됩니다.
+v1.40.0 화면은 분석된 차트·색상 시리즈별 선택 학습을 지원합니다.
 160×90의 4차트, 240×135의 12차트, 조밀한 표형 격자 위 색상/검정
 유효 파형과 실제 색상 표를 짝지은 회귀로 초저해상도 분리와 표 오판정을
 동시에 검증합니다.
@@ -108,13 +141,17 @@ Windows x64 및 Ubuntu x64 v1.39.0 독립판에도 함께 포함됩니다.
 양쪽에서 이어지는 교차 픽셀만 복원해 peak·valley 단절을 줄입니다.
 
 사용자가 명시적으로 공유 동의하고 `공용 학습에 등록`을 누르면 256-point
-Curve와 descriptor를 D1에, 축 없는 표준 그래프와 파일명·메타데이터를
-제거해 브라우저에서 다시 만든 JPEG 원본 미리보기를 R2에 저장합니다.
+Curve와 descriptor를 D1에, 축 없는 표준 그래프와 서버에서 좌표를
+재검증해 자른 선택 패널 JPEG 미리보기를 R2에 저장합니다. 브라우저가
+파일명·메타데이터를 제거한 전체 입력 JPEG는 검증에만 사용합니다.
 등록 후보는 다른 사용자의 검색에도 합쳐지고, 추천 시 표준 Curve와 학습
 원본 미리보기를 함께 표시합니다. 동일 형상은 fingerprint로 중복 제거하고
 하루 200개 제한, 전체 2,000개 제한, 업로더 전용 삭제 토큰을 적용합니다.
+현재 분석한 멀티 차트 그림은 선택한 차트와 색상 시리즈만 등록하고,
+선택 수와 저장 진행률을 화면에 표시합니다.
 파일 여러 장 또는 폴더 하나를 선택하면 그 안의 지원 이미지를 개수 제한
-없이 순차 분석·학습하고 신규·중복·실패·제외 건수를 화면에 집계합니다.
+없이 순차 분석하며 각 이미지에서 검출한 모든 차트와 시리즈를 학습하고
+신규·중복·실패·제외 건수를 화면에 집계합니다.
 한 번에 최대 500개를 keyset cursor로 조회하며 브라우저는 모든 page를
 끝까지 불러와 500개 이후 후보도 검색에 포함합니다. API 계약은
 `/shared-training-openapi.json`에서 확인합니다.
@@ -143,9 +180,9 @@ Ubuntu x64 패키지는 별도 외부 Web 서버용 배포본입니다. 상단�
 `UBUNTU X64 · WEB SERVER` 버튼으로 내려받으며 Windows 오프라인 실행판과
 용도와 버튼을 분리합니다. 웹 다운로드는 두 운영체제 모두 schema-v1
 매니페스트와 SHA-256 조각 검증을 거쳐 브라우저에서 원본 패키지를
-재조립합니다. v1.39.0의 고정 매니페스트 경로는
-`/downloads/windows-package-v1.39.0.json`과
-`/downloads/ubuntu-package-v1.39.0.json`입니다. Ubuntu 매니페스트의
+재조립합니다. v1.40.0의 고정 매니페스트 경로는
+`/downloads/windows-package-v1.40.0.json`과
+`/downloads/ubuntu-package-v1.40.0.json`입니다. Ubuntu 매니페스트의
 `fileName`은 우선 `vth-similarity-ubuntu-x64.tar.gz`를 사용하며, 다운로드
 코어는 검증된 `.tar.gz` 또는 `.zip` 파일명을 그대로 받아 버전이 붙은
 파일명으로 저장합니다.

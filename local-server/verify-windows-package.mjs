@@ -127,7 +127,10 @@ async function verifyService(packageDirectory, validationDirectory) {
     );
     assert(
       clientScripts.some((script) => script.includes("현재 그림 학습")) &&
-        clientScripts.some((script) => script.includes("폴더 전체 학습")),
+        clientScripts.some((script) => script.includes("폴더 전체 학습")) &&
+        clientScripts.some((script) => script.includes("학습 포함")) &&
+        clientScripts.some((script) => script.includes("전체 선택")) &&
+        clientScripts.some((script) => script.includes("전체 해제")),
       "Local-only learning UI is missing.",
     );
     for (const evidenceLabel of [
@@ -204,21 +207,6 @@ async function verifyService(packageDirectory, validationDirectory) {
         candidate.image.replace(/^\/+/, ""),
       ),
     );
-    const packagedEngine = await import(
-      `${pathToFileURL(
-        path.join(
-          packageDirectory,
-          "server",
-          "similarity-engine.mjs",
-        ),
-      ).href}?package-verification=${Date.now()}`
-    );
-    const authoritativeAnalysis =
-      await packagedEngine.analyzeSimilarityImage(
-        imageBytes,
-        "image/png",
-      );
-
     const similarityResponse = await fetch(
       `${baseUrl}/api/v1/similarity-search?topK=3`,
       {
@@ -232,6 +220,18 @@ async function verifyService(packageDirectory, validationDirectory) {
       "Packaged similarity-search API did not return 200.",
     );
     const similarity = await similarityResponse.json();
+    assert(
+      similarity.profile?.length === 256 &&
+        similarity.descriptor?.stateCount ===
+          similarity.descriptor?.peakLocations?.length &&
+        similarity.descriptor?.valleyLocations?.length ===
+          similarity.descriptor?.stateCount - 1 &&
+        JSON.stringify(similarity.profile) ===
+          JSON.stringify(similarity.panels?.[0]?.profile) &&
+        JSON.stringify(similarity.descriptor) ===
+          JSON.stringify(similarity.panels?.[0]?.descriptor),
+      "Packaged search does not expose a training-ready representative waveform.",
+    );
     assert(
       similarity.inputHandling?.stored === false &&
         similarity.inputHandling?.usedForTraining === false,
@@ -515,12 +515,10 @@ async function verifyService(packageDirectory, validationDirectory) {
           schemaVersion: 2,
           id: "package-ready",
           label: "Package verification",
-          imageDataUrl: `data:image/png;base64,${imageBytes.toString("base64")}`,
           sourceImageDataUrl: `data:image/png;base64,${imageBytes.toString("base64")}`,
-          profile: authoritativeAnalysis.profile,
-          descriptor: {
-            ...authoritativeAnalysis.descriptor,
-          },
+          profile: similarity.profile,
+          descriptor: similarity.descriptor,
+          sourceSelection: similarity.trainingSelection,
         }),
       },
     );
@@ -543,20 +541,25 @@ async function verifyService(packageDirectory, validationDirectory) {
     );
     assert(readySample?.sourceImage, "Ready sample source image is missing.");
     assert(
+      JSON.stringify(readySample?.sourceSelection) ===
+        JSON.stringify(similarity.trainingSelection),
+      "Ready sample did not persist its verified source series selection.",
+    );
+    assert(
       readySample?.mimeType === "image/svg+xml" &&
         readySample?.metadata?.authoritativeSourceProfile === true,
       "Ready sample did not persist its source-derived standardized Curve.",
     );
     assert(
       readySample.profile.length ===
-        authoritativeAnalysis.profile.length &&
+        similarity.profile.length &&
         readySample.profile.every(
           (value, index) =>
             Math.abs(
-              value - authoritativeAnalysis.profile[index],
+              value - similarity.profile[index],
             ) < 1e-9,
         ),
-      "Ready sample profile is not authoritative to its source image.",
+      "Ready sample profile does not round-trip from the public search response.",
     );
     const standardizedImageResponse = await fetch(
       `${baseUrl}${readySample.image}`,
@@ -672,7 +675,11 @@ async function main() {
         readme.includes("랜덤 멀티 차트 분석") &&
         readme.includes("선택 원본 패널") &&
         readme.includes("정규화 추출 Curve") &&
-        readme.includes("색상 시리즈"),
+        readme.includes("색상 시리즈") &&
+        readme.includes("원하는") &&
+        readme.includes(
+          "선택하지 않은 차트와 시리즈는 학습 저장소로 보내지 않습니다",
+        ),
       "Offline operation is not documented.",
     );
     assert(
@@ -690,12 +697,12 @@ async function main() {
       "utf8",
     );
     assert(
-      bundledServerSource.includes("v1.39.0") &&
-        !bundledServerSource.includes("v1.38.0"),
+      bundledServerSource.includes("v1.40.0") &&
+        !bundledServerSource.includes("v1.39.0"),
       "Windows package contains a stale hosted download release.",
     );
     assert(
-      manifest.version === "1.39.0" &&
+      manifest.version === "1.40.0" &&
         manifest.platform === "windows-x64" &&
         manifest.network?.mode === "offline-loopback-only" &&
         manifest.network?.externalNetworkAllowed === false &&
@@ -703,6 +710,7 @@ async function main() {
         manifest.bundled?.model === true &&
         manifest.bundled?.multiChartPanelSplitting === true &&
         manifest.bundled?.multiChartMaximumPanels === 30 &&
+        manifest.bundled?.selectiveMultiChartTraining === true &&
         manifest.bundled?.arbitraryPositionWaveformDetection ===
           true &&
         manifest.bundled?.borderSafeDocumentBackground === true &&
