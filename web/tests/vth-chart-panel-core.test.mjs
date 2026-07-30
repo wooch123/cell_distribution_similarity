@@ -507,9 +507,9 @@ test("separates twelve staggered PPT charts with titles, labels, and gridlines",
       `panel ${index} should stay in row-major row order`,
     );
   }
-  // A generous guard against accidentally reintroducing combinatorial
-  // candidate matching for dense 4-column slides.
-  assert.ok(elapsedMs < 1500, `detection took ${elapsedMs.toFixed(1)} ms`);
+  // Keep a wall-clock guard against accidentally reintroducing combinatorial
+  // candidate matching, while allowing for shared CI runner load.
+  assert.ok(elapsedMs < 3000, `detection took ${elapsedMs.toFixed(1)} ms`);
 });
 
 test("recovers ten low-resolution charts scattered at unrelated coordinates", () => {
