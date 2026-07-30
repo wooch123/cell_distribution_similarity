@@ -361,6 +361,62 @@ function drawText(
   }
 }
 
+function drawVectorWGlyph(
+  mask,
+  width,
+  height,
+  { left, top, right, bottom, thickness },
+) {
+  const centerX = Math.round((left + right) / 2);
+  const centerY = Math.round(top + (bottom - top) * 0.47);
+  const leftValleyX = Math.round(
+    left + (right - left) * 0.25,
+  );
+  const rightValleyX = Math.round(
+    left + (right - left) * 0.75,
+  );
+  drawLine(
+    mask,
+    width,
+    height,
+    left,
+    top,
+    leftValleyX,
+    bottom,
+    thickness,
+  );
+  drawLine(
+    mask,
+    width,
+    height,
+    leftValleyX,
+    bottom,
+    centerX,
+    centerY,
+    thickness,
+  );
+  drawLine(
+    mask,
+    width,
+    height,
+    centerX,
+    centerY,
+    rightValleyX,
+    bottom,
+    thickness,
+  );
+  drawLine(
+    mask,
+    width,
+    height,
+    rightValleyX,
+    bottom,
+    right,
+    top,
+    thickness,
+  );
+}
+
 function rotateMaskNearest(mask, width, height, degrees) {
   if (!degrees) return mask.slice();
   const output = new Uint8Array(mask.length);
@@ -658,6 +714,108 @@ export function largeTextOnlyFixtures() {
       ],
       rotation: 0,
     },
+    ...["S", "W", "M", "U", "V"].map((glyph) => ({
+      name: `large-single-glyph-${glyph.toLowerCase()}`,
+      width: 800,
+      height: 450,
+      lines: [
+        {
+          text: glyph,
+          left: 292,
+          top: 72,
+          scale: 42,
+          weight: 7,
+        },
+      ],
+      rotation: 0,
+    })),
+    {
+      name: "large-single-vector-glyph-w",
+      width: 800,
+      height: 450,
+      lines: [],
+      vectorW: {
+        left: 256,
+        top: 90,
+        right: 544,
+        bottom: 360,
+        thickness: 6,
+      },
+      rotation: 0,
+    },
+    {
+      name: "low-resolution-single-glyph-s-rotated",
+      width: 240,
+      height: 135,
+      lines: [
+        {
+          text: "S",
+          left: 88,
+          top: 21,
+          scale: 13,
+          weight: 3,
+        },
+      ],
+      rotation: 11,
+    },
+    {
+      name: "low-resolution-single-vector-glyph-w-rotated",
+      width: 240,
+      height: 135,
+      lines: [],
+      vectorW: {
+        left: 77,
+        top: 27,
+        right: 163,
+        bottom: 108,
+        thickness: 2,
+      },
+      rotation: 7,
+    },
+    {
+      name: "single-glyph-w-inside-outline-card",
+      width: 800,
+      height: 450,
+      frameMode: "rectangle",
+      frameBounds: {
+        left: 48,
+        top: 42,
+        right: 751,
+        bottom: 407,
+      },
+      lines: [
+        {
+          text: "W",
+          left: 291,
+          top: 74,
+          scale: 42,
+          weight: 7,
+        },
+      ],
+      rotation: 0,
+    },
+    {
+      name: "low-resolution-single-glyph-m-in-open-axis-rotated",
+      width: 240,
+      height: 135,
+      frameMode: "l-axis",
+      frameBounds: {
+        left: 10,
+        top: 9,
+        right: 229,
+        bottom: 124,
+      },
+      lines: [
+        {
+          text: "M",
+          left: 88,
+          top: 21,
+          scale: 13,
+          weight: 3,
+        },
+      ],
+      rotation: -7,
+    },
     {
       name: "small-two-glyph-caption",
       width: 800,
@@ -724,6 +882,44 @@ export function largeTextOnlyFixtures() {
         },
       ],
       rotation: 4,
+    },
+    {
+      name: "dense-borderless-text-card-matrix",
+      width: 1200,
+      height: 700,
+      lines: Array.from(
+        { length: 20 },
+        (_unused, index) => {
+          const column = index % 4;
+          const row = Math.floor(index / 4);
+          const left = 72 + column * 292;
+          const top = 55 + row * 130;
+          return [
+            {
+              text: "READ MARGIN",
+              left,
+              top,
+              scale: 2,
+              weight: 2,
+            },
+            {
+              text: "CELL DATA",
+              left,
+              top: top + 34,
+              scale: 2,
+              weight: 2,
+            },
+            {
+              text: "V NAND",
+              left,
+              top: top + 68,
+              scale: 2,
+              weight: 2,
+            },
+          ];
+        },
+      ).flat(),
+      rotation: 0,
     },
     {
       name: "large-text-inside-outline-card",
@@ -819,6 +1015,14 @@ export function largeTextOnlyFixtures() {
         definition.height,
         line.text,
         line,
+      );
+    }
+    if (definition.vectorW) {
+      drawVectorWGlyph(
+        sourceMask,
+        definition.width,
+        definition.height,
+        definition.vectorW,
       );
     }
     if (definition.connectedScript) {

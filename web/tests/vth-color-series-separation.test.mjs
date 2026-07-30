@@ -5,7 +5,10 @@ import test from "node:test";
 import jpeg from "jpeg-js";
 import { encode as encodePng } from "fast-png";
 
-import { detectChartPanels } from "../lib/vth-chart-panel-core.mjs";
+import {
+  detectChartPanels,
+  detectChartPanelsFromMask,
+} from "../lib/vth-chart-panel-core.mjs";
 import {
   analyzeForegroundMasks,
   applyVerifiedWaveformEvidence,
@@ -27,6 +30,7 @@ import {
   colorSeriesChartFixture,
   mixedPanelColorSeriesFixture,
   monochromeSeriesChartFixture,
+  rotateRgbFixture,
   rotatedChromaticAndNeutralSeriesFixture,
   segmentedChromaticAndNeutralSeriesFixture,
 } from "./helpers/color-series-fixtures.mjs";
@@ -1528,6 +1532,131 @@ test("repeated colored table cells never become color series in search or traini
         mimeType: fixture.mimeType,
         profile: analysis.profile,
         stateCount: analysis.descriptor.stateCount,
+      }),
+    (error) => {
+      assert.ok(error instanceof SimilarityApiError);
+      assert.equal(error.status, 422);
+      assert.equal(
+        error.code,
+        "distribution_waveform_not_found",
+      );
+      return true;
+    },
+  );
+});
+
+test("two-column colored cell tables remain non-chart data across row counts and every ingestion boundary", async (context) => {
+  for (const rows of [5, 6, 8]) {
+    await context.test(`${rows} rows by 2 columns`, async () => {
+      const fixture = coloredCellTableFixture({
+        width: 800,
+        height: 450,
+        rows,
+        columns: 2,
+      });
+      const foreground = foregroundFor(fixture);
+      assert.ok(
+        foreground.curveColorMasks.length >= 4,
+        "the table must retain enough chromatic ink to exercise color-series rescue",
+      );
+
+      const maskResult = detectChartPanelsFromMask(
+        foreground.broadMask,
+        fixture.width,
+        fixture.height,
+      );
+      assert.equal(maskResult.panels.length, 0);
+      assert.equal(maskResult.fallbackUsed, false);
+      assert.ok(maskResult.rejectedNonChartCount >= 1);
+
+      const rgbResult = detectChartPanels(
+        fixture.pixels,
+        fixture.width,
+        fixture.height,
+        fixture.channels,
+      );
+      assert.equal(
+        rgbResult.panels.length,
+        0,
+        "colored cell fills and repeated swatches must not trigger RGB color-series fallback",
+      );
+      assert.equal(rgbResult.fallbackUsed, false);
+      assert.ok(rgbResult.rejectedNonChartCount >= 1);
+
+      await assert.rejects(
+        () =>
+          searchSimilarityImage({
+            bytes: fixture.bytes,
+            mimeType: fixture.mimeType,
+            topK: 1,
+            corpus: publicCorpus,
+            origin: "https://dove9999.com",
+          }),
+        (error) => {
+          assert.ok(error instanceof SimilarityApiError);
+          assert.equal(error.status, 422);
+          assert.equal(
+            error.code,
+            "distribution_waveform_not_found",
+          );
+          return true;
+        },
+      );
+
+      const analysis = await analyzeSimilarityImage(
+        fixture.bytes,
+        fixture.mimeType,
+      );
+      await assert.rejects(
+        () =>
+          validateTrainingWaveformImage({
+            bytes: fixture.bytes,
+            mimeType: fixture.mimeType,
+            profile: analysis.profile,
+            stateCount: analysis.descriptor.stateCount,
+          }),
+        (error) => {
+          assert.ok(error instanceof SimilarityApiError);
+          assert.equal(error.status, 422);
+          assert.equal(
+            error.code,
+            "distribution_waveform_not_found",
+          );
+          return true;
+        },
+      );
+    });
+  }
+});
+
+test("rotated multi-column colored cell tables remain non-chart data", async () => {
+  const fixture = rotateRgbFixture(
+    coloredCellTableFixture({
+      width: 800,
+      height: 450,
+      rows: 6,
+      columns: 3,
+    }),
+    7,
+  );
+  const detected = detectChartPanels(
+    fixture.pixels,
+    fixture.width,
+    fixture.height,
+    fixture.channels,
+  );
+  assert.equal(detected.panels.length, 0);
+  assert.equal(detected.fallbackUsed, false);
+  assert.ok(detected.rejectedNonChartCount >= 1);
+
+  await assert.rejects(
+    () =>
+      searchSimilarityImage({
+        bytes: fixture.bytes,
+        mimeType: fixture.mimeType,
+        topK: 1,
+        corpus: publicCorpus,
+        origin: "https://dove9999.com",
       }),
     (error) => {
       assert.ok(error instanceof SimilarityApiError);

@@ -135,6 +135,13 @@ const GRAYSCALE_SHARED_BOUNDARY_LATTICE_CASE =
     grayscaleCurves: true,
   });
 
+const GUIDELESS_SHARED_BOUNDARY_LATTICE_CASE =
+  Object.freeze({
+    ...SHARED_BOUNDARY_LATTICE_CASE,
+    name: "left-half-guideless-shared-boundary-4x4",
+    guideGrid: false,
+  });
+
 const SINGLE_PEAK_SHARED_BOUNDARY_LATTICE_CASE =
   Object.freeze({
     ...SHARED_BOUNDARY_LATTICE_CASE,
@@ -448,41 +455,43 @@ function drawChart(state, chart, chartIndex) {
   const gridColor = chart.denseSharedGrid
     ? [166, 173, 182]
     : COLORS.grid;
-  for (const ratio of horizontalGridRatios) {
-    const y = Math.round(
-      plot.top + (plot.bottom - plot.top) * ratio,
-    );
-    drawLine(
-      state,
-      plot.left,
-      y,
-      plot.right,
-      y,
-      gridColor,
-      1,
-      {
-        broad: true,
-        salient: chart.denseSharedGrid,
-      },
-    );
-  }
-  for (const ratio of verticalGridRatios) {
-    const x = Math.round(
-      plot.left + (plot.right - plot.left) * ratio,
-    );
-    drawLine(
-      state,
-      x,
-      plot.top,
-      x,
-      plot.bottom,
-      gridColor,
-      1,
-      {
-        broad: true,
-        salient: chart.denseSharedGrid,
-      },
-    );
+  if (chart.guideGrid !== false) {
+    for (const ratio of horizontalGridRatios) {
+      const y = Math.round(
+        plot.top + (plot.bottom - plot.top) * ratio,
+      );
+      drawLine(
+        state,
+        plot.left,
+        y,
+        plot.right,
+        y,
+        gridColor,
+        1,
+        {
+          broad: true,
+          salient: chart.denseSharedGrid,
+        },
+      );
+    }
+    for (const ratio of verticalGridRatios) {
+      const x = Math.round(
+        plot.left + (plot.right - plot.left) * ratio,
+      );
+      drawLine(
+        state,
+        x,
+        plot.top,
+        x,
+        plot.bottom,
+        gridColor,
+        1,
+        {
+          broad: true,
+          salient: chart.denseSharedGrid,
+        },
+      );
+    }
   }
 
   const peakCount = chart.peakCount;
@@ -563,7 +572,9 @@ function gridCharts(definition) {
         const column = index % definition.columns;
         return {
           index,
-          denseSharedGrid: true,
+          guideGrid: definition.guideGrid,
+          denseSharedGrid:
+            definition.denseSharedGrid !== false,
           grayscaleCurve:
             definition.grayscaleCurves === true,
           peakCount:
@@ -780,6 +791,12 @@ export function sharedBoundaryHalfCanvasLatticeFixture() {
 export function grayscaleSharedBoundaryHalfCanvasLatticeFixture() {
   return makeFixture(
     GRAYSCALE_SHARED_BOUNDARY_LATTICE_CASE,
+  );
+}
+
+export function guidelessSharedBoundaryHalfCanvasLatticeFixture() {
+  return makeFixture(
+    GUIDELESS_SHARED_BOUNDARY_LATTICE_CASE,
   );
 }
 

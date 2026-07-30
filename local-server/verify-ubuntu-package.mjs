@@ -788,12 +788,12 @@ async function main() {
       "utf8",
     );
     assert(
-      bundledServerSource.includes("v1.44.0") &&
+      bundledServerSource.includes("v1.45.0") &&
         !bundledServerSource.includes("v1.43.0"),
       "Ubuntu package contains a stale hosted download release.",
     );
     assert(
-      manifest.version === "1.44.0" &&
+      manifest.version === "1.45.0" &&
         manifest.platform === "ubuntu-linux-universal" &&
         JSON.stringify(manifest.architectures) ===
           JSON.stringify(["x64", "arm64"]) &&
@@ -995,7 +995,7 @@ async function main() {
     assert(
       readme.includes("x64 + ARM64 Universal") &&
         readme.includes("uname -m") &&
-        readme.includes("ubuntu-universal-v1.44.0") &&
+        readme.includes("ubuntu-universal-v1.45.0") &&
         readme.includes('"exec format error"') &&
         readme.includes("0.0.0.0:4173") &&
         readme.includes("다른 PC") &&

@@ -19,6 +19,7 @@ import {
 import {
   denseGuideGridSingleChartFixture,
   grayscaleSharedBoundaryHalfCanvasLatticeFixture,
+  guidelessSharedBoundaryHalfCanvasLatticeFixture,
   guidedMultiPeakSparklineTextTableFixture,
   guidedSingleRowMultiPeakSparklineTextTableFixture,
   halfCanvasTablelikeWaveformFixtures,
@@ -30,6 +31,9 @@ import {
 import {
   uiScaledRgba,
 } from "./helpers/ui-raster-scale.mjs";
+import {
+  rotateRgbFixture,
+} from "./helpers/color-series-fixtures.mjs";
 
 const publicCorpus = JSON.parse(
   await readFile(
@@ -187,6 +191,8 @@ const sharedLatticeFixture =
   sharedBoundaryHalfCanvasLatticeFixture();
 const grayscaleSharedLatticeFixture =
   grayscaleSharedBoundaryHalfCanvasLatticeFixture();
+const guidelessSharedLatticeFixture =
+  guidelessSharedBoundaryHalfCanvasLatticeFixture();
 const singlePeakSharedLatticeFixture =
   singlePeakSharedBoundaryHalfCanvasLatticeFixture();
 const singleRowSharedLatticeFixture =
@@ -219,6 +225,8 @@ const FIXTURE_SHA256 = Object.freeze({
     "b002eaff412d40b93a0d3a2f2018dcdedba749428d007570d5f3dc0e03aac699",
   "left-half-grayscale-shared-boundary-4x4":
     "ea569bed11bbb8e500c74bc708175967b10a4190d75dff1ed4ece688e07f1a44",
+  "left-half-guideless-shared-boundary-4x4":
+    "6a63513d1f45d04253884b91805f7f0a4bfecf38e368d0416e83a15f21fc764a",
   "left-half-single-peak-shared-boundary-4x4":
     "287251d31cd7add847d1c82292913abc4a948b0bf5595e25ef2364f62ea682b4",
   "left-half-single-row-shared-boundary-1x4":
@@ -672,6 +680,107 @@ test("shared 4x4 lattice: similarity API returns sixteen chart panels and exclud
   );
 });
 
+test("guideless shared 4x4 lattice: full-height curve proof recovers sixteen exact charts without mistaking the lattice for a table", async () => {
+  const fixture = guidelessSharedLatticeFixture;
+  assert.deepEqual(
+    fixture.charts.map(({ peakCount }) => peakCount),
+    [1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4],
+  );
+  assert.equal(
+    createHash("sha256")
+      .update(fixture.bytes)
+      .digest("hex"),
+    FIXTURE_SHA256[fixture.name],
+  );
+
+  const assertGridlessRecovery = (result, boundary) => {
+    assert.equal(result.fallbackUsed, false);
+    assert.equal(
+      result.diagnostics.repeatedGridRecovery.applied,
+      true,
+      `${boundary}: repeated-grid recovery must run`,
+    );
+    assert.equal(
+      result.diagnostics.repeatedGridRecovery.plotGridCellCount,
+      0,
+      `${boundary}: the fixture intentionally has no per-chart guide grid`,
+    );
+    assert.equal(
+      result.diagnostics.repeatedGridRecovery
+        .measuredTopologyCellCount,
+      fixture.expectedChartCount,
+      `${boundary}: every physical cell must independently prove exact peak/valley topology`,
+    );
+    assert.ok(
+      result.diagnostics.repeatedGridRecovery
+        .fullHeightDistributionCellCount >=
+        result.diagnostics.repeatedGridRecovery
+          .minimumFullHeightDistributionCells,
+      `${boundary}: at least 75% of cells must span a physical plot-height distribution`,
+    );
+    assert.equal(
+      result.diagnostics.repeatedGridRecovery
+        .tableEmbeddedRescueMode,
+      "full-height-distribution",
+      `${boundary}: recovery must use the gridless full-height proof`,
+    );
+    assertOnlyExpectedCharts(
+      result.panels,
+      fixture,
+      `${boundary}-guideless-shared-4x4`,
+    );
+  };
+
+  const maskResult = detectChartPanelsFromMask(
+    fixture.broadMask,
+    fixture.width,
+    fixture.height,
+    {
+      edgeEvidenceMask: fixture.salientMask,
+      curveEvidenceMask: fixture.curveMask,
+      curveColorMasks: fixture.curveColorMasks,
+      fallbackToWholeImage: false,
+      sourceScale: 1,
+    },
+  );
+  assertGridlessRecovery(maskResult, "mask");
+
+  const rgbResult = detectChartPanels(
+    fixture.pixels,
+    fixture.width,
+    fixture.height,
+    fixture.channels,
+    { adaptiveUpscale: false },
+  );
+  assertGridlessRecovery(rgbResult, "rgb");
+
+  const response = await searchSimilarityImage({
+    bytes: fixture.bytes,
+    mimeType: fixture.mimeType,
+    topK: 1,
+    corpus: publicCorpus,
+    origin: "https://dove9999.com",
+  });
+  assert.equal(
+    response.panelDetection.detectedPanelCount,
+    fixture.expectedChartCount,
+  );
+  assert.equal(
+    response.panelDetection.analyzedPanelCount,
+    fixture.expectedChartCount,
+  );
+  assertOnlyExpectedCharts(
+    response.panels,
+    fixture,
+    "similarity-api-guideless-shared-4x4",
+  );
+  assertExactPanelTopology(
+    response,
+    fixture,
+    "similarity-api-guideless-shared-4x4",
+  );
+});
+
 test("grayscale shared 4x4 lattice: mask and RGB boundaries retain all 1/2/3/4-State charts without chromatic evidence", () => {
   const fixture = grayscaleSharedLatticeFixture;
   const maskResult = detectChartPanelsFromMask(
@@ -1047,6 +1156,48 @@ test("guided single-row 1x4 sparkline text table: local shared boundaries remain
       return true;
     },
   );
+});
+
+test("rotated single-row sparkline text tables remain non-chart content", async (context) => {
+  for (const degrees of [-3, 3, 7, 12]) {
+    await context.test(`${degrees} degrees`, async () => {
+      const fixture = rotateRgbFixture(
+        guidedSingleRowSparklineTextTableFixture,
+        degrees,
+      );
+      const detected = detectChartPanels(
+        fixture.pixels,
+        fixture.width,
+        fixture.height,
+        fixture.channels,
+        { adaptiveUpscale: false },
+      );
+      assert.equal(detected.panels.length, 0);
+      assert.equal(detected.fallbackUsed, false);
+
+      if (degrees === 12) {
+        await assert.rejects(
+          () =>
+            searchSimilarityImage({
+              bytes: fixture.bytes,
+              mimeType: fixture.mimeType,
+              topK: 1,
+              corpus: publicCorpus,
+              origin: "https://dove9999.com",
+            }),
+          (error) => {
+            assert.ok(error instanceof SimilarityApiError);
+            assert.equal(error.status, 422);
+            assert.equal(
+              error.code,
+              "distribution_waveform_not_found",
+            );
+            return true;
+          },
+        );
+      }
+    });
+  }
 });
 
 for (const fixture of fixtures) {

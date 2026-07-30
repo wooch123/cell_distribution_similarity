@@ -20,6 +20,8 @@ import {
   denseIndependentStateArrayFixtures,
   largeTextOnlyFixtures,
 } from "./helpers/large-text-waveform-fixtures.mjs";
+import { rotateRgbFixture } from "./helpers/color-series-fixtures.mjs";
+import { uiScaledRgba } from "./helpers/ui-raster-scale.mjs";
 
 const publicCorpus = JSON.parse(
   await readFile(
@@ -96,6 +98,28 @@ test("large title and body glyphs never become charts at mask, RGB/UI, training,
       );
       assert.equal(rgbResult.fallbackUsed, false);
 
+      const uiRaster = uiScaledRgba(
+        fixture.pixels,
+        fixture.width,
+        fixture.height,
+        fixture.channels,
+      );
+      if (uiRaster.scale !== 1) {
+        const uiResult = detectChartPanels(
+          uiRaster.pixels,
+          uiRaster.width,
+          uiRaster.height,
+          uiRaster.channels,
+          { sourceScale: uiRaster.scale },
+        );
+        assert.equal(
+          uiResult.panels.length,
+          0,
+          "browser raster upscaling must not turn low-resolution glyphs into charts",
+        );
+        assert.equal(uiResult.fallbackUsed, false);
+      }
+
       const bytes = encodeFixture(fixture);
       const analysis = await analyzeSimilarityImage(
         bytes,
@@ -131,6 +155,9 @@ test("large title and body glyphs never become charts at mask, RGB/UI, training,
 test("low-quality JPEG text cards and rotated titles remain non-chart content", async (context) => {
   const selectedNames = new Set([
     "large-normal-title-rotated-positive",
+    "large-single-vector-glyph-w",
+    "low-resolution-single-glyph-s-rotated",
+    "low-resolution-single-vector-glyph-w-rotated",
     "small-two-glyph-caption",
     "large-text-inside-outline-card",
   ]);
@@ -162,6 +189,57 @@ test("low-quality JPEG text cards and rotated titles remain non-chart content", 
           }),
         assertWaveformNotFound,
       );
+    });
+  }
+});
+
+test("PPT text blocks remain non-chart content across rotations that previously exposed glyph fragments", async (context) => {
+  const sourceByName = new Map(
+    largeTextOnlyFixtures().map((fixture) => [
+      fixture.name,
+      fixture,
+    ]),
+  );
+  const cases = [
+    ["large-two-glyph-heading", 7],
+    ["large-multiline-document-copy", 7],
+    ["large-multiline-document-copy", 12],
+    ["large-connected-script-mmmm-title", 7],
+    ["large-connected-script-mmmm-title", 12],
+    ["large-underlined-title", 30],
+  ];
+
+  for (const [name, angle] of cases) {
+    await context.test(`${name} at ${angle} degrees`, async () => {
+      const fixture = rotateRgbFixture(
+        sourceByName.get(name),
+        angle,
+      );
+      const detected = detectChartPanels(
+        fixture.pixels,
+        fixture.width,
+        fixture.height,
+        fixture.channels,
+      );
+      assert.equal(detected.panels.length, 0);
+      assert.equal(detected.fallbackUsed, false);
+
+      if (
+        name === "large-connected-script-mmmm-title" &&
+        angle === 7
+      ) {
+        await assert.rejects(
+          () =>
+            searchSimilarityImage({
+              bytes: fixture.bytes,
+              mimeType: "image/png",
+              topK: 1,
+              corpus: publicCorpus,
+              origin: "https://dove9999.com",
+            }),
+          assertWaveformNotFound,
+        );
+      }
     });
   }
 });

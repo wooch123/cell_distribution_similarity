@@ -117,12 +117,12 @@ Raw 이미지 외에도 `multipart/form-data`의 `image` 파일과
 `node scripts/generate-random-multichart-samples.mjs`, FHD 밀집 샘플은
 `node scripts/generate-fhd-30-chart-sample.mjs`로 재생성합니다.
 같은 샘플과 무작위 배치·저해상도 복원을 포함한 최대 30차트 분리기는
-Windows x64 및 Ubuntu Universal v1.44.0 독립판에도 함께 포함됩니다.
+Windows x64 및 Ubuntu Universal v1.45.0 독립판에도 함께 포함됩니다.
 v1.40.0 화면은 분석된 차트·색상 시리즈별 선택 학습을 지원합니다.
 160×90의 4차트, 240×135의 12차트, 조밀한 표형 격자 위 색상/검정
 유효 파형과 실제 색상 표를 짝지은 회귀로 초저해상도 분리와 표 오판정을
 동시에 검증합니다.
-v1.44.0의 Ubuntu Universal 패키지는 공식 Linux x64와 ARM64 Node
+v1.45.0의 Ubuntu Universal 패키지는 공식 Linux x64와 ARM64 Node
 런타임을 하나의 `.tar.gz`에 포함합니다. `start.sh`가 `uname -m`의
 `x86_64`/`amd64` 또는 `aarch64`/`arm64` 값을 판별해 맞는 런타임을
 자동 선택하며, 매니페스트 플랫폼은 `ubuntu-linux-universal`입니다.
@@ -201,14 +201,14 @@ Ubuntu Universal (x64 + ARM64) 패키지는 별도 외부 Web 서버용
 npm 설치 없이 `.tar.gz`를 풀고 `./start.sh`를 실행하면 현재 Linux
 아키텍처에 맞는 번들 런타임을 선택합니다. 웹 다운로드는 두 운영체제 모두
 schema-v1 매니페스트와 SHA-256 조각 검증을 거쳐 브라우저에서 원본
-패키지를 재조립합니다. v1.44.0의 고정 매니페스트 경로는
-`/downloads/windows-package-v1.44.0.json`과
-`/downloads/ubuntu-package-v1.44.0.json`입니다. Ubuntu 매니페스트는
+패키지를 재조립합니다. v1.45.0의 고정 매니페스트 경로는
+`/downloads/windows-package-v1.45.0.json`과
+`/downloads/ubuntu-package-v1.45.0.json`입니다. Ubuntu 매니페스트는
 `platform: ubuntu-linux-universal`,
 `architectures: [x64, arm64]`와
 `fileName: vth-similarity-ubuntu-universal.tar.gz`를 선언해야 하며,
 다운로드 코어는 이를 검증한 뒤
-`vth-similarity-ubuntu-universal-v1.44.0.tar.gz`로 저장합니다.
+`vth-similarity-ubuntu-universal-v1.45.0.tar.gz`로 저장합니다.
 
 ## 로컬 실행
 

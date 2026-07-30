@@ -128,9 +128,11 @@ export function waveformFailureDiagnostic(
     tableLatticeEvidence === true ||
     (tableLatticeEvidence &&
       typeof tableLatticeEvidence === "object" &&
-      Object.values(tableLatticeEvidence).some(
-        (value) => value === true,
-      ));
+      (tableLatticeEvidence.axisAligned === true ||
+        tableLatticeEvidence.sharedFrame === true ||
+        tableLatticeEvidence.rotated === true ||
+        tableLatticeEvidence.wholeImageFallbackBlocked ===
+          true));
   const geometricCandidateCount =
     detector.geometricCandidateCount ??
     detector.measuredCandidateCount;

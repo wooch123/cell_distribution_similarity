@@ -109,6 +109,36 @@ test("classifies waveform failures by detector evidence without fixed dimensions
   }
 });
 
+test("does not label harmless deskew inspection flags as table evidence", () => {
+  const diagnostic = waveformFailureDiagnostic({
+    diagnostics: {
+      foregroundPixelCount: 100,
+      measuredCandidateCount: 1,
+      tableLatticeDominant: {
+        axisAligned: false,
+        sharedFrame: false,
+        rotated: false,
+        rotatedInspectionPerformed: true,
+        rotatedCurveValid: true,
+        rotatedCurveThinEnough: true,
+        rotatedContinuousWaveformAcrossGuideCells: true,
+        wholeImageFallbackBlocked: false,
+      },
+    },
+    rejectedNonChartCount: 1,
+    lowResolutionRecovery: { applied: false },
+  });
+  assert.equal(diagnostic.reason, "candidates_rejected");
+  assert.equal(
+    diagnostic.diagnosticCode,
+    VTH_DIAGNOSTIC_CODES.candidatesRejected,
+  );
+  assert.equal(
+    diagnostic.diagnostics.tableLatticeDominant,
+    false,
+  );
+});
+
 test("formats the same diagnostic contract for the UI error area", () => {
   const message = diagnosticDisplayMessage({
     message: "표 이미지입니다.",

@@ -20,6 +20,7 @@ import {
   searchSimilarityImage,
   validateTrainingWaveformImage,
 } from "../lib/vth-similarity-api-core.mjs";
+import { shadedNumericTablePng } from "./helpers/table-fixtures.mjs";
 
 const publicCorpus = JSON.parse(
   await readFile(
@@ -1335,6 +1336,7 @@ test("rejects shared-grid waveforms, merged cells, partial grids, and text table
 
 test("rejects colored sparkline tables across grid sizes, broken borders, JPEG, and rotation", async (context) => {
   const baseTable = fourByFiveSparklineTable();
+  const numericTable = decodePng(shadedNumericTablePng());
   const fixtures = [
     ...Array.from({ length: 6 }, (_, index) => {
       const columns = index + 2;
@@ -1359,6 +1361,19 @@ test("rejects colored sparkline tables across grid sizes, broken borders, JPEG, 
       input: encodeTableFixture(
         downsampleRgbNearest(baseTable, 300, 180),
         20,
+      ),
+    },
+    {
+      name: "shaded numeric table rotated 3 degrees",
+      input: encodeTableFixture(
+        rotateRgbNearest(
+          {
+            width: numericTable.width,
+            height: numericTable.height,
+            rgb: numericTable.data,
+          },
+          3,
+        ),
       ),
     },
     ...[2, 15].map((angle) => ({
