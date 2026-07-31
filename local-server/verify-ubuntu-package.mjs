@@ -715,13 +715,19 @@ async function verifyLanBrowserSmoke({
     for (let attempt = 0; attempt < 300; attempt += 1) {
       readyState = await execute(`
         const demo = document.querySelector('[data-testid="demo-button"]');
+        const runtimeStatus = document.querySelector('.header-meta');
         return {
           hostname: location.hostname,
           secure: isSecureContext,
           nativeRandomUuid: window.__vthNativeRandomUuidType,
           randomUUID: typeof crypto.randomUUID,
           getRandomValues: typeof crypto.getRandomValues,
-          offline: document.body.innerText.includes('OFFLINE · LOCAL ONLY'),
+          // .header-meta is intentionally hidden below 1050 px. WebDriver's
+          // default 800 px viewport therefore omits it from innerText even
+          // though React has resolved the standalone runtime correctly.
+          offline: Boolean(
+            runtimeStatus?.textContent?.includes('OFFLINE · LOCAL ONLY')
+          ),
           downloads: Boolean(document.querySelector('[data-testid="ubuntu-download"]')),
           demoReady: Boolean(demo && !demo.disabled),
           alert: document.querySelector('[role="alert"]')?.textContent || ''
