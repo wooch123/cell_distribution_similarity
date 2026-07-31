@@ -365,8 +365,6 @@ export function isAllowedSharedTrainingOrigin(value) {
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return false;
   return (
-    url.hostname === "dove9999.com" ||
-    url.hostname.endsWith(".chatgpt.site") ||
     url.hostname === "127.0.0.1" ||
     url.hostname === "localhost"
   );

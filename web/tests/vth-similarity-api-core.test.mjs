@@ -339,7 +339,7 @@ function lowResolutionScatteredPanelPng() {
 test("parses a raw PNG similarity request and query-string topK", async () => {
   const parsed = await parseSimilarityImageRequest(
     new Request(
-      "https://dove9999.com/api/v1/similarity-search?topK=5",
+      "http://127.0.0.1:4173/api/v1/similarity-search?topK=5",
       {
         method: "POST",
         headers: {
@@ -357,7 +357,7 @@ test("parses a raw PNG similarity request and query-string topK", async () => {
 
 test("parses a JSON data URL similarity request and body topK", async () => {
   const parsed = await parseSimilarityImageRequest(
-    new Request("https://dove9999.com/api/v1/similarity-search", {
+    new Request("http://127.0.0.1:4173/api/v1/similarity-search", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -383,7 +383,7 @@ test("parses a multipart image and form topK", async () => {
   );
   form.append("topK", "4");
   const parsed = await parseSimilarityImageRequest(
-    new Request("https://dove9999.com/api/v1/similarity-search", {
+    new Request("http://127.0.0.1:4173/api/v1/similarity-search", {
       method: "POST",
       body: form,
     }),
@@ -398,7 +398,7 @@ test("rejects unsupported content types and invalid topK values", async () => {
   await assert.rejects(
     () =>
       parseSimilarityImageRequest(
-        new Request("https://dove9999.com/api/v1/similarity-search", {
+        new Request("http://127.0.0.1:4173/api/v1/similarity-search", {
           method: "POST",
           headers: {
             "content-type": "image/gif",
@@ -418,7 +418,7 @@ test("rejects unsupported content types and invalid topK values", async () => {
     () =>
       parseSimilarityImageRequest(
         new Request(
-          "https://dove9999.com/api/v1/similarity-search?topK=11",
+          "http://127.0.0.1:4173/api/v1/similarity-search?topK=11",
           {
             method: "POST",
             headers: {
@@ -443,7 +443,7 @@ test("searches the public corpus and returns ordered absolute-URL results", asyn
     mimeType: "image/png",
     topK: 5,
     corpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
 
   assert.equal(response.query.mimeType, "image/png");
@@ -498,7 +498,7 @@ test("searches the public corpus and returns ordered absolute-URL results", asyn
     assert.equal(result.stateCount, response.query.stateCount);
     assert.match(
       result.imageUrl,
-      /^https:\/\/dove9999\.com\/(?:corpus|api)\//,
+      /^http:\/\/127\.0\.0\.1:4173\/(?:corpus|api)\//,
     );
     assert.doesNotThrow(() => new URL(result.imageUrl));
     assert.ok(Array.isArray(result.reasons));
@@ -520,7 +520,7 @@ test("rejects tables, empty axes, text-like rows, and diagram boxes without a di
         mimeType: "image/png",
         topK: 3,
         corpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       }),
     (error) => {
       assert.ok(error instanceof SimilarityApiError);
@@ -540,7 +540,7 @@ test("rejects a shared-cell table even when one row contains a two-peak sparklin
         mimeType: "image/png",
         topK: 3,
         corpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       }),
     (error) => {
       assert.ok(error instanceof SimilarityApiError);
@@ -559,7 +559,7 @@ test("rejects a shaded numeric table without inventing a whole-image Curve", asy
         mimeType: "image/png",
         topK: 3,
         corpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       }),
     (error) => {
       assert.ok(error instanceof SimilarityApiError);
@@ -576,7 +576,7 @@ test("crops one valid distribution away from surrounding table and explanation c
     mimeType: "image/png",
     topK: 1,
     corpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
 
   assert.equal(response.panelCount, 1);
@@ -598,7 +598,7 @@ test("separates a multi-chart image and ranks every chart independently", async 
     mimeType: "image/png",
     topK: 3,
     corpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
 
   assert.equal(response.panelCount, 2);
@@ -658,7 +658,7 @@ test("upscales and separates low-resolution charts at scattered coordinates", as
     mimeType: "image/png",
     topK: 1,
     corpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
 
   assert.equal(response.panelCount, 6);
@@ -685,7 +685,7 @@ test("API excludes table, diagram, and photo content from a mixed slide", async 
     mimeType: "image/png",
     topK: 1,
     corpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
 
   assert.equal(response.panelCount, 8);
@@ -708,7 +708,7 @@ test("API separates all variable-size charts including a compact single peak", a
     mimeType: "image/png",
     topK: 1,
     corpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
 
   assert.equal(response.panelCount, 8);
@@ -746,7 +746,7 @@ test("API independently ranks chart-only curves without visible panel boundaries
     mimeType: "image/png",
     topK: 1,
     corpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
 
   assert.equal(response.panelCount, 8);
@@ -771,7 +771,7 @@ test("returns independent rankings for twelve charts on one PPT slide", async ()
     mimeType: "image/png",
     topK: 1,
     corpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
 
   assert.equal(response.panelCount, 12);
@@ -816,7 +816,7 @@ test("extracts the intended 4/8-State interiors from the public PPT sample", asy
     mimeType: "image/png",
     topK: 1,
     corpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   const expectedStateCounts = [
     4, 8, 8, 8,

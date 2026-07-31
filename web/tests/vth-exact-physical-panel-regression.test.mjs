@@ -649,7 +649,7 @@ test("similarity API preserves strict disjoint A+B crops at representative 2, 10
         mimeType: fixture.mimeType,
         topK: 1,
         corpus: publicCorpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       });
       assert.equal(response.panelCount, 2);
       assert.equal(response.panelDetection.detectedPanelCount, 2);
@@ -707,7 +707,7 @@ test("similarity API keeps a dominant multi-series plot and remote small real QL
         mimeType: fixture.mimeType,
         topK: 1,
         corpus: publicCorpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       });
       assert.equal(response.panelCount, 2);
       assert.equal(response.panelDetection.detectedPanelCount, 2);

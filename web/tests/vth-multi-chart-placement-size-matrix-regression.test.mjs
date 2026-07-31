@@ -322,7 +322,7 @@ test("search API preserves edge, tight-gap, rotated, variable-size, and FHD layo
       mimeType: "image/png",
       topK: 1,
       corpus: EMPTY_CORPUS,
-      origin: "https://celldist.dove9999.com",
+      origin: "http://127.0.0.1:4173",
     });
     const matching = maximumOneToOnePhysicalMatching(
       response.panels.map((panel) => panel.bounds.source),

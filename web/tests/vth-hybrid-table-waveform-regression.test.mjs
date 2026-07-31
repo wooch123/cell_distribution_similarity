@@ -255,7 +255,7 @@ test("a completely separated valley remains one two-peak distribution inside a t
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://celldist.dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.deepEqual(
     {
@@ -297,7 +297,7 @@ test("one far-separated distribution survives as the table's only waveform", asy
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://celldist.dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
 
   assert.deepEqual(
@@ -330,7 +330,7 @@ test("three separated-lobe cells coexist with five ordinary charts in one table"
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://celldist.dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
 
   assert.deepEqual(
@@ -408,7 +408,7 @@ test("API keeps exact topology for a hybrid table occupying the left half of a s
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://celldist.dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
 
   assert.deepEqual(
@@ -589,7 +589,7 @@ test("localized mixed-table proof keeps five moderate-floor VTH cells after thre
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://celldist.dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.deepEqual(
     {
@@ -671,7 +671,7 @@ test("localized-table API returns only three exact VTH cells beside framed KPI s
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://celldist.dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
 
   assert.deepEqual(
@@ -741,7 +741,7 @@ for (const fixture of
       mimeType: fixture.mimeType,
       topK: 1,
       corpus: publicCorpus,
-      origin: "https://celldist.dove9999.com",
+      origin: "http://127.0.0.1:4173",
     });
     assert.deepEqual(
       {
@@ -789,7 +789,7 @@ test("API returns only the eight waveform cells with exact reading-order topolog
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
 
   assert.deepEqual(

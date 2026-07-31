@@ -171,13 +171,6 @@ async function verifyService(packageDirectory, validationDirectory) {
         `Intra-panel analysis evidence UI is missing: ${evidenceLabel}`,
       );
     }
-    assert(
-      clientScripts.every(
-        (script) => !script.includes("https://dove9999.com"),
-      ),
-      "Standalone client contains a direct dove9999.com endpoint.",
-    );
-
     const runtimeResponse = await fetch(`${baseUrl}/api/v1/runtime`);
     const runtime = await runtimeResponse.json();
     assert(
@@ -733,7 +726,7 @@ async function main() {
       "Offline operation is not documented.",
     );
     assert(
-      !readme.includes("dove9999.com") && !readme.includes("https://"),
+      !readme.includes("https://"),
       "Standalone README contains an external service URL.",
     );
     const manifest = JSON.parse(

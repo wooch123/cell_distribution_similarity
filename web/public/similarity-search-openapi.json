@@ -7,7 +7,7 @@
   },
   "servers": [
     {
-      "url": "https://dove9999.com"
+      "url": "http://127.0.0.1:4173"
     }
   ],
   "paths": {
@@ -100,7 +100,7 @@
           {
             "lang": "Shell",
             "label": "Search a sanitized document and select one training waveform",
-            "source": "curl -sS -X POST 'https://dove9999.com/api/v1/similarity-search?topK=5' -H 'Content-Type: image/jpeg' --data-binary '@document.jpg' > search.json\njq '.panels[0].series[0] | {sourceSelection:.trainingSelection,profile,descriptor}' search.json"
+            "source": "curl -sS -X POST 'http://127.0.0.1:4173/api/v1/similarity-search?topK=5' -H 'Content-Type: image/jpeg' --data-binary '@document.jpg' > search.json\njq '.panels[0].series[0] | {sourceSelection:.trainingSelection,profile,descriptor}' search.json"
           }
         ],
         "responses": {

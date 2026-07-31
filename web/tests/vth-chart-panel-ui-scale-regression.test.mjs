@@ -182,7 +182,7 @@ test("preserves complete small corpus curves after the browser UI raster scale",
       mimeType: "image/png",
       topK: 1,
       corpus,
-      origin: "https://dove9999.com",
+      origin: "http://127.0.0.1:4173",
     });
     assert.equal(response.panelCount, 1);
     assert.equal(response.panelDetection.fallbackUsed, true);

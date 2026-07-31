@@ -175,7 +175,7 @@ test("similarity API preserves all sixteen sweep panels and excludes document di
       mimeType: "image/png",
       topK: 1,
       corpus: publicCorpus,
-      origin: "https://dove9999.com",
+      origin: "http://127.0.0.1:4173",
     });
 
     assertExactFourByFourSweep(response, fixture);

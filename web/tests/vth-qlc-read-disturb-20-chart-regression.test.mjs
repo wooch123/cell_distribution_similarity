@@ -220,7 +220,7 @@ test("similarity API analyzes every colored eight-State VTH panel as one distrib
     mimeType: "image/png",
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
 
   assert.equal(response.panelCount, 20);

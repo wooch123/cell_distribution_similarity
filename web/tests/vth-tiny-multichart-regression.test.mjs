@@ -118,7 +118,7 @@ test("UI and API separate four variable-size charts from a 160 by 90 PNG", async
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.equal(response.panelCount, fixture.expectedChartCount);
   assert.equal(
@@ -166,7 +166,7 @@ test("UI and API separate twelve weak-boundary and single-peak charts from a 240
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.equal(response.panelCount, fixture.expectedChartCount);
   assert.equal(
@@ -210,7 +210,7 @@ test("a real distribution survives a dense table-like grid at tiny resolution", 
     mimeType: fixture.mimeType,
     topK: 2,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.equal(response.panelCount, 1);
   assert.equal(response.panels[0].results.length, 2);
@@ -233,7 +233,7 @@ test("a neutral-black distribution also survives the dense table-like grid", asy
     mimeType: fixture.mimeType,
     topK: 2,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.equal(response.panelCount, 1);
   assert.equal(response.panels[0].seriesCount, 1);
@@ -256,7 +256,7 @@ test("an equally small colored table remains excluded by UI and API", async () =
         mimeType: fixture.mimeType,
         topK: 1,
         corpus: publicCorpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       }),
     (error) => {
       assert.ok(error instanceof SimilarityApiError);

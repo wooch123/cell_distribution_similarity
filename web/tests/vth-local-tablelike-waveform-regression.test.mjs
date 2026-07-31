@@ -114,7 +114,7 @@ async function assertApiTopology(fixture) {
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.deepEqual(
     {

@@ -7,7 +7,7 @@
   },
   "servers": [
     {
-      "url": "https://dove9999.com"
+      "url": "http://127.0.0.1:4173"
     }
   ],
   "paths": {
@@ -86,7 +86,7 @@
           {
             "lang": "Shell",
             "label": "Search then share one selected series",
-            "source": "curl -sS -X POST 'https://dove9999.com/api/v1/similarity-search?topK=5' -H 'Content-Type: image/jpeg' --data-binary '@document.jpg' > search.json\nCONTRIBUTOR_TOKEN=$(openssl rand -hex 32)\nDELETION_TOKEN=$(openssl rand -hex 32)\njq -c --arg contributor \"$CONTRIBUTOR_TOKEN\" --arg deletion \"$DELETION_TOKEN\" '.panels[0].series[0] | {schemaVersion:2,label:\"API selected series\",profile,descriptor,sourceSelection:.trainingSelection,sharingConsent:true,consentVersion:\"2026-07-30-v3\",contributorToken:$contributor,deletionToken:$deletion}' search.json > shared-payload.json\ncurl -sS -X POST 'https://dove9999.com/api/v1/shared-training-samples' -F \"payload=$(cat shared-payload.json)\" -F 'sourceImage=@document.jpg;type=image/jpeg'"
+            "source": "curl -sS -X POST 'http://127.0.0.1:4173/api/v1/similarity-search?topK=5' -H 'Content-Type: image/jpeg' --data-binary '@document.jpg' > search.json\nCONTRIBUTOR_TOKEN=$(openssl rand -hex 32)\nDELETION_TOKEN=$(openssl rand -hex 32)\njq -c --arg contributor \"$CONTRIBUTOR_TOKEN\" --arg deletion \"$DELETION_TOKEN\" '.panels[0].series[0] | {schemaVersion:2,label:\"API selected series\",profile,descriptor,sourceSelection:.trainingSelection,sharingConsent:true,consentVersion:\"2026-07-30-v3\",contributorToken:$contributor,deletionToken:$deletion}' search.json > shared-payload.json\ncurl -sS -X POST 'http://127.0.0.1:4173/api/v1/shared-training-samples' -F \"payload=$(cat shared-payload.json)\" -F 'sourceImage=@document.jpg;type=image/jpeg'"
           }
         ],
         "responses": {

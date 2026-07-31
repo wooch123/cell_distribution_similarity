@@ -55,7 +55,7 @@ profile·descriptor·State를 재생성합니다. 패널/시리즈 배치나 형
 
 ```bash
 curl -sS -X POST \
-  'https://dove9999.com/api/v1/similarity-search?topK=5' \
+  'http://127.0.0.1:4173/api/v1/similarity-search?topK=5' \
   -H 'Content-Type: image/jpeg' --data-binary '@document.jpg' > search.json
 CONTRIBUTOR_TOKEN=$(openssl rand -hex 32)
 DELETION_TOKEN=$(openssl rand -hex 32)
@@ -66,7 +66,7 @@ jq -c --arg contributor "$CONTRIBUTOR_TOKEN" --arg deletion "$DELETION_TOKEN" \
     consentVersion:"2026-07-30-v3",contributorToken:$contributor,
     deletionToken:$deletion}' search.json > shared-payload.json
 curl -sS -X POST \
-  'https://dove9999.com/api/v1/shared-training-samples' \
+  'http://127.0.0.1:4173/api/v1/shared-training-samples' \
   -F "payload=$(cat shared-payload.json)" \
   -F 'sourceImage=@document.jpg;type=image/jpeg'
 ```
@@ -75,7 +75,7 @@ curl -sS -X POST \
 
 ```bash
 curl -X POST \
-  "https://dove9999.com/api/v1/similarity-search?topK=5" \
+  "http://127.0.0.1:4173/api/v1/similarity-search?topK=5" \
   -H "Content-Type: image/png" \
   --data-binary "@vth-graph.png"
 ```
@@ -326,11 +326,10 @@ encoder가 상위 2개만 8% 가중치로 재정렬합니다.
 peak–valley 3장 회귀 게이트를 모두 통과한 모델만 내보냅니다. 실제 제품
 데이터는 익명화와 전문가 relevance 검증 후 별도 버전으로 추가해야 합니다.
 
-## 배포
+## 실행 환경
 
-Cloudflare Worker 호환 vinext 빌드를 사용하며 Sites 프로젝트와
-`dove9999.com` 커스텀 도메인에 연결됩니다. 호스팅 식별자는
-`.openai/hosting.json`에서 관리합니다.
+저장소에는 특정 공개 도메인이나 호스팅 프로젝트 식별자를 포함하지 않습니다.
+개발 서버와 독립 패키지는 로컬 주소에서 실행됩니다.
 공용 후보 메타데이터와 형상은 각각 `DB` D1 binding과
 `VTH_SHARED_IMAGES` R2 binding에 영속 저장됩니다.
 익명 relevance report도 `DB`에 저장되며 두 명 이상의 평가자가 참여한

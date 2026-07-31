@@ -40,7 +40,7 @@ function fixture({
   };
   const requests = [];
   const fetchImpl = async (input) => {
-    const url = new URL(String(input), "https://dove9999.com");
+    const url = new URL(String(input), "http://127.0.0.1:4173");
     requests.push(url.pathname);
     if (url.pathname === manifestPath) {
       return Response.json(manifest);

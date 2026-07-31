@@ -1196,7 +1196,7 @@ test("crops one frameless distribution away from an adjacent table", async () =>
     mimeType: "image/png",
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.equal(response.panelCount, 1);
   assert.equal(response.panelDetection.fallbackUsed, false);
@@ -1456,7 +1456,7 @@ test("rejects colored sparkline tables across grid sizes, broken borders, JPEG, 
             mimeType: input.mimeType,
             topK: 1,
             corpus: publicCorpus,
-            origin: "https://dove9999.com",
+            origin: "http://127.0.0.1:4173",
           }),
         (error) => {
           assert.ok(error instanceof SimilarityApiError);
@@ -1536,7 +1536,7 @@ test("rejects bilinear low-resolution sparkline and floating KPI tables", async 
                 mimeType: input.mimeType,
                 topK: 1,
                 corpus: publicCorpus,
-                origin: "https://dove9999.com",
+                origin: "http://127.0.0.1:4173",
               }),
             (error) => {
               assert.ok(error instanceof SimilarityApiError);
@@ -1631,7 +1631,7 @@ test("rejects ellipse and curved-arrow explanation artwork at mask, RGB, and API
             mimeType: "image/png",
             topK: 1,
             corpus: publicCorpus,
-            origin: "https://dove9999.com",
+            origin: "http://127.0.0.1:4173",
           }),
         (error) => {
           assert.ok(error instanceof SimilarityApiError);
@@ -1721,7 +1721,7 @@ test("accepts representative corpus sources and State counts through the similar
         mimeType: "image/png",
         topK: 1,
         corpus: publicCorpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       });
     } catch (error) {
       assert.fail(

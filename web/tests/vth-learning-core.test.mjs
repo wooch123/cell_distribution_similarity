@@ -263,16 +263,12 @@ test("shared training rejects unconsented or malformed profiles", () => {
   );
 });
 
-test("shared training CORS allowlist covers production and standalone origins", () => {
-  assert.equal(isAllowedSharedTrainingOrigin("https://dove9999.com"), true);
-  assert.equal(
-    isAllowedSharedTrainingOrigin("https://example.chatgpt.site"),
-    true,
-  );
+test("shared training CORS allowlist is restricted to local origins", () => {
   assert.equal(
     isAllowedSharedTrainingOrigin("http://127.0.0.1:4173"),
     true,
   );
+  assert.equal(isAllowedSharedTrainingOrigin("http://localhost:4173"), true);
   assert.equal(isAllowedSharedTrainingOrigin("https://attacker.test"), false);
 });
 
@@ -306,7 +302,7 @@ test("loads all 2,000 shared candidates across keyset pages", async () => {
   );
   let calls = 0;
   const collection = await fetchAllSharedTrainingCandidates({
-    endpoint: "https://dove9999.com/api/v1/shared-training-samples",
+    endpoint: "http://127.0.0.1:4173/api/v1/shared-training-samples",
     fetchImpl: async (input) => {
       calls += 1;
       const url = new URL(input);

@@ -875,7 +875,7 @@ test("keeps an exact 2 by 2 waveform board beside a large title and an outlined 
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://celldist.dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   const apiBounds = response.panels.map(
     (panel) => {
@@ -980,7 +980,7 @@ test("keeps a 2 by 2 waveform lattice and one independent framed waveform", asyn
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://celldist.dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   const apiBounds = response.panels.map(
     (panel) => {

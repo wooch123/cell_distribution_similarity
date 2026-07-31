@@ -383,7 +383,7 @@ test("similarity API returns an independent ranking for every FHD chart", async 
     mimeType: "image/png",
     topK: 1,
     corpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
 
   assert.equal(response.panelCount, 30);

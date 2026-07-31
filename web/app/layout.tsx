@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://dove9999.com"),
+  metadataBase: new URL("http://127.0.0.1:4173"),
   title: {
     default: "유사 산포 검색",
     template: "%s | 유사 산포 검색",

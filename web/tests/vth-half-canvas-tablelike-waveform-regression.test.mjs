@@ -392,7 +392,7 @@ test("grayscale dense guide grid: API and selected-source training preserve five
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
 
   assert.equal(response.panelDetection.fallbackUsed, false);
@@ -656,7 +656,7 @@ test("shared 4x4 lattice: similarity API returns sixteen chart panels and exclud
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.equal(response.panelDetection.fallbackUsed, false);
   assert.equal(response.panelDetection.truncated, false);
@@ -759,7 +759,7 @@ test("guideless shared 4x4 lattice: full-height curve proof recovers sixteen exa
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.equal(
     response.panelDetection.detectedPanelCount,
@@ -824,7 +824,7 @@ test("grayscale shared 4x4 lattice: similarity API preserves exact 1/2/3/4-State
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.equal(response.panelDetection.fallbackUsed, false);
   assert.equal(response.panelDetection.truncated, false);
@@ -937,7 +937,7 @@ test("single-peak shared 4x4 lattice: every chart survives the table signal with
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assertOnlyExpectedCharts(
     response.panels,
@@ -995,7 +995,7 @@ test("single-row shared 1x4 lattice: each physical chart is split and retains ex
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assertOnlyExpectedCharts(
     response.panels,
@@ -1046,7 +1046,7 @@ test("multi-peak sparkline text table: similarity API rejects the document as no
         mimeType: fixture.mimeType,
         topK: 1,
         corpus: publicCorpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       }),
     (error) => {
       assert.ok(error instanceof SimilarityApiError);
@@ -1092,7 +1092,7 @@ test("guided multi-peak sparkline text table: internal rules cannot impersonate 
         mimeType: fixture.mimeType,
         topK: 1,
         corpus: publicCorpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       }),
     (error) => {
       assert.ok(error instanceof SimilarityApiError);
@@ -1144,7 +1144,7 @@ test("guided single-row 1x4 sparkline text table: local shared boundaries remain
         mimeType: fixture.mimeType,
         topK: 1,
         corpus: publicCorpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       }),
     (error) => {
       assert.ok(error instanceof SimilarityApiError);
@@ -1183,7 +1183,7 @@ test("rotated single-row sparkline text tables remain non-chart content", async 
               mimeType: fixture.mimeType,
               topK: 1,
               corpus: publicCorpus,
-              origin: "https://dove9999.com",
+              origin: "http://127.0.0.1:4173",
             }),
           (error) => {
             assert.ok(error instanceof SimilarityApiError);
@@ -1271,7 +1271,7 @@ for (const fixture of fixtures) {
       mimeType: fixture.mimeType,
       topK: 1,
       corpus: publicCorpus,
-      origin: "https://dove9999.com",
+      origin: "http://127.0.0.1:4173",
     });
 
     assert.equal(response.panelDetection.fallbackUsed, false);

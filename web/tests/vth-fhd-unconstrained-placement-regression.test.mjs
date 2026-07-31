@@ -359,7 +359,7 @@ test("similarity API ranks every arbitrary FHD waveform independently without ra
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   const elapsedMs = performance.now() - startedAt;
   const sourceBounds = response.panels.map(

@@ -9,7 +9,6 @@ import {
 } from "../lib/vth-download-core.mjs";
 import { descriptorFromProfile } from "../lib/vth-shape-core.mjs";
 
-const projectRoot = new URL("../", import.meta.url);
 const distClientRoot = new URL("../dist/client/", import.meta.url);
 
 function assetsFromDist() {
@@ -741,7 +740,6 @@ test("shares standardized candidates and anonymous relevance labels centrally", 
     source,
     /canvasToVerificationJpeg\(documentCanvas\)/,
   );
-  assert.doesNotMatch(source, /https:\/\/dove9999\.com/);
   assert.match(source, /\/api\/v1\/runtime/);
   assert.match(source, /externalNetworkAllowed/);
   assert.match(source, /data-testid="windows-download"/);
@@ -995,14 +993,7 @@ test("publishes the complete 30-panel similarity API contract", async () => {
   );
 });
 
-test("hosting metadata is ready for Sites ownership", async () => {
-  const hosting = JSON.parse(
-    await readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
-  );
-  assert.equal(hosting.d1, "DB");
-  assert.equal(hosting.r2, "VTH_SHARED_IMAGES");
-  assert.match(hosting.project_id, /^appgprj_[a-f0-9]+$/);
-  await access(new URL("vite.config.ts", projectRoot));
+test("shared API schemas remain available without hosted-site metadata", async () => {
   const openapi = JSON.parse(
     await readFile(
       new URL("../public/shared-training-openapi.json", import.meta.url),

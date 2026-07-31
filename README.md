@@ -11,9 +11,9 @@ valley, tail 형상을 비교합니다.
 현재 1차 MVP는 합성 데이터 생성부터 외부 이미지 Top-K 추천까지 한 번에
 실행할 수 있습니다.
 
-## 웹 데모
+## 로컬 웹 실행
 
-배포 주소: [https://dove9999.com](https://dove9999.com)
+기본 주소: `http://127.0.0.1:4173`
 
 PNG/JPEG/WEBP 로그 스케일 VTH 그래프를 파일 선택, 끌어놓기 또는
 클립보드 붙여넣기로 넣으면 브라우저 안에서 그래프 영역과 Curve를 추출하고
@@ -200,10 +200,10 @@ Windows 패키지 내부에는 다운로드 자산을 다시 넣지 않아 재�
 - `GET /api/v1/openapi.json`: OpenAPI 3.1 문서
 
 호스팅 공용 학습 API 문서는
-`https://dove9999.com/shared-training-openapi.json`에서 제공합니다.
+`http://127.0.0.1:4173/shared-training-openapi.json`에서 제공합니다.
 외부 시스템용 검색 API는 호스팅과 로컬 패키지에서 같은
 `POST /api/v1/similarity-search` 계약을 사용합니다. 호스팅 계약은
-`https://dove9999.com/similarity-search-openapi.json`에서 확인할 수
+`http://127.0.0.1:4173/similarity-search-openapi.json`에서 확인할 수
 있습니다. PNG/JPEG 원본 바이트, multipart 파일 또는 Base64 data URL을
 받고 기본 8개(최대 10개)를 반환합니다. 점수는 0~1 범위의 형상 유사도이며
 확률을 뜻하지 않습니다. 검색 입력은 학습 데이터로 저장되지 않습니다.
@@ -248,7 +248,7 @@ curl -sS -X POST 'http://127.0.0.1:4173/api/v1/training-samples' \
 
 ```bash
 curl -sS -X POST \
-  'https://dove9999.com/api/v1/similarity-search?topK=5' \
+  'http://127.0.0.1:4173/api/v1/similarity-search?topK=5' \
   -H 'Content-Type: image/jpeg' --data-binary '@document.jpg' > search.json
 
 CONTRIBUTOR_TOKEN=$(openssl rand -hex 32)
@@ -261,7 +261,7 @@ jq -c --arg contributor "$CONTRIBUTOR_TOKEN" --arg deletion "$DELETION_TOKEN" \
     deletionToken:$deletion}' search.json > shared-payload.json
 
 curl -sS -X POST \
-  'https://dove9999.com/api/v1/shared-training-samples' \
+  'http://127.0.0.1:4173/api/v1/shared-training-samples' \
   -F "payload=$(cat shared-payload.json)" \
   -F 'sourceImage=@document.jpg;type=image/jpeg'
 ```
@@ -390,7 +390,7 @@ python -m pip install -e ".[dev]"
 
 # 공용 서버 export도 같은 명령에서 report별로 안전하게 분리·집계
 curl -o /absolute/path/to/shared-relevance-export.json \
-  https://dove9999.com/api/v1/shared-relevance-export
+  http://127.0.0.1:4173/api/v1/shared-relevance-export
 .venv/bin/vnand-similarity --root . ingest-feedback \
   /absolute/path/to/shared-relevance-export.json
 

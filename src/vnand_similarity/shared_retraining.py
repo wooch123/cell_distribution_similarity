@@ -17,7 +17,7 @@ from .feedback import ingest_feedback_reports, load_feedback_dataset
 from .model_selection import compare_rerankers_on_feedback
 from .training import train_pairwise_reranker
 
-DEFAULT_SHARED_RELEVANCE_ENDPOINT = "https://dove9999.com/api/v1/shared-relevance-export"
+DEFAULT_SHARED_RELEVANCE_ENDPOINT = "http://127.0.0.1:4173/api/v1/shared-relevance-export"
 FetchJson = Callable[[str, float], dict[str, Any]]
 
 

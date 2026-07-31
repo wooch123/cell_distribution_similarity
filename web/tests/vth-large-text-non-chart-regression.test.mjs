@@ -143,7 +143,7 @@ test("large title and body glyphs never become charts at mask, RGB/UI, training,
             mimeType: "image/png",
             topK: 1,
             corpus: publicCorpus,
-            origin: "https://dove9999.com",
+            origin: "http://127.0.0.1:4173",
           }),
         assertWaveformNotFound,
         "the public API must reject text-only input",
@@ -185,7 +185,7 @@ test("low-quality JPEG text cards and rotated titles remain non-chart content", 
             mimeType: "image/jpeg",
             topK: 1,
             corpus: publicCorpus,
-            origin: "https://dove9999.com",
+            origin: "http://127.0.0.1:4173",
           }),
         assertWaveformNotFound,
       );
@@ -235,7 +235,7 @@ test("PPT text blocks remain non-chart content across rotations that previously 
               mimeType: "image/png",
               topK: 1,
               corpus: publicCorpus,
-              origin: "https://dove9999.com",
+              origin: "http://127.0.0.1:4173",
             }),
           assertWaveformNotFound,
         );
@@ -277,7 +277,7 @@ test("shape-based text rejection preserves genuine single- and multi-peak charts
         mimeType: "image/png",
         topK: 1,
         corpus: publicCorpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       });
       assert.equal(response.panels.length, 1);
       assert.equal(
@@ -331,7 +331,7 @@ test("dense independent 16-State thumbnails remain searchable and trainable", as
         mimeType: "image/png",
         topK: 1,
         corpus: publicCorpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       });
       assert.equal(response.panels.length, 1);
       assert.equal(

@@ -374,7 +374,7 @@ test("encoded API path removes a rotated valley label without changing panel, se
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: EMPTY_CORPUS,
-    origin: "https://celldist.dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
 
   assert.equal(response.panelCount, fixture.expected.panelCount);
@@ -430,7 +430,7 @@ test("encoded API removes above, below, valley, and tail labels without inferred
         mimeType: fixture.mimeType,
         topK: 1,
         corpus: EMPTY_CORPUS,
-        origin: "https://celldist.dove9999.com",
+        origin: "http://127.0.0.1:4173",
       });
       assert.equal(
         response.panelCount,
@@ -480,7 +480,7 @@ test("low-resolution label API matrix returns exact topology or an explicit diag
           mimeType: fixture.mimeType,
           topK: 1,
           corpus: EMPTY_CORPUS,
-          origin: "https://celldist.dove9999.com",
+          origin: "http://127.0.0.1:4173",
         });
       } catch (error) {
         failure = error;
@@ -611,7 +611,7 @@ test("a cross-scale-stable zero-depth label spur is still rejected as low-resolu
       mimeType: fixture.mimeType,
       topK: 1,
       corpus: EMPTY_CORPUS,
-      origin: "https://celldist.dove9999.com",
+      origin: "http://127.0.0.1:4173",
     }),
     (error) => {
       assert.equal(
@@ -638,7 +638,7 @@ test("training provenance rejects fragmented and cross-scale-inconsistent low-re
     mimeType: reference.mimeType,
     topK: 1,
     corpus: EMPTY_CORPUS,
-    origin: "https://celldist.dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   const fragmented = lowResolutionLabelApiFixtures().find(
     (fixture) =>
@@ -828,7 +828,7 @@ test("persistent narrow outer States and close peak-valleys survive low-resoluti
         mimeType: fixture.mimeType,
         topK: 1,
         corpus: EMPTY_CORPUS,
-        origin: "https://celldist.dove9999.com",
+        origin: "http://127.0.0.1:4173",
       });
       assert.equal(
         response.panelCount,
@@ -906,7 +906,7 @@ test("five-degree 350px labeled charts keep exact search and training provenance
       mimeType: fixture.mimeType,
       topK: 1,
       corpus: EMPTY_CORPUS,
-      origin: "https://celldist.dove9999.com",
+      origin: "http://127.0.0.1:4173",
     });
     const validated = await validateTrainingWaveformImage({
       bytes: fixture.bytes,
@@ -934,7 +934,7 @@ test("low-resolution frame cleanup does not collapse a real labeled six-State cu
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: EMPTY_CORPUS,
-    origin: "https://celldist.dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.equal(response.panelCount, fixture.expected.panelCount);
   assert.equal(
@@ -969,7 +969,7 @@ test("two spatially separate low-resolution frameless charts are not collapsed i
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: EMPTY_CORPUS,
-    origin: "https://celldist.dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.equal(response.panelCount, fixture.expected.panelCount);
   assert.deepEqual(
@@ -999,7 +999,7 @@ test("two same-row low-resolution frameless charts remain independent panels", a
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: EMPTY_CORPUS,
-    origin: "https://celldist.dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.equal(response.panelCount, fixture.expected.panelCount);
   assert.deepEqual(
@@ -1032,7 +1032,7 @@ test("far-separated peak matrix stays one chart and one distribution with exact 
         mimeType: fixture.mimeType,
         topK: 1,
         corpus: EMPTY_CORPUS,
-        origin: "https://celldist.dove9999.com",
+        origin: "http://127.0.0.1:4173",
       });
       assert.equal(
         response.panelCount,
@@ -1291,7 +1291,7 @@ test("representative State-hue far-separated PNGs preserve exact API topology", 
         mimeType: fixture.mimeType,
         topK: 1,
         corpus: EMPTY_CORPUS,
-        origin: "https://celldist.dove9999.com",
+        origin: "http://127.0.0.1:4173",
       });
       assertExactFarSeparatedApiResponse(fixture, response);
     });
@@ -1327,7 +1327,7 @@ test("representative JPEG State-hue segments remain one exact distribution", asy
         mimeType: "image/jpeg",
         topK: 1,
         corpus: EMPTY_CORPUS,
-        origin: "https://celldist.dove9999.com",
+        origin: "http://127.0.0.1:4173",
       });
       assertExactFarSeparatedApiResponse(fixture, response);
     });
@@ -1355,7 +1355,7 @@ test("low-resolution State-hue segments remain one exact distribution", async (c
         mimeType: fixture.mimeType,
         topK: 1,
         corpus: EMPTY_CORPUS,
-        origin: "https://celldist.dove9999.com",
+        origin: "http://127.0.0.1:4173",
       });
       assertExactFarSeparatedApiResponse(fixture, response);
     });

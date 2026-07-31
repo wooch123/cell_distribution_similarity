@@ -614,7 +614,7 @@ test("similarity API returns one independent ranking for every arbitrarily posit
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   const sourceBounds = response.panels.map(
     ({ bounds }) => bounds.source,

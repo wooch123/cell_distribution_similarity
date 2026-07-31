@@ -426,7 +426,7 @@ test("similarity API independently ranks every realistic 1, 3, 7, and 11 chart J
     mimeType: "image/png",
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.equal(sourceBaselineResponse.panelCount, 20);
   const sourceObservedStateBaselines =
@@ -445,7 +445,7 @@ test("similarity API independently ranks every realistic 1, 3, 7, and 11 chart J
         mimeType: fixture.mimeType,
         topK: 1,
         corpus: publicCorpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       });
       const sourceBounds = response.panels.map(
         ({ bounds }) => bounds.source,

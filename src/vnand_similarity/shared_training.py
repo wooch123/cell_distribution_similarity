@@ -20,7 +20,7 @@ from .pipeline import build_vector_index
 from .store import SQLiteVectorStore
 from .synthetic import DEFAULT_LOG_Y_FLOOR, SyntheticVthSample
 
-DEFAULT_SHARED_TRAINING_ENDPOINT = "https://dove9999.com/api/v1/shared-training-samples"
+DEFAULT_SHARED_TRAINING_ENDPOINT = "http://127.0.0.1:4173/api/v1/shared-training-samples"
 MAX_SHARED_CANDIDATES = 2000
 MAX_SHARED_PAGE_SIZE = 500
 SHARED_SOURCE = "shared-training-api"

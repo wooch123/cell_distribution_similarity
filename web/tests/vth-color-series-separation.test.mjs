@@ -463,7 +463,7 @@ test("keeps a full-width single-peak color independent from a multi-peak color t
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.equal(response.panelCount, 1);
   assert.equal(response.panels[0].seriesCount, 2);
@@ -568,7 +568,7 @@ test("rejects neutral diagonal and horizontal guides without collapsing two real
         mimeType: fixture.mimeType,
         topK: 1,
         corpus: publicCorpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       });
       assert.equal(response.panelCount, 1);
       assert.equal(response.panels[0].seriesCount, 2);
@@ -643,7 +643,7 @@ test("collapses red, blue, and black traces to the most-irregular target without
     mimeType: fixture.mimeType,
     topK: 2,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.equal(response.panelCount, 1);
   assert.equal(response.panels[0].seriesCount, 1);
@@ -739,7 +739,7 @@ test("combines one chromatic trace with one achromatic residual trace", async ()
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.equal(response.panelCount, 1);
   assert.equal(response.panels[0].seriesCount, 2);
@@ -794,7 +794,7 @@ test("joins State-segment colors before pairing the distribution with a black tr
     mimeType: fixture.mimeType,
     topK: 1,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.equal(response.panelCount, 1);
   assert.equal(response.panels[0].seriesCount, 2);
@@ -858,7 +858,7 @@ test("keeps the most-irregular red, blue, or black target stable after slight ch
         mimeType: fixture.mimeType,
         topK: 1,
         corpus: publicCorpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       });
       assert.equal(response.panelCount, 1);
       assert.equal(response.panels[0].seriesCount, 1);
@@ -898,7 +898,7 @@ test("preserves the single-series response contract for a monochrome chart", asy
     mimeType: fixture.mimeType,
     topK: 2,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
   assert.equal(response.panelCount, 1);
   assert.equal(response.panels[0].seriesCount, 1);
@@ -929,7 +929,7 @@ test("search API ranks two color series independently and collapses larger sets"
         mimeType: fixture.mimeType,
         topK: 2,
         corpus: publicCorpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       });
 
       assert.equal(
@@ -1434,7 +1434,7 @@ test("keeps physical panel and color-series dimensions independent on a mixed sl
     mimeType: fixture.mimeType,
     topK: 2,
     corpus: publicCorpus,
-    origin: "https://dove9999.com",
+    origin: "http://127.0.0.1:4173",
   });
 
   assert.equal(response.panelCount, 2);
@@ -1509,7 +1509,7 @@ test("repeated colored table cells never become color series in search or traini
         mimeType: fixture.mimeType,
         topK: 1,
         corpus: publicCorpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       }),
     (error) => {
       assert.ok(error instanceof SimilarityApiError);
@@ -1615,7 +1615,7 @@ test("a dominant two-colour floating KPI trace cannot bypass the table lattice a
         mimeType: fixture.mimeType,
         topK: 1,
         corpus: publicCorpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       }),
     (error) => {
       assert.ok(error instanceof SimilarityApiError);
@@ -1674,7 +1674,7 @@ test("two-column colored cell tables remain non-chart data across row counts and
             mimeType: fixture.mimeType,
             topK: 1,
             corpus: publicCorpus,
-            origin: "https://dove9999.com",
+            origin: "http://127.0.0.1:4173",
           }),
         (error) => {
           assert.ok(error instanceof SimilarityApiError);
@@ -1743,7 +1743,7 @@ test("rotated multi-column colored cell tables remain non-chart data", async () 
         mimeType: fixture.mimeType,
         topK: 1,
         corpus: publicCorpus,
-        origin: "https://dove9999.com",
+        origin: "http://127.0.0.1:4173",
       }),
     (error) => {
       assert.ok(error instanceof SimilarityApiError);
