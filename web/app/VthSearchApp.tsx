@@ -8,7 +8,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
 
 import {
@@ -60,6 +59,8 @@ import {
   assembleUbuntuPackage,
   assembleWindowsPackage,
 } from "../lib/vth-download-core.mjs";
+import { createRandomUuid } from "../lib/vth-random-core.mjs";
+import { detectStandaloneRuntime } from "../lib/vth-runtime-core.mjs";
 
 type Candidate = {
   id: string;
@@ -351,13 +352,6 @@ const ANALYSIS_ERROR_GUIDE = [
   [VTH_DIAGNOSTIC_CODES.unsupported, "지원하지 않는 이미지 형식"],
   [VTH_DIAGNOSTIC_CODES.resourceLimit, "안전 리소스 한도 초과"],
 ] as const;
-
-function isStandaloneRuntime() {
-  return (
-    typeof window !== "undefined" &&
-    ["127.0.0.1", "localhost"].includes(window.location.hostname)
-  );
-}
 
 function sharedApiUrl(path: string) {
   return path;
@@ -923,11 +917,13 @@ export function VthSearchApp() {
     useState(false);
   const [sharedTrainingAvailable, setSharedTrainingAvailable] = useState(false);
   const [sharedCandidateCount, setSharedCandidateCount] = useState(0);
-  const standaloneMode = useSyncExternalStore(
-    () => () => {},
-    isStandaloneRuntime,
-    () => false,
-  );
+  const [candidateStoreSettled, setCandidateStoreSettled] = useState(false);
+  const [runtimeMode, setRuntimeMode] = useState<
+    "probing" | "standalone" | "hosted"
+  >("probing");
+  const standaloneMode = runtimeMode === "standalone";
+  const hostedMode = runtimeMode === "hosted";
+  const runtimeReady = runtimeMode !== "probing";
   const [isDownloadingWindows, setIsDownloadingWindows] = useState(false);
   const [windowsDownloadStatus, setWindowsDownloadStatus] = useState("");
   const [isDownloadingUbuntu, setIsDownloadingUbuntu] = useState(false);
@@ -1032,7 +1028,7 @@ export function VthSearchApp() {
   const getAnonymousAnnotatorId = () => {
     if (annotatorIdRef.current) return annotatorIdRef.current;
     const createId = () =>
-      `A-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+      `A-${createRandomUuid().replaceAll("-", "").slice(0, 16).toUpperCase()}`;
     try {
       const storageKey = "vth-anonymous-annotator-id";
       const stored = window.localStorage.getItem(storageKey);
@@ -1057,9 +1053,30 @@ export function VthSearchApp() {
 
   useEffect(() => {
     let active = true;
+    const resolveRuntimeMode = async () => {
+      while (active) {
+        const detected = await detectStandaloneRuntime();
+        if (!active) return;
+        if (detected !== null) {
+          setRuntimeMode(detected ? "standalone" : "hosted");
+          return;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+      }
+    };
+    void resolveRuntimeMode();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (runtimeMode === "probing") return;
+    let active = true;
+    let initialLoad = true;
     const loadSharedCandidates = async () => {
       try {
-        if (isStandaloneRuntime()) {
+        if (standaloneMode) {
           const [runtimeResponse, samplesResponse] = await Promise.all([
             fetch("/api/v1/runtime", {
               headers: { accept: "application/json" },
@@ -1072,6 +1089,11 @@ export function VthSearchApp() {
           const collection = (await samplesResponse.json()) as {
             samples?: Candidate[];
           };
+          if (samplesResponse.status === 401) {
+            throw new Error(
+              "로컬 학습 저장소 인증이 필요합니다. Ubuntu 서버 터미널의 access_token 포함 LAN 접속 URL을 처음 한 번 그대로 열어 주세요.",
+            );
+          }
           if (
             !runtimeResponse.ok ||
             !samplesResponse.ok ||
@@ -1134,9 +1156,21 @@ export function VthSearchApp() {
         setLearnedCandidates(sharedCandidates);
         setSharedCandidateCount(collection.candidateCount);
         setSharedTrainingAvailable(true);
-      } catch {
+      } catch (caught) {
         if (!active) return;
         setSharedTrainingAvailable(false);
+        if (standaloneMode && initialLoad) {
+          setError(
+            caught instanceof Error
+              ? caught.message
+              : "로컬 학습 저장소를 불러오지 못했습니다.",
+          );
+        }
+      } finally {
+        if (active && initialLoad) {
+          initialLoad = false;
+          setCandidateStoreSettled(true);
+        }
       }
     };
     void loadSharedCandidates();
@@ -1148,10 +1182,12 @@ export function VthSearchApp() {
       active = false;
       window.clearInterval(refreshTimer);
     };
-  }, []);
+  }, [runtimeMode, standaloneMode]);
 
   useEffect(() => {
-    if (isStandaloneRuntime()) return;
+    if (runtimeMode === "probing" || standaloneMode) {
+      return;
+    }
     let active = true;
     const loadSharedRelevanceStats = async () => {
       try {
@@ -1188,7 +1224,7 @@ export function VthSearchApp() {
       active = false;
       window.clearInterval(refreshTimer);
     };
-  }, []);
+  }, [runtimeMode, standaloneMode]);
 
   useEffect(() => {
     panelQueriesRef.current = panelQueries;
@@ -1221,6 +1257,14 @@ export function VthSearchApp() {
     async (file: File) => {
       setError("");
       if (analysisBusyRef.current) return;
+      if (!runtimeReady) {
+        setError("실행 환경을 확인하고 있습니다. 잠시 후 다시 시도해 주세요.");
+        return;
+      }
+      if (standaloneMode && !candidateStoreSettled) {
+        setError("이 PC의 로컬 학습 후보를 불러오고 있습니다.");
+        return;
+      }
       if (learningBusyRef.current) {
         setError("차트 학습이 끝난 뒤 새 그림을 분석해 주세요.");
         return;
@@ -1286,7 +1330,7 @@ export function VthSearchApp() {
                 },
               ];
           for (const extractedSeries of series) {
-            const analysisId = crypto.randomUUID();
+            const analysisId = createRandomUuid();
             const alternatives =
               series.length === 1 ? extracted.alternatives : [];
             const ranked = searchCorpus(
@@ -1368,7 +1412,7 @@ export function VthSearchApp() {
           )?.queryCode ?? "",
         );
         setTrainingLabel(
-          isStandaloneRuntime() ? "내 VTH 분포" : "공용 VTH 분포",
+          standaloneMode ? "내 VTH 분포" : "공용 VTH 분포",
         );
         setSharingConsent(false);
         setLearningStatus("");
@@ -1396,7 +1440,13 @@ export function VthSearchApp() {
         setIsAnalyzing(false);
       }
     },
-    [allCandidates, corpus],
+    [
+      allCandidates,
+      candidateStoreSettled,
+      corpus,
+      runtimeReady,
+      standaloneMode,
+    ],
   );
 
   const selectAnalyzedPanel = (panelIndex: number) => {
@@ -1506,7 +1556,7 @@ export function VthSearchApp() {
   const submitSharedFeedback = async () => {
     const judgmentSelectionCount = Object.keys(feedback).length;
     if (!analysis || !corpus || !judgmentSelectionCount) return;
-    if (isStandaloneRuntime()) {
+    if (standaloneMode) {
       exportFeedback();
       setFeedbackSubmissionStatus(
         "평가 JSON을 이 PC에 저장했습니다. 외부로 전송하지 않았습니다.",
@@ -1630,7 +1680,7 @@ export function VthSearchApp() {
 
   const removeSubmittedFeedback = async () => {
     if (!submittedFeedbackReportId) return;
-    if (isStandaloneRuntime()) return;
+    if (standaloneMode) return;
     setError("");
     try {
       const deletionToken =
@@ -1816,17 +1866,20 @@ export function VthSearchApp() {
   };
 
   const assertTrainingReady = () => {
+    if (!runtimeReady) {
+      throw new Error("실행 환경을 확인하고 있습니다. 잠시 후 다시 시도해 주세요.");
+    }
     if (!sharingConsent) {
       throw new Error(
-        isStandaloneRuntime()
+        standaloneMode
           ? "표준 Curve를 이 PC의 학습 저장소에 보관하는 데 동의해 주세요."
           : "표준 Curve의 공용 학습 후보 공유에 동의해 주세요.",
       );
     }
     if (!sharedTrainingAvailable) {
       throw new Error(
-        isStandaloneRuntime()
-          ? "이 PC의 로컬 학습 저장소를 사용할 수 없습니다."
+        standaloneMode
+          ? "이 PC의 로컬 학습 저장소를 사용할 수 없습니다. Ubuntu 서버 터미널의 access_token 포함 LAN 접속 URL을 다시 열어 주세요."
           : "공용 학습 저장소에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.",
       );
     }
@@ -1840,9 +1893,9 @@ export function VthSearchApp() {
     // The server crops and persists only the selected panel, so unrelated
     // slide text/tables are neither learned nor shown as the source preview.
     const sourceImageBlob = trainingAnalysis.sourceDocumentBlob;
-    if (isStandaloneRuntime()) {
+    if (standaloneMode) {
       const pendingCandidate = buildLearnedCandidate({
-        id: `local-${crypto.randomUUID()}`,
+        id: `local-${createRandomUuid()}`,
         label,
         image: "",
         profile: trainingAnalysis.profile,
@@ -1906,7 +1959,7 @@ export function VthSearchApp() {
     }
     const deletionToken = createSharingToken();
     const pendingCandidate = buildLearnedCandidate({
-      id: `shared-pending-${crypto.randomUUID()}`,
+      id: `shared-pending-${createRandomUuid()}`,
       label,
       image: "",
       profile: trainingAnalysis.profile,
@@ -2009,7 +2062,7 @@ export function VthSearchApp() {
       assertTrainingReady();
       const baseLabel =
         trainingLabel.trim() ||
-        (isStandaloneRuntime() ? "내 VTH 분포" : "공용 VTH 분포");
+        (standaloneMode ? "내 VTH 분포" : "공용 VTH 분포");
       const outcomes = [];
       const failures: string[] = [];
       for (const [unitIndex, panelQuery] of trainingQueries.entries()) {
@@ -2059,7 +2112,7 @@ export function VthSearchApp() {
               `${failures.length ? ` · 실패 ${failures.length}개` : ""}`
           : deduplicated
             ? "동일한 형상이 이미 학습 코퍼스에 있어 기존 후보와 연결했습니다."
-            : isStandaloneRuntime()
+            : standaloneMode
               ? "표준 Curve와 메타데이터를 제거한 원본 미리보기를 이 PC의 data 폴더에 저장했습니다. 추천 시 함께 표시되며 외부 전송은 없습니다."
               : "표준 Curve와 메타데이터를 제거한 원본 미리보기를 공용 학습 코퍼스에 등록했습니다. 추천 시 원본도 함께 표시되며 다른 사용자의 검색에도 즉시 노출됩니다.",
       );
@@ -2118,7 +2171,7 @@ export function VthSearchApp() {
             trainingLabel,
             index,
             total,
-            isStandaloneRuntime(),
+            standaloneMode,
           );
           for (const [panelIndex, extracted] of
             documentAnalysis.panels.entries()) {
@@ -2149,7 +2202,7 @@ export function VthSearchApp() {
                 seriesCount: series.length,
               });
               const trainingAnalysis: Analysis = {
-                id: crypto.randomUUID(),
+                id: createRandomUuid(),
                 fileName: suffix ? `${file.name} · ${suffix}` : file.name,
                 imageUrl,
                 sourceDocumentBlob:
@@ -2312,7 +2365,7 @@ export function VthSearchApp() {
   };
 
   const deleteLearnedCandidate = async (candidateId: string) => {
-    if (isStandaloneRuntime()) {
+    if (standaloneMode) {
       const response = await fetch(
         `/api/v1/training-samples/${encodeURIComponent(candidateId)}`,
         {
@@ -2571,9 +2624,9 @@ export function VthSearchApp() {
           <a
             className="search-api-docs"
             href={
-              standaloneMode
-                ? "/api/v1/openapi.json"
-                : "/similarity-search-openapi.json"
+              hostedMode
+                ? "/similarity-search-openapi.json"
+                : "/api/v1/openapi.json"
             }
             target="_blank"
             rel="noreferrer"
@@ -2586,12 +2639,17 @@ export function VthSearchApp() {
             <div
               className="standalone-downloads"
               aria-label="운영체제별 단독 실행 패키지 다운로드"
+              hidden={!hostedMode}
             >
               <button
                 type="button"
                 className="windows-download"
                 onClick={() => void downloadWindowsStandalone()}
-                disabled={isDownloadingWindows || isDownloadingUbuntu}
+                disabled={
+                  !hostedMode ||
+                  isDownloadingWindows ||
+                  isDownloadingUbuntu
+                }
                 data-testid="windows-download"
                 aria-label="Windows x64 완전 독립 실행판 ZIP 다운로드"
               >
@@ -2606,7 +2664,11 @@ export function VthSearchApp() {
                 type="button"
                 className="windows-download ubuntu-download"
                 onClick={() => void downloadUbuntuStandalone()}
-                disabled={isDownloadingWindows || isDownloadingUbuntu}
+                disabled={
+                  !hostedMode ||
+                  isDownloadingWindows ||
+                  isDownloadingUbuntu
+                }
                 data-testid="ubuntu-download"
                 aria-label="Ubuntu x64 및 ARM64 외부 Web 서버 독립판 다운로드"
               >
@@ -2627,7 +2689,13 @@ export function VthSearchApp() {
                 : "Index loading"}
             </span>
             <span className="header-divider" />
-            <span>{standaloneMode ? "OFFLINE · LOCAL ONLY" : "LOG10 ENGINE"}</span>
+            <span>
+              {standaloneMode
+                ? "OFFLINE · LOCAL ONLY"
+                : hostedMode
+                  ? "LOG10 ENGINE"
+                  : "RUNTIME CHECK"}
+            </span>
           </div>
         </div>
       </header>
@@ -2638,9 +2706,11 @@ export function VthSearchApp() {
           <div className="panel-topline">
             <span>INPUT / VTH DISTRIBUTION</span>
             <span className="privacy-label">
-              {standaloneMode
-                ? "완전 오프라인 · 원본/Curve 외부 전송 없음"
-                : "동의 시 표준 Curve + 원본 미리보기를 공용 학습"}
+              {!runtimeReady
+                ? "실행 환경 확인 중"
+                : standaloneMode
+                  ? "완전 오프라인 · 원본/Curve 외부 전송 없음"
+                  : "동의 시 표준 Curve + 원본 미리보기를 공용 학습"}
             </span>
           </div>
           <div
@@ -2933,7 +3003,10 @@ export function VthSearchApp() {
                 className="drop-action"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={
-                  isAnalyzing || isLearning || isSubmittingFeedback
+                  !runtimeReady ||
+                  isAnalyzing ||
+                  isLearning ||
+                  isSubmittingFeedback
                 }
               >
                 <span className="upload-glyph" aria-hidden="true">
@@ -2952,7 +3025,12 @@ export function VthSearchApp() {
             type="file"
             accept={ACCEPTED_TYPES.join(",")}
             onChange={handleInput}
-            disabled={isAnalyzing || isLearning || isSubmittingFeedback}
+            disabled={
+              !runtimeReady ||
+              isAnalyzing ||
+              isLearning ||
+              isSubmittingFeedback
+            }
             className="visually-hidden"
             data-testid="file-input"
           />
@@ -2962,7 +3040,7 @@ export function VthSearchApp() {
             accept={ACCEPTED_TYPES.join(",")}
             multiple
             onChange={handleBatchInput}
-            disabled={isAnalyzing || isLearning}
+            disabled={!runtimeReady || isAnalyzing || isLearning}
             className="visually-hidden"
             data-testid="batch-files-input"
           />
@@ -2978,7 +3056,7 @@ export function VthSearchApp() {
             accept={ACCEPTED_TYPES.join(",")}
             multiple
             onChange={handleBatchInput}
-            disabled={isAnalyzing || isLearning}
+            disabled={!runtimeReady || isAnalyzing || isLearning}
             className="visually-hidden"
             data-testid="batch-folder-input"
           />
@@ -2988,7 +3066,10 @@ export function VthSearchApp() {
               className="primary-button"
               onClick={() => fileInputRef.current?.click()}
               disabled={
-                isAnalyzing || isLearning || isSubmittingFeedback
+                !runtimeReady ||
+                isAnalyzing ||
+                isLearning ||
+                isSubmittingFeedback
               }
             >
               {isAnalyzing ? "형상 분석 중…" : analysis ? "다른 그래프 분석" : "그래프 선택"}
@@ -3001,6 +3082,8 @@ export function VthSearchApp() {
                 isAnalyzing ||
                 isLearning ||
                 isSubmittingFeedback ||
+                !runtimeReady ||
+                (standaloneMode && !candidateStoreSettled) ||
                 !corpus
               }
               data-testid="demo-button"
@@ -3015,6 +3098,8 @@ export function VthSearchApp() {
                 isAnalyzing ||
                 isLearning ||
                 isSubmittingFeedback ||
+                !runtimeReady ||
+                (standaloneMode && !candidateStoreSettled) ||
                 !corpus
               }
               data-testid="random-multichart-sample-analyze"
@@ -3578,7 +3663,7 @@ export function VthSearchApp() {
                 )}
               </small>
             </div>
-            {!standaloneMode && <div className="feedback-session">
+            {hostedMode && <div className="feedback-session">
               <div className="feedback-session-fields">
                 <label htmlFor="feedback-query-code">
                   <span>공유 Query 코드</span>
@@ -3610,7 +3695,7 @@ export function VthSearchApp() {
                 같은 그림은 같은 Query 코드, 평가자는 서로 다른 익명 코드를 사용하세요.
               </small>
             </div>}
-            {!standaloneMode && <label className="feedback-sharing-consent">
+            {hostedMode && <label className="feedback-sharing-consent">
               <input
                 type="checkbox"
                 checked={feedbackSharingConsent}
@@ -3633,7 +3718,7 @@ export function VthSearchApp() {
               >
                 평가 JSON 저장
               </button>
-              {!standaloneMode && <button
+              {hostedMode && <button
                 type="button"
                 onClick={() => void submitSharedFeedback()}
                 disabled={
@@ -3646,7 +3731,7 @@ export function VthSearchApp() {
               >
                 {isSubmittingFeedback ? "공용 제출 중…" : "공용 학습 라벨 제출"}
               </button>}
-              {!standaloneMode && submittedFeedbackReportId && (
+              {hostedMode && submittedFeedbackReportId && (
                 <button
                   type="button"
                   className="feedback-delete"

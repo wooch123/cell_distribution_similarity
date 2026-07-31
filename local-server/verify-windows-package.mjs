@@ -48,6 +48,31 @@ async function assertMissing(filePath, message) {
   throw new Error(message);
 }
 
+async function verifyPlainHttpBrowserClient(packageDirectory) {
+  const clientDirectory = path.join(packageDirectory, "site", "client");
+  const viteManifest = JSON.parse(
+    await readFile(
+      path.join(clientDirectory, ".vite", "manifest.json"),
+      "utf8",
+    ),
+  );
+  const browserEntry = viteManifest["app/VthSearchApp.tsx"]?.file;
+  assert(
+    typeof browserEntry === "string" && browserEntry.startsWith("assets/"),
+    "Windows package does not expose the VTH browser entry.",
+  );
+  const browserSource = await readFile(
+    path.join(clientDirectory, browserEntry),
+    "utf8",
+  );
+  assert(
+    browserSource.includes("/api/v1/runtime") &&
+      browserSource.includes("getRandomValues") &&
+      !browserSource.includes(".randomUUID("),
+    "Windows browser client lacks the shared HTTP compatibility path.",
+  );
+}
+
 async function sha256(filePath) {
   return createHash("sha256")
     .update(await readFile(filePath))
@@ -643,6 +668,7 @@ async function main() {
       temporaryDirectory,
       packageEntry.name,
     );
+    await verifyPlainHttpBrowserClient(packageDirectory);
     await Promise.all([
       stat(
         path.join(
@@ -721,12 +747,12 @@ async function main() {
       "utf8",
     );
     assert(
-      bundledServerSource.includes("v1.46.0") &&
+      bundledServerSource.includes("v1.47.0") &&
         !bundledServerSource.includes("v1.43.0"),
       "Windows package contains a stale hosted download release.",
     );
     assert(
-      manifest.version === "1.46.0" &&
+      manifest.version === "1.47.0" &&
         manifest.platform === "windows-x64" &&
         manifest.network?.mode === "offline-loopback-only" &&
         manifest.network?.externalNetworkAllowed === false &&
@@ -741,6 +767,11 @@ async function main() {
         manifest.bundled?.largeDocumentTextRejection === true &&
         manifest.bundled?.repeatedWaveformGridRecovery === true &&
         manifest.bundled?.denseGuideWaveformPreservation === true &&
+        manifest.bundled?.plainHttpLanSupported === true &&
+        manifest.bundled?.standaloneModeDetection ===
+          "same-origin-runtime-api" &&
+        manifest.bundled?.randomIdFallback ===
+          "webcrypto-get-random-values-rfc4122-v4" &&
         manifest.bundled?.colorSeriesSeparation === true &&
         manifest.bundled?.colorSeriesPolicy
           ?.maxIndependentSeries === 2 &&

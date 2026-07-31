@@ -86,6 +86,31 @@ async function assertMissing(filePath, message) {
   throw new Error(message);
 }
 
+async function verifyPlainHttpBrowserClient(packageDirectory) {
+  const clientDirectory = path.join(packageDirectory, "site", "client");
+  const viteManifest = JSON.parse(
+    await readFile(
+      path.join(clientDirectory, ".vite", "manifest.json"),
+      "utf8",
+    ),
+  );
+  const browserEntry = viteManifest["app/VthSearchApp.tsx"]?.file;
+  assert(
+    typeof browserEntry === "string" && browserEntry.startsWith("assets/"),
+    "Ubuntu package does not expose the VTH browser entry.",
+  );
+  const browserSource = await readFile(
+    path.join(clientDirectory, browserEntry),
+    "utf8",
+  );
+  assert(
+    browserSource.includes("/api/v1/runtime") &&
+      browserSource.includes("getRandomValues") &&
+      !browserSource.includes(".randomUUID("),
+    "Ubuntu browser client is not compatible with plain-HTTP LAN origins.",
+  );
+}
+
 async function verifyChecksums(packageDirectory) {
   const checksumText = await readFile(
     path.join(packageDirectory, "checksums-sha256.txt"),
@@ -522,6 +547,296 @@ function firstExternalIpv4Address() {
   return "";
 }
 
+async function webdriverRequest(baseUrl, pathname, options = {}) {
+  const response = await fetch(`${baseUrl}${pathname}`, {
+    method: options.method || "GET",
+    headers: options.body
+      ? { "content-type": "application/json" }
+      : undefined,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+    signal: AbortSignal.timeout(options.timeoutMs ?? 15_000),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.value?.error) {
+    throw new Error(
+      payload?.value?.message ||
+        `WebDriver ${options.method || "GET"} ${pathname} failed (${response.status}).`,
+    );
+  }
+  return payload.value;
+}
+
+async function verifyLanBrowserSmoke({
+  externalAddress,
+  port,
+  apiKey,
+  headers,
+}) {
+  const required = process.env.VTH_REQUIRE_LAN_BROWSER_SMOKE === "1";
+  if (!required) {
+    return { executed: false, reason: "not-required-on-this-job" };
+  }
+  if (!externalAddress) {
+    assert(!required, "A non-loopback IPv4 address is required for browser smoke.");
+    return { executed: false, reason: "no-non-loopback-ipv4" };
+  }
+
+  const driverPort = await reserveTcpPort();
+  const driverUrl = `http://127.0.0.1:${driverPort}`;
+  const configuredChromeDriver =
+    process.env.CHROMEWEBDRIVER || "";
+  const chromeDriverExecutable = configuredChromeDriver
+    ? configuredChromeDriver.endsWith("chromedriver")
+      ? configuredChromeDriver
+      : path.join(configuredChromeDriver, "chromedriver")
+    : "chromedriver";
+  const driver = spawn(
+    chromeDriverExecutable,
+    [`--port=${driverPort}`],
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: false,
+    },
+  );
+  const driverStdout = [];
+  const driverStderr = [];
+  driver.stdout.on("data", (chunk) => driverStdout.push(chunk));
+  driver.stderr.on("data", (chunk) => driverStderr.push(chunk));
+  let driverError;
+  driver.once("error", (error) => {
+    driverError = error;
+  });
+  let sessionId = "";
+
+  try {
+    let driverReady = false;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (driverError) break;
+      if (driver.exitCode !== null) break;
+      try {
+        const status = await webdriverRequest(driverUrl, "/status");
+        if (status?.ready) {
+          driverReady = true;
+          break;
+        }
+      } catch {
+        // ChromeDriver may still be starting.
+      }
+      await delay(100);
+    }
+    if (!driverReady) {
+      const reason =
+        driverError?.code === "ENOENT"
+          ? "chromedriver-not-installed"
+          : `chromedriver-unavailable: ${Buffer.concat(driverStderr).toString("utf8")}`;
+      assert(!required, reason);
+      return { executed: false, reason };
+    }
+
+    let session;
+    try {
+      session = await webdriverRequest(driverUrl, "/session", {
+        method: "POST",
+        body: {
+          capabilities: {
+            alwaysMatch: {
+              browserName: "chrome",
+              pageLoadStrategy: "eager",
+              timeouts: {
+                pageLoad: 60_000,
+                script: 30_000,
+              },
+              "goog:chromeOptions": {
+                args: [
+                  "--headless=new",
+                  "--no-sandbox",
+                  "--disable-dev-shm-usage",
+                  "--disable-background-networking",
+                  "--disable-component-update",
+                  "--disable-default-apps",
+                  "--disable-extensions",
+                  "--disable-features=Translate",
+                  "--disable-sync",
+                  "--metrics-recording-only",
+                  "--no-first-run",
+                  "--no-proxy-server",
+                ],
+              },
+            },
+          },
+        },
+        timeoutMs: 90_000,
+      });
+    } catch (error) {
+      assert(!required, `Chrome session unavailable: ${error.message}`);
+      return {
+        executed: false,
+        reason: `chrome-session-unavailable: ${error.message}`,
+      };
+    }
+    sessionId = session?.sessionId || "";
+    assert(sessionId, "ChromeDriver did not return a session id.");
+
+    const sessionPath = `/session/${encodeURIComponent(sessionId)}`;
+    await webdriverRequest(driverUrl, `${sessionPath}/goog/cdp/execute`, {
+      method: "POST",
+      body: {
+        cmd: "Page.addScriptToEvaluateOnNewDocument",
+        params: {
+          source: `
+            window.__vthNativeRandomUuidType = typeof crypto.randomUUID;
+            Math.random = () => 0;
+            try {
+              Object.defineProperty(Crypto.prototype, "randomUUID", {
+                configurable: true,
+                value: undefined
+              });
+            } catch {}
+          `,
+        },
+      },
+    });
+    await webdriverRequest(driverUrl, `${sessionPath}/url`, {
+      method: "POST",
+      body: {
+        url:
+          `http://${externalAddress}:${port}/` +
+          `?access_token=${encodeURIComponent(apiKey)}`,
+      },
+      timeoutMs: 90_000,
+    });
+
+    const execute = (script) =>
+      webdriverRequest(driverUrl, `${sessionPath}/execute/sync`, {
+        method: "POST",
+        body: { script, args: [] },
+      });
+    let readyState;
+    for (let attempt = 0; attempt < 300; attempt += 1) {
+      readyState = await execute(`
+        const demo = document.querySelector('[data-testid="demo-button"]');
+        return {
+          hostname: location.hostname,
+          secure: isSecureContext,
+          nativeRandomUuid: window.__vthNativeRandomUuidType,
+          randomUUID: typeof crypto.randomUUID,
+          getRandomValues: typeof crypto.getRandomValues,
+          offline: document.body.innerText.includes('OFFLINE · LOCAL ONLY'),
+          downloads: Boolean(document.querySelector('[data-testid="ubuntu-download"]')),
+          demoReady: Boolean(demo && !demo.disabled),
+          alert: document.querySelector('[role="alert"]')?.textContent || ''
+        };
+      `);
+      if (
+        readyState?.offline &&
+        !readyState.downloads &&
+        readyState.demoReady
+      ) {
+        break;
+      }
+      await delay(100);
+    }
+    assert(
+      readyState?.hostname === externalAddress &&
+        readyState?.secure === false &&
+        readyState?.randomUUID === "undefined" &&
+        readyState?.getRandomValues === "function" &&
+        readyState?.offline === true &&
+        readyState?.downloads === false &&
+        readyState?.demoReady === true &&
+        !readyState?.alert,
+      `LAN browser runtime did not become ready: ${JSON.stringify(readyState)}`,
+    );
+
+    await execute(
+      `document.querySelector('[data-testid="demo-button"]').click(); return true;`,
+    );
+    let analysisState;
+    for (let attempt = 0; attempt < 600; attempt += 1) {
+      analysisState = await execute(`
+        return {
+          cards: document.querySelectorAll('[data-testid="results"] .result-card').length,
+          alert: document.querySelector('[role="alert"]')?.textContent || '',
+          analyzing: document.body.innerText.includes('형상 분석 중')
+        };
+      `);
+      if (analysisState?.cards >= 5 || analysisState?.alert) break;
+      await delay(100);
+    }
+    assert(
+      analysisState?.cards >= 5 && !analysisState?.alert,
+      `LAN browser demo analysis failed: ${JSON.stringify(analysisState)}`,
+    );
+
+    await execute(`
+      const drawer = document.querySelector('details.learning-drawer');
+      if (drawer) drawer.open = true;
+      const consent = document.querySelector('[data-testid="shared-training-consent"]');
+      if (consent && !consent.checked) consent.click();
+      return true;
+    `);
+    let learningReady = false;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      learningReady = await execute(`
+        const button = document.querySelector('[data-testid="learn-current-image"]');
+        return Boolean(button && !button.disabled);
+      `);
+      if (learningReady) break;
+      await delay(100);
+    }
+    assert(learningReady, "LAN browser local-learning action did not become ready.");
+    await execute(`
+      document.querySelector('[data-testid="learn-current-image"]').click();
+      return true;
+    `);
+
+    let learnedSamples = [];
+    for (let attempt = 0; attempt < 300; attempt += 1) {
+      const response = await fetch(
+        `http://${externalAddress}:${port}/api/v1/training-samples`,
+        {
+          headers,
+          signal: AbortSignal.timeout(5_000),
+        },
+      );
+      if (response.ok) {
+        learnedSamples = (await response.json()).samples ?? [];
+        if (learnedSamples.length > 0) break;
+      }
+      await delay(100);
+    }
+    assert(
+      learnedSamples.length > 0 &&
+        learnedSamples.every((sample) => sample.id.startsWith("local-")),
+      "LAN browser analysis succeeded but local learning did not persist.",
+    );
+
+    return {
+      executed: true,
+      origin: `http://${externalAddress}:${port}`,
+      secureContext: false,
+      nativeRandomUuidType: readyState?.nativeRandomUuid,
+      forcedRandomUuidType: readyState.randomUUID,
+      resultCards: analysisState.cards,
+      learnedSamples: learnedSamples.length,
+    };
+  } finally {
+    if (sessionId) {
+      await webdriverRequest(
+        driverUrl,
+        `/session/${encodeURIComponent(sessionId)}`,
+        { method: "DELETE", timeoutMs: 5_000 },
+      ).catch(() => {});
+    }
+    if (driver.exitCode === null) driver.kill("SIGTERM");
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      if (driver.exitCode !== null) break;
+      await delay(100);
+    }
+    if (driver.exitCode === null) driver.kill("SIGKILL");
+  }
+}
+
 async function verifyUnsupportedArchitectureRejection(
   packageDirectory,
   temporaryDirectory,
@@ -694,6 +1009,10 @@ async function verifyPackagedRuntimeService(packageDirectory) {
     );
 
     const externalAddress = firstExternalIpv4Address();
+    let browserSmoke = {
+      executed: false,
+      reason: "no-non-loopback-ipv4",
+    };
     if (externalAddress) {
       const externalResponse = await fetch(
         `http://${externalAddress}:${port}/api/v1/health`,
@@ -702,6 +1021,17 @@ async function verifyPackagedRuntimeService(packageDirectory) {
       assert(
         externalResponse.ok,
         `Packaged runtime is not reachable through ${externalAddress}.`,
+      );
+      browserSmoke = await verifyLanBrowserSmoke({
+        externalAddress,
+        port,
+        apiKey,
+        headers,
+      });
+    } else {
+      assert(
+        process.env.VTH_REQUIRE_LAN_BROWSER_SMOKE !== "1",
+        "A non-loopback IPv4 address is required for browser smoke.",
       );
     }
     const output = `${Buffer.concat(stdout).toString("utf8")}\n${Buffer.concat(
@@ -721,6 +1051,7 @@ async function verifyPackagedRuntimeService(packageDirectory) {
       runtime: runtimeRelativePath,
       listenHost: "0.0.0.0",
       externalAddressVerified: externalAddress || null,
+      browserSmoke,
       similarityResults: search.results.length,
     };
   } finally {
@@ -777,6 +1108,7 @@ async function main() {
       temporaryDirectory,
       packageEntry.name,
     );
+    await verifyPlainHttpBrowserClient(packageDirectory);
     const manifest = JSON.parse(
       await readFile(
         path.join(packageDirectory, "package-manifest.json"),
@@ -788,12 +1120,12 @@ async function main() {
       "utf8",
     );
     assert(
-      bundledServerSource.includes("v1.46.0") &&
+      bundledServerSource.includes("v1.47.0") &&
         !bundledServerSource.includes("v1.43.0"),
       "Ubuntu package contains a stale hosted download release.",
     );
     assert(
-      manifest.version === "1.46.0" &&
+      manifest.version === "1.47.0" &&
         manifest.platform === "ubuntu-linux-universal" &&
         JSON.stringify(manifest.architectures) ===
           JSON.stringify(["x64", "arm64"]) &&
@@ -815,6 +1147,14 @@ async function main() {
         manifest.network?.accessTokenTransport ===
           "query-once-then-http-only-cookie",
       "Ubuntu LAN/offline network policy is invalid.",
+    );
+    assert(
+      manifest.bundled?.plainHttpLanSupported === true &&
+        manifest.bundled?.standaloneModeDetection ===
+          "same-origin-runtime-api" &&
+        manifest.bundled?.randomIdFallback ===
+          "webcrypto-get-random-values-rfc4122-v4",
+      "Ubuntu plain-HTTP browser compatibility contract is missing.",
     );
     const expectedNodeRuntimes = [
       {
@@ -995,8 +1335,13 @@ async function main() {
     assert(
       readme.includes("x64 + ARM64 Universal") &&
         readme.includes("uname -m") &&
-        readme.includes("ubuntu-universal-v1.46.0") &&
+        readme.includes("ubuntu-universal-v1.47.0") &&
         readme.includes('"exec format error"') &&
+        readme.includes("crypto.randomUUID") &&
+        readme.includes("일반 HTTP") &&
+        readme.includes("서버판을 자동 인식") &&
+        readme.includes('"LAN 접속:"') &&
+        readme.includes("access_token 포함 URL") &&
         readme.includes("0.0.0.0:4173") &&
         readme.includes("다른 PC") &&
         readme.includes("VTH_API_KEY") &&

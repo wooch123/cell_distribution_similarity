@@ -130,10 +130,8 @@ test("server-renders the VTH similarity product", async () => {
   assert.match(html, /ENGINE V3\.8/);
   assert.match(html, /WAVEFORM-ONLY/);
   assert.match(html, /30-PANEL MAX/);
-  assert.match(
-    html,
-    /동의 시 표준 Curve \+ 원본 미리보기를 공용 학습/,
-  );
+  assert.match(html, /실행 환경 확인 중/);
+  assert.match(html, /class="standalone-downloads"[^>]*hidden/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
 });
 
@@ -345,26 +343,26 @@ async function verifyStandalonePackageDownload({
 
 test("ships the verified Windows standalone package as a web download", async () => {
   await verifyStandalonePackageDownload({
-    manifestFileName: "windows-package-v1.46.0.json",
+    manifestFileName: "windows-package-v1.47.0.json",
     checksumFileName: "vth-similarity-windows-x64.sha256",
-    expectedVersion: "1.46.0",
+    expectedVersion: "1.47.0",
     expectedFileName: "vth-similarity-windows-x64.zip",
     expectedDownloadFileName:
-      "vth-similarity-windows-x64-v1.46.0.zip",
+      "vth-similarity-windows-x64-v1.47.0.zip",
     assemble: assembleWindowsPackage,
   });
 });
 
 test("ships the verified Ubuntu external Web server package as a web download", async () => {
   await verifyStandalonePackageDownload({
-    manifestFileName: "ubuntu-package-v1.46.0.json",
+    manifestFileName: "ubuntu-package-v1.47.0.json",
     checksumFileName: "vth-similarity-ubuntu-universal.sha256",
-    expectedVersion: "1.46.0",
+    expectedVersion: "1.47.0",
     expectedPlatform: "ubuntu-linux-universal",
     expectedArchitectures: ["x64", "arm64"],
     expectedFileName: "vth-similarity-ubuntu-universal.tar.gz",
     expectedDownloadFileName:
-      "vth-similarity-ubuntu-universal-v1.46.0.tar.gz",
+      "vth-similarity-ubuntu-universal-v1.47.0.tar.gz",
     assemble: assembleUbuntuPackage,
   });
 });

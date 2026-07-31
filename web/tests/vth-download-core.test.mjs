@@ -22,7 +22,7 @@ function fixture({
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const manifest = {
     schemaVersion: 1,
-    version: "1.46.0",
+    version: "1.47.0",
     fileName,
     delivery: "browser-assembled",
     ...(platform ? { platform } : {}),
@@ -53,12 +53,12 @@ function fixture({
   return { bytes, fetchImpl, manifest, requests };
 }
 
-test("assembles the Windows v1.46.0 ZIP from its default manifest", async () => {
+test("assembles the Windows v1.47.0 ZIP from its default manifest", async () => {
   const sample = fixture({
     fileName: "vth-similarity-windows-x64.zip",
-    manifestPath: "/downloads/windows-package-v1.46.0.json",
+    manifestPath: "/downloads/windows-package-v1.47.0.json",
     partPath:
-      "/downloads/chunks/vth-similarity-windows-x64-v1.46.0.zip.part-000",
+      "/downloads/chunks/vth-similarity-windows-x64-v1.47.0.zip.part-000",
   });
 
   const result = await assembleWindowsPackage({
@@ -67,7 +67,7 @@ test("assembles the Windows v1.46.0 ZIP from its default manifest", async () => 
 
   assert.equal(
     result.fileName,
-    "vth-similarity-windows-x64-v1.46.0.zip",
+    "vth-similarity-windows-x64-v1.47.0.zip",
   );
   assert.equal(result.blob.type, "application/zip");
   assert.deepEqual(
@@ -75,17 +75,17 @@ test("assembles the Windows v1.46.0 ZIP from its default manifest", async () => 
     sample.bytes,
   );
   assert.deepEqual(sample.requests, [
-    "/downloads/windows-package-v1.46.0.json",
+    "/downloads/windows-package-v1.47.0.json",
     sample.manifest.parts[0].path,
   ]);
 });
 
-test("assembles the Ubuntu Universal x64 + ARM64 v1.46.0 tar.gz", async () => {
+test("assembles the Ubuntu Universal x64 + ARM64 v1.47.0 tar.gz", async () => {
   const sample = fixture({
     fileName: "vth-similarity-ubuntu-universal.tar.gz",
-    manifestPath: "/downloads/ubuntu-package-v1.46.0.json",
+    manifestPath: "/downloads/ubuntu-package-v1.47.0.json",
     partPath:
-      "/downloads/chunks/vth-similarity-ubuntu-universal-v1.46.0.tar.gz.part-000",
+      "/downloads/chunks/vth-similarity-ubuntu-universal-v1.47.0.tar.gz.part-000",
     platform: "ubuntu-linux-universal",
     architectures: ["x64", "arm64"],
   });
@@ -96,7 +96,7 @@ test("assembles the Ubuntu Universal x64 + ARM64 v1.46.0 tar.gz", async () => {
 
   assert.equal(
     result.fileName,
-    "vth-similarity-ubuntu-universal-v1.46.0.tar.gz",
+    "vth-similarity-ubuntu-universal-v1.47.0.tar.gz",
   );
   assert.equal(result.blob.type, "application/gzip");
   assert.deepEqual(
@@ -104,7 +104,7 @@ test("assembles the Ubuntu Universal x64 + ARM64 v1.46.0 tar.gz", async () => {
     sample.bytes,
   );
   assert.deepEqual(sample.requests, [
-    "/downloads/ubuntu-package-v1.46.0.json",
+    "/downloads/ubuntu-package-v1.47.0.json",
     sample.manifest.parts[0].path,
   ]);
 });
@@ -112,9 +112,9 @@ test("assembles the Ubuntu Universal x64 + ARM64 v1.46.0 tar.gz", async () => {
 test("rejects an Ubuntu manifest that names another platform package", async () => {
   const sample = fixture({
     fileName: "vth-similarity-windows-x64.zip",
-    manifestPath: "/downloads/ubuntu-package-v1.46.0.json",
+    manifestPath: "/downloads/ubuntu-package-v1.47.0.json",
     partPath:
-      "/downloads/chunks/vth-similarity-windows-x64-v1.46.0.zip.part-000",
+      "/downloads/chunks/vth-similarity-windows-x64-v1.47.0.zip.part-000",
     platform: "ubuntu-linux-universal",
     architectures: ["x64", "arm64"],
   });
@@ -131,9 +131,9 @@ test("rejects an Ubuntu manifest that names another platform package", async () 
 test("rejects an Ubuntu Universal manifest with an x64-only platform", async () => {
   const sample = fixture({
     fileName: "vth-similarity-ubuntu-universal.tar.gz",
-    manifestPath: "/downloads/ubuntu-package-v1.46.0.json",
+    manifestPath: "/downloads/ubuntu-package-v1.47.0.json",
     partPath:
-      "/downloads/chunks/vth-similarity-ubuntu-universal-v1.46.0.tar.gz.part-000",
+      "/downloads/chunks/vth-similarity-ubuntu-universal-v1.47.0.tar.gz.part-000",
     platform: "ubuntu-linux-x64",
     architectures: ["x64", "arm64"],
   });
@@ -150,9 +150,9 @@ test("rejects an Ubuntu Universal manifest with an x64-only platform", async () 
 test("rejects an Ubuntu Universal manifest without ARM64", async () => {
   const sample = fixture({
     fileName: "vth-similarity-ubuntu-universal.tar.gz",
-    manifestPath: "/downloads/ubuntu-package-v1.46.0.json",
+    manifestPath: "/downloads/ubuntu-package-v1.47.0.json",
     partPath:
-      "/downloads/chunks/vth-similarity-ubuntu-universal-v1.46.0.tar.gz.part-000",
+      "/downloads/chunks/vth-similarity-ubuntu-universal-v1.47.0.tar.gz.part-000",
     platform: "ubuntu-linux-universal",
     architectures: ["x64"],
   });

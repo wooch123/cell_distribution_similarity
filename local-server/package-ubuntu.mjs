@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(moduleDirectory, "..");
-const version = "1.46.0";
+const version = "1.47.0";
 const packageName = `vth-similarity-ubuntu-universal-v${version}`;
 const artifactsDirectory = path.join(projectRoot, "artifacts", "ubuntu");
 const cacheDirectory = path.join(artifactsDirectory, "cache");
@@ -487,8 +487,9 @@ echo "Follow logs:  journalctl -u $SERVICE_NAME -f"
 1. tar -xzf ${packageName}.tar.gz
 2. cd ${packageName}
 3. ./start.sh
-4. 같은 PC에서는 http://127.0.0.1:4173, 다른 PC에서는
-   http://<Ubuntu 서버 IP>:4173 으로 접속합니다.
+4. 같은 PC에서는 터미널의 "로컬 접속:" URL을, 다른 PC에서는
+   "LAN 접속:" 뒤에 출력된 access_token 포함 URL을 처음 한 번 그대로
+   엽니다. 토큰이 HttpOnly 쿠키로 바뀐 뒤에는 주소창에서 제거됩니다.
 5. 종료할 때 터미널에서 Ctrl+C를 누릅니다.
 
 Node.js나 npm 설치는 필요하지 않습니다. 공식 Node.js v${nodeVersion}
@@ -501,6 +502,10 @@ x86_64/amd64에서는 x64 런타임을, aarch64/arm64에서는 ARM64 런타임�
 실행 오류 확인
 - "exec format error"가 발생했던 이전 x64 전용 패키지 대신 파일명에
   ubuntu-universal-v${version}이 있는 새 패키지를 사용하십시오.
+- 다른 PC에서 http://<Ubuntu 서버 IP>:4173 또는 사내 DNS의 일반 HTTP로
+  접속해도 서버판을 자동 인식합니다. 브라우저의 crypto.randomUUID나
+  TLS가 없어도 안전한 Web Crypto 난수로 분석·학습·데이터 관리를
+  동일하게 사용할 수 있습니다.
 - 지원 CPU는 x86_64/amd64와 aarch64/arm64입니다. 다른 CPU에서는
   start.sh가 실행 전에 아키텍처와 지원 범위를 명확히 출력합니다.
 - start.sh가 런타임 누락 또는 실행 권한 문제를 발견하면 재다운로드와
@@ -676,6 +681,9 @@ checksums-sha256.txt에는 패키지 내부 파일의 SHA-256이 기록되어 �
       largeDocumentTextRejection: true,
       repeatedWaveformGridRecovery: true,
       denseGuideWaveformPreservation: true,
+      plainHttpLanSupported: true,
+      standaloneModeDetection: "same-origin-runtime-api",
+      randomIdFallback: "webcrypto-get-random-values-rfc4122-v4",
       colorSeriesSeparation: true,
       colorSeriesPolicy: {
         maxIndependentSeries: 2,
